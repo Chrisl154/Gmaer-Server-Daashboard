@@ -205,14 +205,23 @@ function ConsoleTab({ serverId }: { serverId: string }) {
   const wsRef = useRef<WebSocket | null>(null);
   const [lines, setLines] = useState<string[]>(['Connecting to console...']);
   const [connected, setConnected] = useState(false);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const historyRef = useRef<string[]>([]);
+  const historyIdx = useRef(-1);
 
   useEffect(() => {
     const ws = new WebSocket(getWsUrl(`/api/v1/servers/${serverId}/console/stream`));
     wsRef.current = ws;
     ws.onopen = () => { setConnected(true); setLines(p => [...p, '— Connected —']); };
     ws.onmessage = e => {
-      try { const m = JSON.parse(e.data); setLines(p => [...p.slice(-500), m.msg ?? e.data]); }
-      catch { setLines(p => [...p.slice(-500), e.data]); }
+      try {
+        const m = JSON.parse(e.data);
+        const prefix = m.type === 'rcon_cmd' ? '' : m.type === 'rcon_resp' ? '← ' : '';
+        setLines(p => [...p.slice(-500), prefix + (m.msg ?? e.data)]);
+      } catch {
+        setLines(p => [...p.slice(-500), e.data]);
+      }
     };
     ws.onclose = () => { setConnected(false); setLines(p => [...p, '— Disconnected —']); };
     ws.onerror = () => setLines(p => [...p, '— Connection error —']);
@@ -221,9 +230,42 @@ function ConsoleTab({ serverId }: { serverId: string }) {
 
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [lines]);
 
+  const sendCommand = async () => {
+    const cmd = input.trim();
+    if (!cmd) return;
+    historyRef.current = [cmd, ...historyRef.current.slice(0, 49)];
+    historyIdx.current = -1;
+    setInput('');
+    setSending(true);
+    try {
+      await api.post(`/api/v1/servers/${serverId}/console/command`, { command: cmd });
+    } catch (e: any) {
+      const errMsg = e.response?.data?.error ?? 'Command failed';
+      setLines(p => [...p.slice(-500), `[error] ${errMsg}`]);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') { sendCommand(); return; }
+    if (e.key === 'ArrowUp') {
+      const next = Math.min(historyIdx.current + 1, historyRef.current.length - 1);
+      historyIdx.current = next;
+      setInput(historyRef.current[next] ?? '');
+      e.preventDefault();
+    }
+    if (e.key === 'ArrowDown') {
+      const next = Math.max(historyIdx.current - 1, -1);
+      historyIdx.current = next;
+      setInput(next === -1 ? '' : historyRef.current[next] ?? '');
+      e.preventDefault();
+    }
+  };
+
   return (
-    <div>
-      <div className="flex items-center justify-between mb-3">
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className={clsx('w-2 h-2 rounded-full', connected ? 'bg-green-400' : 'bg-gray-600')} />
           <span className="text-xs text-gray-400">{connected ? 'Connected' : 'Disconnected'}</span>
@@ -231,9 +273,39 @@ function ConsoleTab({ serverId }: { serverId: string }) {
         <button className="p-1.5 text-gray-500 hover:text-gray-300"><Maximize2 className="w-4 h-4" /></button>
       </div>
       <div ref={logRef}
-        className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4 h-96 overflow-y-auto font-mono text-xs text-gray-300 space-y-0.5">
-        {lines.map((line, i) => <div key={i} className="whitespace-pre-wrap break-all leading-5">{line}</div>)}
+        className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4 h-80 overflow-y-auto font-mono text-xs text-gray-300 space-y-0.5">
+        {lines.map((line, i) => (
+          <div key={i} className={clsx(
+            'whitespace-pre-wrap break-all leading-5',
+            line.startsWith('> ') && 'text-blue-400',
+            line.startsWith('← ') && 'text-green-400',
+            line.startsWith('[error]') && 'text-red-400',
+          )}>{line}</div>
+        ))}
       </div>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Enter RCON command… (↑↓ history)"
+          disabled={!connected || sending}
+          className="flex-1 bg-[#0d0d0d] border border-[#1a1a1a] rounded-lg px-3 py-2 text-sm
+                     text-gray-100 font-mono placeholder-gray-600
+                     focus:outline-none focus:border-blue-500 disabled:opacity-40"
+        />
+        <button
+          onClick={sendCommand}
+          disabled={!connected || sending || !input.trim()}
+          className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white
+                     rounded-lg disabled:opacity-40 transition-colors">
+          {sending ? '…' : 'Send'}
+        </button>
+      </div>
+      <p className="text-xs text-gray-600">
+        Requires RCON on the adapter + <code className="font-mono">rcon_password</code> in server config.
+      </p>
     </div>
   );
 }
@@ -277,19 +349,68 @@ function ModsTab({ serverId }: { serverId: string }) {
     queryFn: () => api.get(`/api/v1/servers/${serverId}/mods`).then(r => r.data),
   });
   const mods = data?.mods ?? [];
+
+  const [testResult, setTestResult] = useState<null | { passed: boolean; duration: number; tests: { name: string; passed: boolean; message: string }[] }>(null);
+  const runTests = useMutation({
+    mutationFn: () => api.post(`/api/v1/servers/${serverId}/mods/test`).then(r => r.data),
+    onSuccess: (data) => setTestResult(data),
+    onError: () => toast.error('Test run failed'),
+  });
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-gray-200">Mods ({mods.length})</h3>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-lg">
-          <Package className="w-3 h-3" /> Add Mod
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => runTests.mutate()}
+            disabled={runTests.isPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-green-600/20 hover:bg-green-600/30 text-green-400 rounded-lg disabled:opacity-50 transition-colors"
+          >
+            {runTests.isPending ? 'Running…' : 'Run Tests'}
+          </button>
+          <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-lg">
+            <Package className="w-3 h-3" /> Add Mod
+          </button>
+        </div>
       </div>
+
+      {/* Test Results */}
+      {testResult && (
+        <div className={clsx(
+          'border rounded-xl p-4 space-y-3',
+          testResult.passed ? 'bg-green-950/20 border-green-800/40' : 'bg-red-950/20 border-red-800/40',
+        )}>
+          <div className="flex items-center justify-between">
+            <span className={clsx('text-sm font-medium', testResult.passed ? 'text-green-400' : 'text-red-400')}>
+              {testResult.passed ? 'All tests passed' : 'Some tests failed'}
+            </span>
+            <span className="text-xs text-gray-500">{Math.round(testResult.duration / 1e6)} ms</span>
+          </div>
+          <div className="space-y-1.5">
+            {testResult.tests.map((t) => (
+              <div key={t.name} className="flex items-start gap-2 text-xs">
+                <span className={clsx('mt-0.5 shrink-0', t.passed ? 'text-green-400' : 'text-red-400')}>
+                  {t.passed ? '✓' : '✗'}
+                </span>
+                <span className="font-mono text-gray-400 w-36 shrink-0">{t.name}</span>
+                <span className="text-gray-500">{t.message}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Mod list */}
       {mods.length === 0 ? <p className="text-gray-500 text-sm">No mods installed.</p> : (
         <div className="space-y-2">
           {mods.map((m: any) => (
             <div key={m.id} className="bg-[#141414] border border-[#252525] rounded-lg p-3 flex items-center justify-between">
-              <div><span className="text-sm text-gray-200">{m.name}</span><span className="ml-2 text-xs text-gray-500 font-mono">{m.version}</span></div>
+              <div>
+                <span className="text-sm text-gray-200">{m.name}</span>
+                <span className="ml-2 text-xs text-gray-500 font-mono">{m.version}</span>
+              </div>
               <span className="text-xs text-gray-500 capitalize">{m.source}</span>
             </div>
           ))}

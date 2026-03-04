@@ -23,7 +23,9 @@ import (
 	"github.com/games-dashboard/daemon/internal/cluster"
 	"github.com/games-dashboard/daemon/internal/config"
 	"github.com/games-dashboard/daemon/internal/metrics"
+	"github.com/games-dashboard/daemon/internal/modmanager"
 	"github.com/games-dashboard/daemon/internal/networking"
+	rconpkg "github.com/games-dashboard/daemon/internal/rcon"
 	"github.com/games-dashboard/daemon/internal/sbom"
 	"github.com/games-dashboard/daemon/internal/secrets"
 	"go.uber.org/zap"
@@ -227,6 +229,7 @@ type Broker struct {
 	networkSvc *networking.Service
 	clusterMgr *cluster.Manager
 	backupSvc  *backupsvc.Service
+	modMgr     *modmanager.Manager
 	servers    map[string]*Server
 	jobs       map[string]*Job
 	consoleChs map[string]chan string
@@ -272,6 +275,12 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 	}
 	bkpSvc := backupsvc.NewService(backupCfg, logger)
 
+	modDir := ""
+	if cfg != nil {
+		modDir = cfg.Storage.DataDir + "/mods"
+	}
+	modMgr := modmanager.NewManager(modDir, logger)
+
 	return &Broker{
 		cfg:         cfg,
 		secrets:     secretsMgr,
@@ -282,6 +291,7 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		networkSvc:  networkSvc,
 		clusterMgr:  clusterMgr,
 		backupSvc:   bkpSvc,
+		modMgr:      modMgr,
 		servers:     make(map[string]*Server),
 		jobs:        make(map[string]*Job),
 		consoleChs:  make(map[string]chan string),
@@ -1437,6 +1447,43 @@ func (b *Broker) GetConsoleStream(ctx context.Context, id string) (<-chan string
 	return ch, nil
 }
 
+// SendConsoleCommand sends a command to a running server via RCON.
+// The command and its response are also echoed into the console stream.
+func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (string, error) {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("server not found: %s", id)
+	}
+	if s.State != StateRunning {
+		return "", fmt.Errorf("server is not running")
+	}
+
+	manifest, hasManifest := b.adapters.Get(s.Adapter)
+	if !hasManifest || !manifest.Console.RCONEnabled {
+		return "", fmt.Errorf("RCON is not enabled for adapter %s", s.Adapter)
+	}
+
+	password, _ := s.Config["rcon_password"].(string)
+	if password == "" {
+		return "", fmt.Errorf("rcon_password not set in server config")
+	}
+
+	addr := fmt.Sprintf("localhost:%d", manifest.Console.RCONPort)
+	response, err := rconpkg.Exec(addr, password, command, 5*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("RCON error: %w", err)
+	}
+
+	// Echo into the console stream so the UI log shows command + response.
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"rcon_cmd","msg":%s,"ts":%d}`, jsonStr("> "+command), time.Now().Unix()))
+	if response != "" {
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"rcon_resp","msg":%s,"ts":%d}`, jsonStr(response), time.Now().Unix()))
+	}
+	return response, nil
+}
+
 func (b *Broker) sendConsoleMessage(id, msg string) {
 	b.mu.RLock()
 	ch, ok := b.consoleChs[id]
@@ -1647,14 +1694,23 @@ func (b *Broker) UninstallMod(ctx context.Context, serverID, modID string) error
 }
 
 func (b *Broker) TestMods(ctx context.Context, serverID string) (*TestModsResult, error) {
-	return &TestModsResult{
-		Passed: true,
-		Tests: []ModTestResult{
-			{Name: "server_start", Passed: true, Message: "Server started with mods"},
-			{Name: "console_connect", Passed: true, Message: "Console connected"},
-		},
-		Duration: 5 * time.Second,
-	}, nil
+	suite, err := b.modMgr.RunTests(ctx, serverID)
+	if err != nil {
+		return nil, err
+	}
+	result := &TestModsResult{
+		Passed:   suite.Passed,
+		Duration: suite.Duration,
+		Tests:    make([]ModTestResult, len(suite.Tests)),
+	}
+	for i, t := range suite.Tests {
+		result.Tests[i] = ModTestResult{
+			Name:    t.Name,
+			Passed:  t.Passed,
+			Message: t.Message,
+		}
+	}
+	return result, nil
 }
 
 func (b *Broker) RollbackMods(ctx context.Context, serverID string, req RollbackModsRequest) error {

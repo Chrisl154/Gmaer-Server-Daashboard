@@ -136,6 +136,7 @@ func (s *Server) registerRoutes() {
 	v1.GET("/servers/:id/logs", s.getServerLogs)
 	v1.GET("/servers/:id/metrics", s.getServerMetrics)
 	v1.GET("/servers/:id/console/stream", s.streamConsole)
+	v1.POST("/servers/:id/console/command", s.sendConsoleCommand)
 
 	// Backups
 	v1.GET("/servers/:id/backups", s.listBackups)
@@ -341,6 +342,23 @@ func (s *Server) getServerMetrics(c *gin.Context) {
 		samples = []broker.ServerMetricSample{}
 	}
 	c.JSON(http.StatusOK, gin.H{"server_id": id, "samples": samples})
+}
+
+func (s *Server) sendConsoleCommand(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Command string `json:"command" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "command is required"})
+		return
+	}
+	response, err := s.cfg.Broker.SendConsoleCommand(c.Request.Context(), id, req.Command)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"response": response})
 }
 
 func (s *Server) getServerLogs(c *gin.Context) {
