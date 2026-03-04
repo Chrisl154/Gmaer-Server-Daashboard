@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/games-dashboard/daemon/internal/auth"
@@ -133,6 +134,7 @@ func (s *Server) registerRoutes() {
 	v1.POST("/servers/:id/deploy", s.deployServer)
 	v1.GET("/servers/:id/status", s.getServerStatus)
 	v1.GET("/servers/:id/logs", s.getServerLogs)
+	v1.GET("/servers/:id/metrics", s.getServerMetrics)
 	v1.GET("/servers/:id/console/stream", s.streamConsole)
 
 	// Backups
@@ -322,6 +324,25 @@ func (s *Server) getServerStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, status)
 }
 
+func (s *Server) getServerMetrics(c *gin.Context) {
+	id := c.Param("id")
+	n := 60
+	if nStr := c.Query("n"); nStr != "" {
+		if parsed, err := strconv.Atoi(nStr); err == nil && parsed > 0 {
+			n = parsed
+		}
+	}
+	samples, err := s.cfg.Broker.GetServerMetrics(c.Request.Context(), id, n)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if samples == nil {
+		samples = []broker.ServerMetricSample{}
+	}
+	c.JSON(http.StatusOK, gin.H{"server_id": id, "samples": samples})
+}
+
 func (s *Server) getServerLogs(c *gin.Context) {
 	id := c.Param("id")
 	lines := c.DefaultQuery("lines", "100")
@@ -335,6 +356,31 @@ func (s *Server) getServerLogs(c *gin.Context) {
 
 func (s *Server) streamConsole(c *gin.Context) {
 	id := c.Param("id")
+	
+	// SECURITY FIX: Validate authentication BEFORE upgrading WebSocket
+	// Extract token from Authorization header
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authorization"})
+		return
+	}
+	
+	// Validate token
+	claims, err := s.cfg.AuthSvc.ValidateToken(c.Request.Context(), authHeader)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		return
+	}
+	
+	// TODO: Add RBAC check to verify user has access to this server
+	// For now, any authenticated user can access. Implement server access control:
+	// if !s.cfg.AuthSvc.CanAccessServer(c.Request.Context(), claims.UserID, id) {
+	//     c.JSON(http.StatusForbidden, gin.H{"error": "access denied to this server"})
+	//     return
+	// }
+	_ = claims // Use for future permission checks
+	
+	// Now safe to upgrade WebSocket with authenticated user
 	conn, err := s.ws.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		s.cfg.Logger.Error("WebSocket upgrade failed", zap.Error(err))

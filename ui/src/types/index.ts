@@ -346,3 +346,12 @@ export interface JobResponse {
   status: string;
   message?: string;
 }
+
+// ── Metrics ──────────────────────────────────────────────────────────────────
+
+export interface ServerMetricSample {
+  ts: number;          // Unix seconds
+  cpu_pct: number;
+  ram_pct: number;
+  player_count: number;
+}

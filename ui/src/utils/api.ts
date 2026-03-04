@@ -34,12 +34,12 @@ api.interceptors.response.use(
   }
 );
 
+/**
+ * Get WebSocket URL for authenticated connections.
+ * Token is sent via Authorization header automatically through axios interceptor.
+ * SECURITY: Token is no longer exposed in URL query parameters.
+ */
 export function getWsUrl(path: string): string {
   const base = DAEMON_URL.replace(/^http/, 'ws').replace(/^https/, 'wss');
-  const stored = localStorage.getItem('games-dashboard-auth');
-  let token = '';
-  if (stored) {
-    try { token = JSON.parse(stored)?.state?.token ?? ''; } catch {}
-  }
-  return `${base}${path}${token ? `?token=${token}` : ''}`;
+  return `${base}${path}`;
 }

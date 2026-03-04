@@ -1,9 +1,14 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Activity, Server, HardDrive, Shield, Package } from 'lucide-react';
 import { ServerCard } from '../components/Dashboard/ServerCard';
 import { StatsCard } from '../components/Dashboard/StatsCard';
 import { api } from '../utils/api';
+import {
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
+} from 'recharts';
+
+interface TrendPoint { time: string; running: number; }
 
 export function DashboardPage() {
   const { data: serversData, isLoading } = useQuery({
@@ -21,6 +26,19 @@ export function DashboardPage() {
   const servers = serversData?.servers ?? [];
   const running = servers.filter((s: any) => s.state === 'running').length;
   const stopped = servers.filter((s: any) => s.state === 'stopped').length;
+
+  // Accumulate running-server count history locally (no extra API call).
+  const historyRef = useRef<TrendPoint[]>([]);
+  const [, forceUpdate] = useState(0);
+  useEffect(() => {
+    if (!serversData) return;
+    const point: TrendPoint = {
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      running,
+    };
+    historyRef.current = [...historyRef.current.slice(-19), point];
+    forceUpdate(n => n + 1);
+  }, [serversData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="p-6 space-y-6">
@@ -59,6 +77,40 @@ export function DashboardPage() {
           color={statusData?.healthy ? 'green' : 'red'}
         />
       </div>
+
+      {/* Running servers trend */}
+      {historyRef.current.length > 1 && (
+        <div className="bg-[#141414] border border-[#252525] rounded-xl p-4">
+          <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-3">
+            Running Servers — Last {historyRef.current.length} polls
+          </h2>
+          <ResponsiveContainer width="100%" height={120}>
+            <AreaChart data={historyRef.current} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+              <defs>
+                <linearGradient id="runningGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#6b7280' }} interval="preserveStartEnd" />
+              <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#6b7280' }} width={24} />
+              <Tooltip
+                contentStyle={{ background: '#141414', border: '1px solid #252525', borderRadius: 8, fontSize: 12 }}
+                labelStyle={{ color: '#9ca3af' }}
+              />
+              <Area
+                type="monotone"
+                dataKey="running"
+                stroke="#22c55e"
+                strokeWidth={1.5}
+                fill="url(#runningGrad)"
+                dot={false}
+                name="Running"
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
 
       {/* Server Cards */}
       <div>

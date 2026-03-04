@@ -1,0 +1,188 @@
+package broker
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const metricsBufferSize = 60 // 15 min at 15 s intervals
+
+// ServerMetricSample holds a single resource utilisation snapshot for a server.
+type ServerMetricSample struct {
+	Timestamp   int64   `json:"ts"`
+	CPUPercent  float64 `json:"cpu_pct"`
+	RAMPercent  float64 `json:"ram_pct"`
+	PlayerCount int     `json:"player_count"`
+}
+
+// metricsRing is a thread-safe fixed-capacity ring buffer of ServerMetricSamples.
+type metricsRing struct {
+	mu      sync.RWMutex
+	samples [metricsBufferSize]ServerMetricSample
+	head    int
+	count   int
+}
+
+func (r *metricsRing) push(s ServerMetricSample) {
+	r.mu.Lock()
+	r.samples[r.head%metricsBufferSize] = s
+	r.head++
+	if r.count < metricsBufferSize {
+		r.count++
+	}
+	r.mu.Unlock()
+}
+
+// last returns up to n samples in chronological (oldest-first) order.
+func (r *metricsRing) last(n int) []ServerMetricSample {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if n > r.count {
+		n = r.count
+	}
+	if n == 0 {
+		return nil
+	}
+	out := make([]ServerMetricSample, n)
+	// head points to the next write slot; the oldest occupied slot is head-count.
+	start := (r.head - n + metricsBufferSize*1024) % metricsBufferSize
+	for i := 0; i < n; i++ {
+		out[i] = r.samples[(start+i)%metricsBufferSize]
+	}
+	return out
+}
+
+// sampleProcess attempts to read CPU and RAM utilisation for a process by PID.
+// On non-Linux platforms or when the PID is unavailable it returns (0, 0) silently.
+func sampleProcess(pid int) (cpuPct, ramPct float64) {
+	if pid <= 0 || runtime.GOOS != "linux" {
+		return
+	}
+
+	// ── CPU: read /proc/{pid}/stat twice, 100 ms apart ──────────────────────
+	readTicks := func() (uint64, error) {
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			return 0, err
+		}
+		fields := strings.Fields(string(data))
+		if len(fields) < 15 {
+			return 0, fmt.Errorf("unexpected stat format")
+		}
+		utime, _ := strconv.ParseUint(fields[13], 10, 64)
+		stime, _ := strconv.ParseUint(fields[14], 10, 64)
+		return utime + stime, nil
+	}
+
+	t1, err1 := readTicks()
+	wall1 := time.Now()
+	time.Sleep(100 * time.Millisecond)
+	t2, err2 := readTicks()
+	wall2 := time.Now()
+
+	if err1 == nil && err2 == nil {
+		// /proc/stat tick rate is usually 100 Hz (USER_HZ = 100).
+		const ticksPerSec = 100.0
+		elapsedSec := wall2.Sub(wall1).Seconds()
+		deltaTicks := float64(t2 - t1)
+		if elapsedSec > 0 {
+			cpuPct = (deltaTicks / ticksPerSec) / elapsedSec * 100.0
+			if cpuPct > 100.0 {
+				cpuPct = 100.0
+			}
+		}
+	}
+
+	// ── RAM: VmRSS from /proc/{pid}/status vs MemTotal from /proc/meminfo ──
+	statusData, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err == nil {
+		var vmRSSKB uint64
+		scanner := bufio.NewScanner(strings.NewReader(string(statusData)))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "VmRSS:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					vmRSSKB, _ = strconv.ParseUint(fields[1], 10, 64)
+				}
+				break
+			}
+		}
+
+		memData, err2 := os.ReadFile("/proc/meminfo")
+		if err2 == nil {
+			var memTotalKB uint64
+			sc2 := bufio.NewScanner(strings.NewReader(string(memData)))
+			for sc2.Scan() {
+				line := sc2.Text()
+				if strings.HasPrefix(line, "MemTotal:") {
+					fields := strings.Fields(line)
+					if len(fields) >= 2 {
+						memTotalKB, _ = strconv.ParseUint(fields[1], 10, 64)
+					}
+					break
+				}
+			}
+			if memTotalKB > 0 {
+				ramPct = float64(vmRSSKB) / float64(memTotalKB) * 100.0
+				if ramPct > 100.0 {
+					ramPct = 100.0
+				}
+			}
+		}
+	}
+
+	return
+}
+
+// sampleDocker runs `docker stats --no-stream` to get CPU/RAM for a container.
+// Returns (0, 0) silently on any error.
+func sampleDocker(containerID string) (cpuPct, ramPct float64) {
+	if containerID == "" {
+		return
+	}
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil {
+		return
+	}
+
+	out, err := exec.Command(dockerPath, //nolint:gosec
+		"stats", "--no-stream",
+		"--format", `{"cpu":"{{.CPUPerc}}","mem":"{{.MemPerc}}"}`,
+		containerID,
+	).Output()
+	if err != nil {
+		return
+	}
+
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return
+	}
+
+	var parsed struct {
+		CPU string `json:"cpu"`
+		Mem string `json:"mem"`
+	}
+	if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+		return
+	}
+
+	parsePct := func(s string) float64 {
+		s = strings.TrimSuffix(strings.TrimSpace(s), "%")
+		v, _ := strconv.ParseFloat(s, 64)
+		return v
+	}
+
+	cpuPct = parsePct(parsed.CPU)
+	ramPct = parsePct(parsed.Mem)
+	return
+}

@@ -231,8 +231,9 @@ type Broker struct {
 	jobs       map[string]*Job
 	consoleChs map[string]chan string
 	// processes tracks running game server processes by server ID
-	processes  map[string]*exec.Cmd
-	mu         sync.RWMutex
+	processes   map[string]*exec.Cmd
+	metricsData map[string]*metricsRing
+	mu          sync.RWMutex
 }
 
 // NewBroker creates a new Broker
@@ -272,19 +273,20 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 	bkpSvc := backupsvc.NewService(backupCfg, logger)
 
 	return &Broker{
-		cfg:        cfg,
-		secrets:    secretsMgr,
-		logger:     logger,
-		metrics:    metricsSvc,
-		adapters:   registry,
-		sbomSvc:    sbomSvc,
-		networkSvc: networkSvc,
-		clusterMgr: clusterMgr,
-		backupSvc:  bkpSvc,
-		servers:    make(map[string]*Server),
-		jobs:       make(map[string]*Job),
-		consoleChs: make(map[string]chan string),
-		processes:  make(map[string]*exec.Cmd),
+		cfg:         cfg,
+		secrets:     secretsMgr,
+		logger:      logger,
+		metrics:     metricsSvc,
+		adapters:    registry,
+		sbomSvc:     sbomSvc,
+		networkSvc:  networkSvc,
+		clusterMgr:  clusterMgr,
+		backupSvc:   bkpSvc,
+		servers:     make(map[string]*Server),
+		jobs:        make(map[string]*Job),
+		consoleChs:  make(map[string]chan string),
+		processes:   make(map[string]*exec.Cmd),
+		metricsData: make(map[string]*metricsRing),
 	}, nil
 }
 
@@ -301,6 +303,21 @@ func (b *Broker) BackupService() *backupsvc.Service {
 // Start begins background goroutines
 func (b *Broker) Start(ctx context.Context) {
 	b.logger.Info("Broker starting")
+
+	// Metrics sampling goroutine — collects per-server CPU/RAM every 15 s.
+	go func() {
+		metricsTicker := time.NewTicker(15 * time.Second)
+		defer metricsTicker.Stop()
+		for {
+			select {
+			case <-metricsTicker.C:
+				b.collectMetrics()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -313,6 +330,65 @@ func (b *Broker) Start(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// collectMetrics samples CPU/RAM for all currently running servers.
+func (b *Broker) collectMetrics() {
+	b.mu.RLock()
+	type snap struct {
+		pid         int
+		containerID string
+		deployMethod string
+	}
+	servers := make(map[string]snap, len(b.servers))
+	for id, s := range b.servers {
+		if s.State == StateRunning {
+			servers[id] = snap{pid: s.PID, containerID: s.ContainerID, deployMethod: s.DeployMethod}
+		}
+	}
+	b.mu.RUnlock()
+
+	for id, s := range servers {
+		var cpu, ram float64
+		if s.deployMethod == "docker" && s.containerID != "" {
+			cpu, ram = sampleDocker(s.containerID)
+		} else if s.pid > 0 {
+			cpu, ram = sampleProcess(s.pid)
+		}
+
+		b.mu.RLock()
+		ring, ok := b.metricsData[id]
+		b.mu.RUnlock()
+		if !ok {
+			continue
+		}
+		ring.push(ServerMetricSample{
+			Timestamp:  time.Now().Unix(),
+			CPUPercent: cpu,
+			RAMPercent: ram,
+		})
+	}
+}
+
+// GetServerMetrics returns the last n metric samples for a server.
+func (b *Broker) GetServerMetrics(ctx context.Context, id string, n int) ([]ServerMetricSample, error) {
+	b.mu.RLock()
+	ring, ok := b.metricsData[id]
+	b.mu.RUnlock()
+	if !ok {
+		// Check if server exists at all.
+		b.mu.RLock()
+		_, serverExists := b.servers[id]
+		b.mu.RUnlock()
+		if !serverExists {
+			return nil, fmt.Errorf("server not found: %s", id)
+		}
+		return nil, nil // server exists but no metrics ring yet
+	}
+	if n <= 0 || n > metricsBufferSize {
+		n = metricsBufferSize
+	}
+	return ring.last(n), nil
 }
 
 func (b *Broker) healthCheckAll(ctx context.Context) {
@@ -442,6 +518,7 @@ func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Se
 
 	b.servers[req.ID] = server
 	b.consoleChs[req.ID] = make(chan string, 1000)
+	b.metricsData[req.ID] = &metricsRing{}
 
 	b.logger.Info("Server created",
 		zap.String("id", req.ID),
@@ -506,6 +583,7 @@ func (b *Broker) DeleteServer(ctx context.Context, id string) error {
 		close(ch)
 		delete(b.consoleChs, id)
 	}
+	delete(b.metricsData, id)
 	b.mu.Unlock()
 
 	// Best-effort: remove the Docker container on deletion.

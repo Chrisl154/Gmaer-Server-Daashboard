@@ -5,6 +5,10 @@ import { ArrowLeft, Play, Square, RotateCcw, HardDrive, Package, Download, Maxim
 import { toast } from 'react-hot-toast';
 import { api, getWsUrl } from '../utils/api';
 import { clsx } from 'clsx';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+} from 'recharts';
+import type { ServerMetricSample } from '../types';
 
 type Tab = 'overview' | 'console' | 'backups' | 'mods' | 'ports' | 'config';
 
@@ -137,6 +141,61 @@ function OverviewTab({ server }: { server: any }) {
         <InfoRow label="RAM" value={server.resources?.ram_gb ? `${server.resources.ram_gb} GB` : '—'} />
         <InfoRow label="Disk" value={server.resources?.disk_gb ? `${server.resources.disk_gb} GB` : '—'} />
       </InfoCard>
+      <div className="md:col-span-2">
+        <MetricsChart serverId={server.id} />
+      </div>
+    </div>
+  );
+}
+
+function MetricsChart({ serverId }: { serverId: string }) {
+  const { data } = useQuery({
+    queryKey: ['server-metrics', serverId],
+    queryFn: () => api.get(`/api/v1/servers/${serverId}/metrics?n=30`).then(r => r.data),
+    refetchInterval: 15_000,
+  });
+
+  const samples: ServerMetricSample[] = data?.samples ?? [];
+  const chartData = samples.map(s => ({
+    time: new Date(s.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    cpu:  parseFloat(s.cpu_pct.toFixed(1)),
+    ram:  parseFloat(s.ram_pct.toFixed(1)),
+  }));
+
+  return (
+    <div className="bg-[#141414] border border-[#252525] rounded-xl p-4">
+      <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-3">
+        Resource Utilization
+      </h3>
+      {chartData.length === 0 ? (
+        <p className="text-sm text-gray-500 py-8 text-center">
+          No data yet — metrics are collected every 15 s while the server is running.
+        </p>
+      ) : (
+        <>
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
+              <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#6b7280' }} interval="preserveStartEnd" />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#6b7280' }} unit="%" />
+              <Tooltip
+                contentStyle={{ background: '#141414', border: '1px solid #252525', borderRadius: 8, fontSize: 12 }}
+                labelStyle={{ color: '#9ca3af' }}
+              />
+              <Line type="monotone" dataKey="cpu" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="CPU %" />
+              <Line type="monotone" dataKey="ram" stroke="#8b5cf6" strokeWidth={1.5} dot={false} name="RAM %" />
+            </LineChart>
+          </ResponsiveContainer>
+          <div className="flex gap-4 mt-2 text-xs text-gray-500">
+            <span className="flex items-center gap-1.5">
+              <span className="w-3 h-0.5 bg-blue-500 inline-block rounded" /> CPU %
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-3 h-0.5 bg-purple-500 inline-block rounded" /> RAM %
+            </span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
