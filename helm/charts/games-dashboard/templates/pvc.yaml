@@ -1,0 +1,17 @@
+{{- if .Values.storage.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "games-dashboard.fullname" . }}-data
+  labels:
+    {{- include "games-dashboard.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.storage.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.persistence.size }}
+  {{- if .Values.storage.persistence.storageClass }}
+  storageClassName: {{ .Values.storage.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

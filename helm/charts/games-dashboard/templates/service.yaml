@@ -1,0 +1,41 @@
+{{- /* Daemon Service */ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "games-dashboard.fullname" . }}-daemon
+  labels:
+    {{- include "games-dashboard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: daemon
+spec:
+  type: {{ .Values.service.daemon.type }}
+  ports:
+    - port: {{ .Values.service.daemon.port }}
+      targetPort: {{ .Values.service.daemon.targetPort }}
+      protocol: TCP
+      name: https
+  selector:
+    {{- include "games-dashboard.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: daemon
+---
+{{- /* UI Service */ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "games-dashboard.fullname" . }}-ui
+  labels:
+    {{- include "games-dashboard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+spec:
+  type: {{ .Values.service.ui.type }}
+  ports:
+    - port: {{ .Values.service.ui.port }}
+      targetPort: {{ .Values.service.ui.targetPort }}
+      protocol: TCP
+      name: https
+    - port: {{ .Values.service.http.port }}
+      targetPort: {{ .Values.service.http.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "games-dashboard.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ui

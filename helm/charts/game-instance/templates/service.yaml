@@ -1,0 +1,39 @@
+{{- /* Headless service for StatefulSet DNS */ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "game-instance.fullname" . }}-headless
+  labels:
+    {{- include "game-instance.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "game-instance.selectorLabels" . | nindent 4 }}
+---
+{{- /* External-facing service for players */ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "game-instance.fullname" . }}
+  labels:
+    {{- include "game-instance.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- if and (eq .Values.service.type "LoadBalancer") .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.service.loadBalancerIP }}
+  {{- end }}
+  ports:
+    {{- range .Values.ports }}
+    {{- if .expose }}
+    - name: {{ .name }}
+      port: {{ .containerPort }}
+      targetPort: {{ .name }}
+      protocol: {{ .protocol | default "TCP" }}
+    {{- end }}
+    {{- end }}
+  selector:
+    {{- include "game-instance.selectorLabels" . | nindent 4 }}

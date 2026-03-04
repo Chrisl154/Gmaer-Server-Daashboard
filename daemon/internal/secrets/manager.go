@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 
+	vaultapi "github.com/hashicorp/vault/api"
 	"go.uber.org/zap"
 )
 
@@ -24,9 +25,10 @@ type Config struct {
 
 // Manager handles encryption/decryption of secrets
 type Manager struct {
-	cfg    Config
-	logger *zap.Logger
-	key    []byte
+	cfg         Config
+	logger      *zap.Logger
+	key         []byte
+	vaultClient *vaultapi.Client // non-nil when vault backend is active
 }
 
 // NewManager creates a new secrets manager
@@ -38,9 +40,13 @@ func NewManager(cfg Config, logger *zap.Logger) (*Manager, error) {
 
 	switch cfg.Backend {
 	case "vault":
-		// TODO: initialize Vault client
-		logger.Warn("Vault backend not yet configured, falling back to local")
-		fallthrough
+		if err := m.initVaultBackend(); err != nil {
+			logger.Warn("Vault backend initialization failed, falling back to local AES key",
+				zap.Error(err))
+			if localErr := m.loadOrCreateKey(); localErr != nil {
+				return nil, fmt.Errorf("failed to initialize local KMS: %w", localErr)
+			}
+		}
 	default:
 		if err := m.loadOrCreateKey(); err != nil {
 			return nil, fmt.Errorf("failed to initialize local KMS: %w", err)
@@ -101,7 +107,7 @@ func (m *Manager) Decrypt(ciphertext string) (string, error) {
 	return string(plaintext), nil
 }
 
-// Rotate generates a new encryption key
+// Rotate generates a new encryption key and persists it to whichever backend is active.
 func (m *Manager) Rotate(ctx context.Context) error {
 	m.logger.Info("Rotating secrets encryption key")
 	newKey := make([]byte, 32)
@@ -109,7 +115,99 @@ func (m *Manager) Rotate(ctx context.Context) error {
 		return err
 	}
 	m.key = newKey
+	if m.vaultClient != nil {
+		return m.saveVaultKey()
+	}
 	return m.saveKey()
+}
+
+// initVaultBackend creates a Vault client and loads (or generates) the master key
+// from the configured Vault KV path. The master key is used for local AES-256-GCM
+// encryption — Vault acts as an external key store (envelope encryption).
+func (m *Manager) initVaultBackend() error {
+	vaultCfg := vaultapi.DefaultConfig()
+	if m.cfg.VaultAddr != "" {
+		vaultCfg.Address = m.cfg.VaultAddr
+	}
+
+	client, err := vaultapi.NewClient(vaultCfg)
+	if err != nil {
+		return fmt.Errorf("create vault client: %w", err)
+	}
+
+	if m.cfg.VaultToken != "" {
+		client.SetToken(m.cfg.VaultToken)
+	}
+
+	m.vaultClient = client
+	return m.loadOrCreateVaultKey()
+}
+
+// vaultKeyPath returns the KV path used to store the master key.
+func (m *Manager) vaultKeyPath() string {
+	if m.cfg.VaultPath != "" {
+		return m.cfg.VaultPath
+	}
+	return "secret/data/games-dashboard/master-key"
+}
+
+// loadOrCreateVaultKey reads the master key from Vault KV.
+// If the secret does not exist yet it generates a new key and writes it.
+func (m *Manager) loadOrCreateVaultKey() error {
+	path := m.vaultKeyPath()
+
+	secret, err := m.vaultClient.Logical().Read(path)
+	if err != nil {
+		return fmt.Errorf("vault read %s: %w", path, err)
+	}
+
+	if secret != nil && secret.Data != nil {
+		// KV v2 wraps the payload in a "data" key; KV v1 stores it directly.
+		data := secret.Data
+		if nested, ok := secret.Data["data"].(map[string]interface{}); ok {
+			data = nested
+		}
+		if keyStr, ok := data["key"].(string); ok && keyStr != "" {
+			decoded, decErr := base64.StdEncoding.DecodeString(keyStr)
+			if decErr != nil {
+				return fmt.Errorf("decode vault key: %w", decErr)
+			}
+			if len(decoded) != 32 {
+				return fmt.Errorf("vault key has wrong length: %d (expected 32)", len(decoded))
+			}
+			m.key = decoded
+			m.logger.Info("Loaded master key from Vault", zap.String("path", path))
+			return nil
+		}
+	}
+
+	// Key not present — generate and store it
+	newKey := make([]byte, 32)
+	if _, genErr := io.ReadFull(rand.Reader, newKey); genErr != nil {
+		return fmt.Errorf("generate master key: %w", genErr)
+	}
+	m.key = newKey
+	if writeErr := m.saveVaultKey(); writeErr != nil {
+		return writeErr
+	}
+	m.logger.Info("Generated and stored master key in Vault", zap.String("path", path))
+	return nil
+}
+
+// saveVaultKey persists the current master key to Vault KV.
+func (m *Manager) saveVaultKey() error {
+	path := m.vaultKeyPath()
+	encoded := base64.StdEncoding.EncodeToString(m.key)
+	// Use KV v2 write format; Vault KV v1 paths will ignore the nested "data" key harmlessly.
+	writeData := map[string]interface{}{
+		"data": map[string]interface{}{
+			"key": encoded,
+		},
+	}
+	if _, err := m.vaultClient.Logical().Write(path, writeData); err != nil {
+		return fmt.Errorf("vault write %s: %w", path, err)
+	}
+	return nil
 }
 
 func (m *Manager) loadOrCreateKey() error {

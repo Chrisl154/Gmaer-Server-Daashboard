@@ -19,6 +19,7 @@ type Config struct {
 	Adapters        AdaptersConfig  `yaml:"adapters" json:"adapters"`
 	Backup          BackupConfig    `yaml:"backup" json:"backup"`
 	Metrics         MetricsConfig   `yaml:"metrics" json:"metrics"`
+	Cluster         ClusterConfig   `yaml:"cluster" json:"cluster"`
 	LogLevel        string          `yaml:"log_level" json:"log_level"`
 	DataDir         string          `yaml:"data_dir" json:"data_dir"`
 }
@@ -99,6 +100,12 @@ type BackupConfig struct {
 type MetricsConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
 	Path    string `yaml:"path" json:"path"`
+}
+
+type ClusterConfig struct {
+	Enabled             bool          `yaml:"enabled" json:"enabled"`
+	HealthCheckInterval time.Duration `yaml:"health_check_interval" json:"health_check_interval"`
+	NodeTimeout         time.Duration `yaml:"node_timeout" json:"node_timeout"`
 }
 
 // Load reads configuration from a YAML file

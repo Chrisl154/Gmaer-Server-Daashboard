@@ -1,0 +1,50 @@
+{{- /* Daemon configuration ConfigMap */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "games-dashboard.fullname" . }}-config
+  labels:
+    {{- include "games-dashboard.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      bind_addr: {{ .Values.daemon.bindAddr | quote }}
+      log_level: {{ .Values.daemon.logLevel | quote }}
+    tls:
+      enabled: {{ .Values.daemon.tls.enabled }}
+      cert_file: {{ .Values.daemon.tls.certFile | quote }}
+      key_file:  {{ .Values.daemon.tls.keyFile  | quote }}
+      auto_generate: {{ .Values.daemon.tls.autoGenerate }}
+    auth:
+      local:
+        enabled: {{ .Values.daemon.auth.local.enabled }}
+        admin_user: {{ .Values.daemon.auth.local.adminUser | quote }}
+      oidc:
+        enabled: {{ .Values.daemon.auth.oidc.enabled }}
+        {{- if .Values.daemon.auth.oidc.issuer }}
+        issuer: {{ .Values.daemon.auth.oidc.issuer | quote }}
+        client_id: {{ .Values.daemon.auth.oidc.clientId | quote }}
+        {{- end }}
+      mfa_required: {{ .Values.daemon.auth.mfaRequired }}
+    secrets:
+      backend: {{ .Values.daemon.secrets.backend | quote }}
+      {{- if .Values.daemon.secrets.vault.enabled }}
+      vault:
+        addr: {{ .Values.daemon.secrets.vault.addr | quote }}
+        path: {{ .Values.daemon.secrets.vault.path | quote }}
+      {{- end }}
+    storage:
+      data_dir: /var/lib/games-dashboard
+      {{- if .Values.storage.s3.enabled }}
+      s3:
+        endpoint: {{ .Values.storage.s3.endpoint | quote }}
+        bucket:   {{ .Values.storage.s3.bucket   | quote }}
+        region:   {{ .Values.storage.s3.region   | quote }}
+        use_ssl:  {{ .Values.storage.s3.useSSL }}
+      {{- end }}
+      {{- if .Values.storage.nfs.enabled }}
+      nfs:
+        server:     {{ .Values.storage.nfs.server     | quote }}
+        path:       {{ .Values.storage.nfs.path       | quote }}
+        mount_point: {{ .Values.storage.nfs.mountPoint | quote }}
+      {{- end }}

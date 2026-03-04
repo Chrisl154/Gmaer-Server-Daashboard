@@ -1,0 +1,133 @@
+## Game Instance Helm Values
+## Deploys a single game server as a Kubernetes StatefulSet
+
+# Game adapter: valheim | minecraft | satisfactory | palworld | eco | enshrouded | riftbreaker
+game: valheim
+
+# Server name shown in the dashboard
+serverName: "My Game Server"
+
+# Number of replicas (almost always 1 for game servers)
+replicaCount: 1
+
+image:
+  # Override to use a specific game server image.
+  # If empty, the daemon will pull the image specified in the adapter manifest.
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+## Game server network ports
+## Each entry creates a Service port and opens a containerPort.
+ports:
+  - name: game
+    containerPort: 2456
+    protocol: UDP
+    expose: true
+  - name: game-plus
+    containerPort: 2457
+    protocol: UDP
+    expose: true
+  - name: query
+    containerPort: 2458
+    protocol: UDP
+    expose: true
+
+## Service configuration
+service:
+  type: LoadBalancer
+  # Annotations for cloud load-balancer (e.g. AWS NLB)
+  annotations: {}
+  # loadBalancerIP: ""
+
+## Resource requests / limits for the game container
+resources:
+  requests:
+    memory: "2Gi"
+    cpu: "500m"
+  limits:
+    memory: "8Gi"
+    cpu: "4000m"
+
+## Persistent storage for world/save data
+persistence:
+  enabled: true
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 20Gi
+  # If set, use an existing PVC instead of creating one
+  existingClaim: ""
+
+## Environment variables passed to the game container
+env: {}
+  # WORLD_NAME: "MyWorld"
+  # SERVER_PASS: "secret"
+
+## Secret refs for sensitive env vars (e.g. RCON password)
+envFrom: []
+  # - secretRef:
+  #     name: my-game-secret
+
+## Extra volume mounts (e.g. for mod files on NFS)
+extraVolumeMounts: []
+extraVolumes: []
+
+## Pod security context
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: false   # Many game servers need root
+
+## Container security context
+securityContext: {}
+
+## Node selection / scheduling
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+## Pod disruption budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+## Liveness / readiness probes
+## Disabled by default — game servers often have long startup times.
+livenessProbe:
+  enabled: false
+  tcpSocket:
+    port: game
+  initialDelaySeconds: 120
+  periodSeconds: 30
+  failureThreshold: 5
+
+readinessProbe:
+  enabled: false
+  tcpSocket:
+    port: game
+  initialDelaySeconds: 60
+  periodSeconds: 10
+
+## Backup sidecar (connects to the Games Dashboard backup service)
+backupSidecar:
+  enabled: false
+  image:
+    repository: ghcr.io/games-dashboard/backup-agent
+    tag: "1.0.0"
+  schedule: "0 4 * * *"
+  retentionDays: 7
+  destination: ""   # e.g. s3://my-bucket/backups/
+
+## ServiceAccount
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+## Labels / annotations added to all resources
+commonLabels: {}
+commonAnnotations: {}

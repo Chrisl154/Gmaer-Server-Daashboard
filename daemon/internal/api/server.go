@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"crypto/tls"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/games-dashboard/daemon/internal/auth"
@@ -17,22 +19,26 @@ import (
 
 // Config holds API server configuration
 type Config struct {
-	BindAddr   string
-	TLSCert    string
-	TLSKey     string
-	Logger     *zap.Logger
-	AuthSvc    *auth.Service
-	Broker     *broker.Broker
-	HealthSvc  *health.Service
-	MetricsSvc *metrics.Service
+	BindAddr       string
+	TLSCert        string
+	TLSKey         string
+	// AllowedOrigins is an optional allowlist of WebSocket origin hostnames.
+	// When empty, localhost/127.0.0.1/::1 plus the bind host are allowed.
+	AllowedOrigins []string
+	Logger         *zap.Logger
+	AuthSvc        *auth.Service
+	Broker         *broker.Broker
+	HealthSvc      *health.Service
+	MetricsSvc     *metrics.Service
 }
 
 // Server is the HTTP/WebSocket API server
 type Server struct {
-	cfg    Config
-	router *gin.Engine
-	srv    *http.Server
-	ws     *websocket.Upgrader
+	cfg                Config
+	router             *gin.Engine
+	srv                *http.Server
+	ws                 *websocket.Upgrader
+	allowedOriginHosts map[string]bool
 }
 
 // NewServer creates a new API server
@@ -41,16 +47,29 @@ func NewServer(cfg Config) (*Server, error) {
 	router := gin.New()
 	router.Use(gin.Recovery())
 
+	// Build the set of allowed WebSocket origin hostnames.
+	allowed := map[string]bool{
+		"localhost": true,
+		"127.0.0.1": true,
+		"::1":       true,
+	}
+	if host, _, err := net.SplitHostPort(cfg.BindAddr); err == nil && host != "" && host != "0.0.0.0" {
+		allowed[host] = true
+	}
+	for _, o := range cfg.AllowedOrigins {
+		allowed[o] = true
+	}
+
 	s := &Server{
-		cfg:    cfg,
-		router: router,
-		ws: &websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 4096,
-			CheckOrigin: func(r *http.Request) bool {
-				return true // TODO: restrict in production
-			},
-		},
+		cfg:                cfg,
+		router:             router,
+		allowedOriginHosts: allowed,
+	}
+
+	s.ws = &websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 4096,
+		CheckOrigin:     s.checkOrigin,
 	}
 
 	s.registerRoutes()
@@ -67,6 +86,21 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+// checkOrigin validates WebSocket upgrade requests against the allowed origin list.
+// Non-browser clients (empty Origin header) are permitted unconditionally.
+func (s *Server) checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return s.allowedOriginHosts[host]
 }
 
 func (s *Server) registerRoutes() {
@@ -122,7 +156,15 @@ func (s *Server) registerRoutes() {
 	v1.POST("/auth/logout", s.logout)
 	v1.POST("/auth/totp/setup", s.setupTOTP)
 	v1.POST("/auth/totp/verify", s.verifyTOTP)
+	v1.GET("/auth/oidc/login", s.oidcLogin)
 	v1.GET("/auth/oidc/callback", s.oidcCallback)
+
+	// Cluster nodes
+	v1.GET("/nodes", s.listNodes)
+	v1.POST("/nodes", s.registerNode)
+	v1.GET("/nodes/:nodeId", s.getNode)
+	v1.DELETE("/nodes/:nodeId", s.deregisterNode)
+	v1.POST("/nodes/:nodeId/heartbeat", s.nodeHeartbeat)
 
 	// Admin (requires admin role)
 	admin := v1.Group("/admin")
@@ -530,6 +572,15 @@ func (s *Server) verifyTOTP(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"verified": true})
+}
+
+func (s *Server) oidcLogin(c *gin.Context) {
+	authURL, state, err := s.cfg.AuthSvc.GetOIDCAuthURL(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"url": authURL, "state": state})
 }
 
 func (s *Server) oidcCallback(c *gin.Context) {

@@ -116,6 +116,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	go gameBroker.Start(ctx)
 	go healthSvc.Start(ctx)
+	if cm := gameBroker.ClusterManager(); cm != nil {
+		go cm.Start(ctx)
+		logger.Info("Cluster manager started")
+	}
 
 	// Start API server
 	errCh := make(chan error, 1)

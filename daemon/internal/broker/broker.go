@@ -2,12 +2,17 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/games-dashboard/daemon/internal/adapters"
+	"github.com/games-dashboard/daemon/internal/cluster"
 	"github.com/games-dashboard/daemon/internal/config"
 	"github.com/games-dashboard/daemon/internal/metrics"
+	"github.com/games-dashboard/daemon/internal/networking"
+	"github.com/games-dashboard/daemon/internal/sbom"
 	"github.com/games-dashboard/daemon/internal/secrets"
 	"go.uber.org/zap"
 )
@@ -38,6 +43,7 @@ type Server struct {
 	Resources    ResourceSpec      `json:"resources"`
 	BackupConfig *BackupConfig     `json:"backup_config,omitempty"`
 	ModManifest  *ModManifest      `json:"mod_manifest,omitempty"`
+	NodeID       string            `json:"node_id,omitempty"` // empty = local host
 	CreatedAt    time.Time         `json:"created_at"`
 	UpdatedAt    time.Time         `json:"updated_at"`
 	LastStarted  *time.Time        `json:"last_started,omitempty"`
@@ -124,6 +130,7 @@ type CreateServerRequest struct {
 	Config       map[string]any `json:"config"`
 	Resources    ResourceSpec   `json:"resources"`
 	BackupConfig *BackupConfig  `json:"backup_config,omitempty"`
+	NodeID       string         `json:"node_id,omitempty"` // optional; empty = auto-place or local
 }
 
 type UpdateServerRequest struct {
@@ -203,6 +210,10 @@ type Broker struct {
 	secrets    *secrets.Manager
 	logger     *zap.Logger
 	metrics    *metrics.Service
+	adapters   *adapters.Registry
+	sbomSvc    *sbom.Service
+	networkSvc *networking.Service
+	clusterMgr *cluster.Manager
 	servers    map[string]*Server
 	jobs       map[string]*Job
 	backups    map[string][]*Backup
@@ -212,16 +223,48 @@ type Broker struct {
 
 // NewBroker creates a new Broker
 func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logger, metricsSvc *metrics.Service) (*Broker, error) {
+	adapterDir := ""
+	if cfg != nil {
+		adapterDir = cfg.Adapters.Dir
+	}
+	registry, err := adapters.NewRegistry(adapterDir, logger)
+	if err != nil {
+		// Non-fatal: fall back to built-in defaults
+		logger.Warn("Failed to load adapter registry, using defaults", zap.Error(err))
+		registry, _ = adapters.NewRegistry("", logger)
+	}
+
+	sbomSvc := sbom.NewService("", "", logger)
+	networkSvc := networking.NewService(networking.ReachabilityProbeConfig{}, logger)
+
+	var clusterMgr *cluster.Manager
+	if cfg != nil && cfg.Cluster.Enabled {
+		clusterMgr = cluster.NewManager(cluster.Config{
+			Enabled:             cfg.Cluster.Enabled,
+			HealthCheckInterval: cfg.Cluster.HealthCheckInterval,
+			NodeTimeout:         cfg.Cluster.NodeTimeout,
+		}, logger)
+	}
+
 	return &Broker{
 		cfg:        cfg,
 		secrets:    secretsMgr,
 		logger:     logger,
 		metrics:    metricsSvc,
+		adapters:   registry,
+		sbomSvc:    sbomSvc,
+		networkSvc: networkSvc,
+		clusterMgr: clusterMgr,
 		servers:    make(map[string]*Server),
 		jobs:       make(map[string]*Job),
 		backups:    make(map[string][]*Backup),
 		consoleChs: make(map[string]chan string),
 	}, nil
+}
+
+// ClusterManager returns the cluster manager (may be nil if cluster disabled)
+func (b *Broker) ClusterManager() *cluster.Manager {
+	return b.clusterMgr
 }
 
 // Start begins background goroutines
@@ -261,7 +304,22 @@ func (b *Broker) checkServerHealth(ctx context.Context, id string) {
 	if !ok || server.State != StateRunning {
 		return
 	}
-	// TODO: run adapter-specific health check
+
+	result := b.adapters.RunHealthCheck(ctx, server.Adapter, "localhost")
+	if !result.Healthy {
+		b.logger.Warn("Server health check failed",
+			zap.String("id", id),
+			zap.String("adapter", server.Adapter),
+			zap.String("message", result.Message))
+
+		b.mu.Lock()
+		if s, exists := b.servers[id]; exists && s.State == StateRunning {
+			s.State = StateError
+		}
+		b.mu.Unlock()
+
+		b.sendConsoleMessage(id, fmt.Sprintf("[health] WARN: %s", result.Message))
+	}
 }
 
 // ListServers returns all servers
@@ -284,6 +342,27 @@ func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Se
 		return nil, fmt.Errorf("server %s already exists", req.ID)
 	}
 
+	// Populate defaults from adapter manifest when fields are omitted
+	ports := req.Ports
+	resources := req.Resources
+	if len(ports) == 0 {
+		for _, spec := range b.adapters.DefaultPorts(req.Adapter) {
+			ports = append(ports, PortMapping{
+				Internal: spec.Internal,
+				External: spec.DefaultExternal,
+				Protocol: spec.Protocol,
+				Exposed:  true,
+			})
+		}
+	}
+	if manifest, ok := b.adapters.Get(req.Adapter); ok && resources.CPUCores == 0 {
+		resources = ResourceSpec{
+			CPUCores: manifest.Resources.CPUCores,
+			RAMGB:    manifest.Resources.RAMGB,
+			DiskGB:   manifest.Resources.DiskGB,
+		}
+	}
+
 	now := time.Now()
 	server := &Server{
 		ID:           req.ID,
@@ -292,9 +371,9 @@ func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Se
 		State:        StateIdle,
 		DeployMethod: req.DeployMethod,
 		InstallDir:   req.InstallDir,
-		Ports:        req.Ports,
+		Ports:        ports,
 		Config:       req.Config,
-		Resources:    req.Resources,
+		Resources:    resources,
 		BackupConfig: req.BackupConfig,
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -617,12 +696,37 @@ func (b *Broker) UpdatePorts(ctx context.Context, serverID string, req UpdatePor
 }
 
 func (b *Broker) ValidatePorts(ctx context.Context, req ValidatePortsRequest) (*ValidatePortsResult, error) {
-	results := make([]PortValidation, 0, len(req.Ports))
-	for _, p := range req.Ports {
-		results = append(results, PortValidation{
-			Port:      p,
-			Available: true, // TODO: actual port check
-		})
+	// Build slice for the networking service
+	ports := make([]struct {
+		Internal int
+		External int
+		Protocol string
+	}, len(req.Ports))
+	for i, p := range req.Ports {
+		ports[i] = struct {
+			Internal int
+			External int
+			Protocol string
+		}{Internal: p.Internal, External: p.External, Protocol: p.Protocol}
+	}
+
+	netResults, err := b.networkSvc.ValidatePorts(ctx, ports)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]PortValidation, len(netResults))
+	for i, nr := range netResults {
+		results[i] = PortValidation{
+			Port: PortMapping{
+				Internal: nr.Internal,
+				External: nr.External,
+				Protocol: nr.Protocol,
+			},
+			Available: nr.Available,
+			Conflict:  nr.Conflict,
+			Reachable: nr.Reachable,
+		}
 	}
 	return &ValidatePortsResult{Results: results}, nil
 }
@@ -717,12 +821,7 @@ func (b *Broker) RollbackMods(ctx context.Context, serverID string, req Rollback
 // SBOM/CVE operations
 
 func (b *Broker) GetSBOM(ctx context.Context) (map[string]any, error) {
-	return map[string]any{
-		"bomFormat":   "CycloneDX",
-		"specVersion": "1.5",
-		"version":     1,
-		"components":  []any{},
-	}, nil
+	return b.sbomSvc.GetSBOM(ctx)
 }
 
 func (b *Broker) GetComponentSBOM(ctx context.Context, component string) (map[string]any, error) {
@@ -735,20 +834,31 @@ func (b *Broker) GetComponentSBOM(ctx context.Context, component string) (map[st
 func (b *Broker) TriggerCVEScan(ctx context.Context) (*Job, error) {
 	job := b.newJob("cve-scan", "system")
 	go func() {
-		b.updateJob(job.ID, "running", 50, "Running CVE scan...")
-		time.Sleep(3 * time.Second)
+		b.updateJob(job.ID, "running", 10, "Running CVE scan...")
+		if _, err := b.sbomSvc.TriggerScan(context.Background()); err != nil {
+			b.updateJob(job.ID, "failed", 0, err.Error())
+			return
+		}
 		b.updateJob(job.ID, "success", 100, "CVE scan complete")
 	}()
 	return job, nil
 }
 
 func (b *Broker) GetCVEReport(ctx context.Context) (map[string]any, error) {
-	return map[string]any{
-		"generated_at": time.Now(),
-		"scanner":      "trivy",
-		"status":       "clean",
-		"findings":     []any{},
-	}, nil
+	report, err := b.sbomSvc.GetReport(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Marshal through JSON to produce a plain map (field names use json tags)
+	data, err := json.Marshal(report)
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (b *Broker) RotateSecrets(ctx context.Context) error {

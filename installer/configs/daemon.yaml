@@ -1,0 +1,59 @@
+# Games Dashboard Daemon Configuration
+# Copy to /etc/games-dashboard/daemon.yaml and adjust for your environment.
+
+server:
+  bind_addr: ":8443"
+  log_level: "info"
+
+tls:
+  enabled: true
+  cert_file: "/etc/games-dashboard/tls/server.crt"
+  key_file:  "/etc/games-dashboard/tls/server.key"
+  auto_generate: true
+
+auth:
+  local:
+    enabled: true
+    admin_user: "admin"
+    # Admin password is set via GDASH_ADMIN_PASSWORD env var on first boot
+  oidc:
+    enabled: false
+    # issuer: "https://accounts.example.com"
+    # client_id: "games-dashboard"
+    # client_secret: ""   # use secrets backend
+  mfa_required: false
+
+secrets:
+  backend: "local"   # local | vault
+  local:
+    key_file: "/etc/games-dashboard/secrets.key"
+  # vault:
+  #   addr: "https://vault.example.com"
+  #   token: ""       # use VAULT_TOKEN env var
+  #   path: "secret/games-dashboard"
+
+storage:
+  data_dir: "/var/lib/games-dashboard"
+  backups_dir: "/var/lib/games-dashboard/backups"
+
+adapters:
+  dir: "/etc/games-dashboard/adapters"
+
+backup:
+  enabled: true
+  default_schedule: "0 3 * * *"   # 3am daily
+  retain_days: 30
+  target: "local"   # local | s3 | nfs
+
+# s3:
+#   endpoint: "https://s3.amazonaws.com"
+#   bucket: "my-game-backups"
+#   access_key: ""   # use secrets backend
+#   secret_key: ""   # use secrets backend
+#   region: "us-east-1"
+
+metrics:
+  enabled: true
+  path: "/metrics"
+
+shutdown_timeout: "30s"

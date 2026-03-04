@@ -21,7 +21,12 @@ export function SBOMPage() {
     onError:   () => toast.error('Scan failed'),
   });
 
-  const summary = cveReport?.summary ?? { critical: 0, high: 0, medium: 0, low: 0 };
+  const summary = {
+    critical: cveReport?.critical ?? 0,
+    high:     cveReport?.high     ?? 0,
+    medium:   cveReport?.medium   ?? 0,
+    low:      cveReport?.low      ?? 0,
+  };
   const isClean = summary.critical === 0 && summary.high === 0;
 
   return (

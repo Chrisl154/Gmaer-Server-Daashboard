@@ -14,6 +14,7 @@ import {
   ChevronRight,
   Activity,
   Menu,
+  Layers,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useAuthStore } from '../../store/authStore';
@@ -21,6 +22,7 @@ import { useAuthStore } from '../../store/authStore';
 const NAV_ITEMS = [
   { path: '/',        icon: LayoutDashboard, label: 'Dashboard'  },
   { path: '/servers', icon: Server,          label: 'Servers'    },
+  { path: '/nodes',   icon: Layers,          label: 'Nodes'      },
   { path: '/backups', icon: HardDrive,       label: 'Backups'    },
   { path: '/mods',    icon: Package,         label: 'Mods'       },
   { path: '/ports',   icon: Network,         label: 'Ports'      },

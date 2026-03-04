@@ -14,6 +14,7 @@ import { PortsPage } from './pages/PortsPage';
 import { SecurityPage } from './pages/SecurityPage';
 import { SBOMPage } from './pages/SBOMPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { NodesPage } from './pages/NodesPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -59,6 +60,7 @@ export function App() {
             <Route path="ports" element={<PortsPage />} />
             <Route path="security" element={<SecurityPage />} />
             <Route path="sbom" element={<SBOMPage />} />
+            <Route path="nodes" element={<NodesPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
         </Routes>

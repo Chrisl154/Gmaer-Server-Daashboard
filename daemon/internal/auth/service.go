@@ -5,13 +5,16 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"fmt"
+	"sync"
 	"time"
 
+	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"github.com/games-dashboard/daemon/internal/secrets"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/pquerna/otp/totp"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
 )
 
 // Config holds auth configuration
@@ -131,6 +134,13 @@ type Service struct {
 	users      map[string]*User
 	auditLog   []AuditEntry
 	tokenCache map[string]*Claims
+
+	// OIDC — initialized once on first use
+	oidcOnce     sync.Once
+	oidcProvider *gooidc.Provider
+	oauth2Cfg    *oauth2.Config
+	oidcInitErr  error
+	oidcStates   sync.Map // state nonce -> expiry time.Time
 }
 
 // NewService creates a new auth service
@@ -296,10 +306,143 @@ func (s *Service) VerifyTOTP(ctx context.Context, claims *Claims, code string) e
 	return nil
 }
 
-// OIDCCallback handles OIDC callback
+// initOIDC initializes the OIDC provider and OAuth2 config on first use.
+// Uses sync.Once so the provider discovery call happens at most once.
+func (s *Service) initOIDC() error {
+	s.oidcOnce.Do(func() {
+		if s.cfg.OIDC == nil || s.cfg.OIDC.Issuer == "" {
+			s.oidcInitErr = fmt.Errorf("OIDC not configured")
+			return
+		}
+		provider, err := gooidc.NewProvider(context.Background(), s.cfg.OIDC.Issuer)
+		if err != nil {
+			s.oidcInitErr = fmt.Errorf("OIDC provider discovery for %s failed: %w", s.cfg.OIDC.Issuer, err)
+			s.logger.Warn("OIDC provider init failed", zap.Error(err))
+			return
+		}
+		s.oidcProvider = provider
+		s.oauth2Cfg = &oauth2.Config{
+			ClientID:     s.cfg.OIDC.ClientID,
+			ClientSecret: s.cfg.OIDC.ClientSecret,
+			RedirectURL:  s.cfg.OIDC.RedirectURL,
+			Endpoint:     provider.Endpoint(),
+			Scopes:       []string{gooidc.ScopeOpenID, "email", "profile"},
+		}
+		s.logger.Info("OIDC provider initialized", zap.String("issuer", s.cfg.OIDC.Issuer))
+	})
+	return s.oidcInitErr
+}
+
+// GetOIDCAuthURL returns the authorization URL to redirect the browser to,
+// along with the state nonce (store it in the session for validation on callback).
+func (s *Service) GetOIDCAuthURL(ctx context.Context) (authURL, state string, err error) {
+	if initErr := s.initOIDC(); initErr != nil {
+		return "", "", initErr
+	}
+	state = generateID()
+	s.oidcStates.Store(state, time.Now().Add(5*time.Minute))
+	authURL = s.oauth2Cfg.AuthCodeURL(state, oauth2.AccessTypeOnline)
+	return authURL, state, nil
+}
+
+// OIDCCallback exchanges the authorization code for tokens, verifies the ID token,
+// and issues a Games Dashboard JWT for the authenticated user.
 func (s *Service) OIDCCallback(ctx context.Context, code, state string) (*LoginResponse, error) {
-	// TODO: implement full OIDC flow with coreos/go-oidc
-	return nil, fmt.Errorf("OIDC not configured")
+	if initErr := s.initOIDC(); initErr != nil {
+		return nil, initErr
+	}
+
+	// Validate state nonce (prevents CSRF)
+	expiry, ok := s.oidcStates.LoadAndDelete(state)
+	if !ok || time.Now().After(expiry.(time.Time)) {
+		return nil, fmt.Errorf("invalid or expired OAuth state")
+	}
+
+	// Exchange authorization code for OAuth2 tokens
+	oauth2Token, err := s.oauth2Cfg.Exchange(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("authorization code exchange failed: %w", err)
+	}
+
+	// Extract and verify the ID token
+	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
+	if !ok {
+		return nil, fmt.Errorf("no id_token in token response")
+	}
+
+	verifier := s.oidcProvider.Verifier(&gooidc.Config{ClientID: s.cfg.OIDC.ClientID})
+	idToken, err := verifier.Verify(ctx, rawIDToken)
+	if err != nil {
+		return nil, fmt.Errorf("ID token verification failed: %w", err)
+	}
+
+	// Extract user claims from the ID token
+	var oidcClaims struct {
+		Sub               string `json:"sub"`
+		Email             string `json:"email"`
+		PreferredUsername string `json:"preferred_username"`
+		Name              string `json:"name"`
+	}
+	if err := idToken.Claims(&oidcClaims); err != nil {
+		return nil, fmt.Errorf("failed to parse ID token claims: %w", err)
+	}
+
+	// Derive a local username: prefer email, then preferred_username, then sub
+	username := oidcClaims.Email
+	if username == "" {
+		username = oidcClaims.PreferredUsername
+	}
+	if username == "" {
+		username = oidcClaims.Sub
+	}
+
+	// Find or create a local user record for this OIDC identity
+	user, exists := s.users[username]
+	if !exists {
+		user = &User{
+			ID:        generateID(),
+			Username:  username,
+			Roles:     []string{"viewer"},
+			CreatedAt: time.Now(),
+		}
+		s.users[username] = user
+		s.logger.Info("Created user from OIDC", zap.String("username", username))
+	}
+	user.LastLogin = time.Now()
+
+	// Issue a Games Dashboard JWT
+	ttl := s.cfg.TokenTTL
+	if ttl == 0 {
+		ttl = 24 * time.Hour
+	}
+	expiresAt := time.Now().Add(ttl)
+	jwtClaims := &Claims{
+		UserID:   user.ID,
+		Username: user.Username,
+		Roles:    user.Roles,
+		MFADone:  true, // OIDC flow is treated as MFA-complete
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Subject:   user.ID,
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwtClaims)
+	tokenStr, err := token.SignedString([]byte(s.cfg.JWTSecret))
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign JWT: %w", err)
+	}
+
+	s.tokenCache[tokenStr] = jwtClaims
+	s.audit(user.ID, user.Username, "oidc-login", "auth", "", true,
+		map[string]string{"sub": oidcClaims.Sub, "issuer": s.cfg.OIDC.Issuer})
+
+	return &LoginResponse{
+		Token:     tokenStr,
+		ExpiresAt: expiresAt,
+		User:      sanitizeUser(user),
+	}, nil
 }
 
 // ListUsers returns all users
