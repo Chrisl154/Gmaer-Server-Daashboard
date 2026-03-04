@@ -1,0 +1,123 @@
+id: minecraft
+name: Minecraft Java Edition Server
+engine: Custom (Mojang/Microsoft)
+steam_app_id: null
+version: "1.0.0"
+
+deploy_methods:
+  - manual
+  - custom
+
+start_command: "java -Xmx${MAX_RAM:-4G} -Xms${MIN_RAM:-1G} -jar server.jar nogui"
+stop_command: "echo 'stop' | rcon-cli --password ${RCON_PASSWORD} --port ${RCON_PORT:-25575}"
+restart_command: "echo 'stop' | rcon-cli --password ${RCON_PASSWORD} --port ${RCON_PORT:-25575} && sleep 5 && java -Xmx${MAX_RAM:-4G} -jar server.jar nogui"
+
+console:
+  type: rcon
+  attach_command: "rcon-cli --password ${RCON_PASSWORD} --host localhost --port 25575"
+  rcon_enabled: true
+  rcon_port: 25575
+
+backup_paths:
+  - /data/world
+  - /data/world_nether
+  - /data/world_the_end
+  - /data/plugins
+  - /data/mods
+  - /data/config
+  - /data/server.properties
+
+config_templates:
+  - path: /data/server.properties
+    description: "Main server configuration"
+    sample: |
+      # Minecraft Server Properties
+      server-port=25565
+      max-players=20
+      level-name=world
+      motd=A Minecraft Server
+      online-mode=true
+      rcon.password=changeme
+      rcon.port=25575
+      enable-rcon=true
+      white-list=false
+      difficulty=normal
+      gamemode=survival
+      level-type=default
+      view-distance=10
+      spawn-protection=16
+
+ports:
+  - internal: 25565
+    default_external: 25565
+    protocol: tcp
+    description: "Game port (Java)"
+  - internal: 19132
+    default_external: 19132
+    protocol: udp
+    description: "Bedrock compatibility (optional)"
+  - internal: 25575
+    default_external: 25575
+    protocol: tcp
+    description: "RCON port"
+    admin_port: true
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 25565
+    timeout_seconds: 10
+  - type: rcon
+    host: localhost
+    port: 25575
+    command: "list"
+    expected_contains: "players"
+
+mod_support: true
+mod_sources:
+  - curseforge
+  - modrinth
+  - spigot
+  - bukkit
+  - git
+  - local
+
+recommended_resources:
+  cpu_cores: 2
+  ram_gb: 4
+  disk_gb: 10
+
+notes: |
+  Minecraft Java Edition Server.
+  No Steam - deploy via manual archive download or Docker.
+  Supports Paper, Spigot, Fabric, Forge variants.
+  RCON is enabled by default for remote console.
+  Java 17+ required for 1.18+.
+  
+  Popular Docker images:
+  - itzg/minecraft-server (recommended)
+  - marctv/minecraft-papermc-server
+
+  Mod sources: CurseForge, Modrinth, Spigot/Bukkit plugins.
+
+manual:
+  download_url_template: "https://piston-data.mojang.com/v1/objects/{version_hash}/server.jar"
+  version_manifest: "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+  java_required: "17"
+  accept_eula: true
+
+docker:
+  image: itzg/minecraft-server
+  env_vars:
+    EULA: "TRUE"
+    TYPE: "PAPER"
+    VERSION: "LATEST"
+    MEMORY: "4G"
+    MAX_PLAYERS: "20"
+    ENABLE_RCON: "true"
+    RCON_PASSWORD: "changeme"
+    RCON_PORT: "25575"
+    ONLINE_MODE: "true"
+    DIFFICULTY: "normal"
+    MODE: "survival"
+    MOTD: "Games Dashboard Server"

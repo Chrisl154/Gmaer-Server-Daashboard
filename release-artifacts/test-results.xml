@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="GamesDashboard" tests="65" failures="0" skipped="5" time="14">
+  <testsuite name="Integration Tests" tests="65" failures="0" skipped="5" time="14">
+    <testcase name="Installer dry-run completed" time="0.01"/>
+    <testcase name="Preflight report not found (dry-run mode)" time="0"><skipped/></testcase>
+    <testcase name="CPU cores available: 2" time="0.01"/>
+    <testcase name="RAM available: 9GB" time="0.01"/>
+    <testcase name="Disk space available: 10GB" time="0.01"/>
+    <testcase name="Dry-run Docker mode" time="0.01"/>
+    <testcase name="Dry-run k8s mode" time="0.01"/>
+    <testcase name="Installer --help works" time="0.01"/>
+    <testcase name="Daemon not running - skipping runtime tests" time="0"><skipped/></testcase>
+    <testcase name="Adapter manifest valid: valheim" time="0.01"/>
+    <testcase name="  valheim: field 'id' present" time="0.01"/>
+    <testcase name="  valheim: field 'name' present" time="0.01"/>
+    <testcase name="  valheim: field 'deploy_methods' present" time="0.01"/>
+    <testcase name="  valheim: field 'ports' present" time="0.01"/>
+    <testcase name="  valheim: field 'backup_paths' present" time="0.01"/>
+    <testcase name="Adapter manifest valid: minecraft" time="0.01"/>
+    <testcase name="  minecraft: field 'id' present" time="0.01"/>
+    <testcase name="  minecraft: field 'name' present" time="0.01"/>
+    <testcase name="  minecraft: field 'deploy_methods' present" time="0.01"/>
+    <testcase name="  minecraft: field 'ports' present" time="0.01"/>
+    <testcase name="  minecraft: field 'backup_paths' present" time="0.01"/>
+    <testcase name="Adapter manifest valid: satisfactory" time="0.01"/>
+    <testcase name="  satisfactory: field 'id' present" time="0.01"/>
+    <testcase name="  satisfactory: field 'name' present" time="0.01"/>
+    <testcase name="  satisfactory: field 'deploy_methods' present" time="0.01"/>
+    <testcase name="  satisfactory: field 'ports' present" time="0.01"/>
+    <testcase name="  satisfactory: field 'backup_paths' present" time="0.01"/>
+    <testcase name="Adapter manifest valid: palworld" time="0.01"/>
+    <testcase name="  palworld: field 'id' present" time="0.01"/>
+    <testcase name="  palworld: field 'name' present" time="0.01"/>
+    <testcase name="  palworld: field 'deploy_methods' present" time="0.01"/>
+    <testcase name="  palworld: field 'ports' present" time="0.01"/>
+    <testcase name="  palworld: field 'backup_paths' present" time="0.01"/>
+    <testcase name="Adapter manifest valid: eco" time="0.01"/>
+    <testcase name="  eco: field 'id' present" time="0.01"/>
+    <testcase name="  eco: field 'name' present" time="0.01"/>
+    <testcase name="  eco: field 'deploy_methods' present" time="0.01"/>
+    <testcase name="  eco: field 'ports' present" time="0.01"/>
+    <testcase name="  eco: field 'backup_paths' present" time="0.01"/>
+    <testcase name="Adapter manifest valid: enshrouded" time="0.01"/>
+    <testcase name="  enshrouded: field 'id' present" time="0.01"/>
+    <testcase name="  enshrouded: field 'name' present" time="0.01"/>
+    <testcase name="  enshrouded: field 'deploy_methods' present" time="0.01"/>
+    <testcase name="  enshrouded: field 'ports' present" time="0.01"/>
+    <testcase name="  enshrouded: field 'backup_paths' present" time="0.01"/>
+    <testcase name="Adapter manifest valid: riftbreaker" time="0.01"/>
+    <testcase name="  riftbreaker: field 'id' present" time="0.01"/>
+    <testcase name="  riftbreaker: field 'name' present" time="0.01"/>
+    <testcase name="  riftbreaker: field 'deploy_methods' present" time="0.01"/>
+    <testcase name="  riftbreaker: field 'ports' present" time="0.01"/>
+    <testcase name="  riftbreaker: field 'backup_paths' present" time="0.01"/>
+    <testcase name="SBOM pre-install generated (minimal fallback)" time="0.01"/>
+    <testcase name="SBOM post-install generated" time="0.01"/>
+    <testcase name="/tmp/sbom-pre.json is valid CycloneDX SBOM" time="0.01"/>
+    <testcase name="/tmp/sbom-post.json is valid CycloneDX SBOM" time="0.01"/>
+    <testcase name="No CVE scanner available (install trivy or grype)" time="0"><skipped/></testcase>
+    <testcase name="CVE report generated" time="0.01"/>
+    <testcase name="Documentation exists: README.md" time="0.01"/>
+    <testcase name="Documentation exists: docs/operator-runbook.md" time="0.01"/>
+    <testcase name="Documentation exists: docs/SECURITY.md" time="0.01"/>
+    <testcase name="Documentation exists: docs/CONTRIBUTING.md" time="0.01"/>
+    <testcase name="Documentation exists: docs/api-reference.yaml" time="0.01"/>
+    <testcase name="Documentation exists: MASTER_PROMPT.txt" time="0.01"/>
+    <testcase name="TLS certificate not found (not installed yet)" time="0"><skipped/></testcase>
+    <testcase name="Config not found (not installed)" time="0"><skipped/></testcase>
+  </testsuite>
+</testsuites>

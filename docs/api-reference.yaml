@@ -1,0 +1,585 @@
+openapi: "3.0.3"
+info:
+  title: Games Dashboard Daemon API
+  description: |
+    REST and WebSocket API for the Gaming Server Dashboard daemon.
+    Manages game server lifecycle, backups, mods, ports, SBOM, and auth.
+  version: "1.0.0"
+  contact:
+    name: Games Dashboard Team
+    url: https://github.com/games-dashboard/games-dashboard
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://localhost:8443
+    description: Local daemon
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Health
+  - name: Servers
+  - name: Backups
+  - name: Mods
+  - name: Ports
+  - name: SBOM
+  - name: Auth
+
+paths:
+  # ─────────────────────────── Health ───────────────────────────
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthStatus' }
+        "503":
+          description: Degraded
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200":
+          description: Metrics in Prometheus text format
+          content:
+            text/plain: {}
+
+  /api/v1/status:
+    get:
+      tags: [Health]
+      summary: System status
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemStatus' }
+
+  /api/v1/version:
+    get:
+      tags: [Health]
+      summary: Daemon version
+      security: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string }
+                  build: { type: string }
+
+  # ─────────────────────────── Servers ───────────────────────────
+  /api/v1/servers:
+    get:
+      tags: [Servers]
+      summary: List all servers
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items: { $ref: '#/components/schemas/Server' }
+                  count: { type: integer }
+    post:
+      tags: [Servers]
+      summary: Create a server
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateServerRequest' }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+
+  /api/v1/servers/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Servers]
+      summary: Get server by ID
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+        "404":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    put:
+      tags: [Servers]
+      summary: Update server
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateServerRequest' }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+    delete:
+      tags: [Servers]
+      summary: Delete server
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/servers/{id}/start:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Servers]
+      summary: Start server
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  id: { type: string }
+
+  /api/v1/servers/{id}/stop:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Servers]
+      summary: Stop server
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  id: { type: string }
+
+  /api/v1/servers/{id}/restart:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Servers]
+      summary: Restart server
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  id: { type: string }
+
+  /api/v1/servers/{id}/deploy:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Servers]
+      summary: Deploy server
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeployRequest' }
+      responses:
+        "202":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+
+  /api/v1/servers/{id}/console/stream:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Servers]
+      summary: Stream server console (WebSocket upgrade)
+      description: |
+        Upgrades to WebSocket. Streams console output as JSON messages:
+        `{"type":"log","msg":"...","ts":1234567890}`
+      responses:
+        "101": { description: WebSocket upgrade }
+        "404": { description: Server not found }
+
+  /api/v1/servers/{id}/backup:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Backups]
+      summary: Trigger backup
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum: [full, incremental]
+                  default: full
+      responses:
+        "202":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+
+  /api/v1/servers/{id}/backups:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Backups]
+      summary: List backups
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backups:
+                    type: array
+                    items: { $ref: '#/components/schemas/Backup' }
+
+  /api/v1/servers/{id}/restore/{backupId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+      - { name: backupId, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Backups]
+      summary: Restore from backup
+      responses:
+        "202":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+
+  # ─────────────────────────── Ports ───────────────────────────
+  /api/v1/ports/validate:
+    post:
+      tags: [Ports]
+      summary: Validate port availability
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ports:
+                  type: array
+                  items: { $ref: '#/components/schemas/PortMapping' }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/PortValidation' }
+
+  # ─────────────────────────── SBOM ───────────────────────────
+  /api/v1/sbom:
+    get:
+      tags: [SBOM]
+      summary: Get system SBOM (CycloneDX)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SBOM' }
+
+  /api/v1/sbom/scan:
+    post:
+      tags: [SBOM]
+      summary: Trigger CVE scan
+      responses:
+        "202":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+
+  /api/v1/cve-report:
+    get:
+      tags: [SBOM]
+      summary: Get CVE scan report
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CVEReport' }
+
+  # ─────────────────────────── Auth ───────────────────────────
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+                totp_code: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        "401":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+
+# ─────────────────────────── Schemas ───────────────────────────
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        healthy: { type: boolean }
+        timestamp: { type: string, format: date-time }
+        components:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              healthy: { type: boolean }
+              message: { type: string }
+
+    SystemStatus:
+      allOf:
+        - $ref: '#/components/schemas/HealthStatus'
+        - type: object
+          properties:
+            version: { type: string }
+            uptime_seconds: { type: integer }
+            start_time: { type: string, format: date-time }
+
+    Server:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        adapter: { type: string }
+        state:
+          type: string
+          enum: [idle, deploying, running, stopped, starting, stopping, error]
+        deploy_method: { type: string }
+        install_dir: { type: string }
+        ports:
+          type: array
+          items: { $ref: '#/components/schemas/PortMapping' }
+        resources: { $ref: '#/components/schemas/ResourceSpec' }
+        backup_config: { $ref: '#/components/schemas/BackupConfig' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        last_started: { type: string, format: date-time, nullable: true }
+        last_stopped: { type: string, format: date-time, nullable: true }
+
+    CreateServerRequest:
+      type: object
+      required: [id, name, adapter]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        adapter: { type: string }
+        deploy_method: { type: string }
+        install_dir: { type: string }
+        ports:
+          type: array
+          items: { $ref: '#/components/schemas/PortMapping' }
+        resources: { $ref: '#/components/schemas/ResourceSpec' }
+        backup_config: { $ref: '#/components/schemas/BackupConfig' }
+
+    UpdateServerRequest:
+      type: object
+      properties:
+        name: { type: string }
+        config: { type: object }
+        resources: { $ref: '#/components/schemas/ResourceSpec' }
+        backup_config: { $ref: '#/components/schemas/BackupConfig' }
+
+    DeployRequest:
+      type: object
+      properties:
+        method:
+          type: string
+          enum: [steamcmd, manual, custom]
+        steamcmd:
+          type: object
+          properties:
+            app_id: { type: string }
+            beta: { type: string }
+        manual:
+          type: object
+          properties:
+            archive_url: { type: string }
+            checksum: { type: string }
+        force: { type: boolean }
+
+    PortMapping:
+      type: object
+      required: [internal, external, protocol]
+      properties:
+        internal: { type: integer }
+        external: { type: integer }
+        protocol:
+          type: string
+          enum: [tcp, udp]
+        exposed: { type: boolean }
+
+    PortValidation:
+      type: object
+      properties:
+        port: { $ref: '#/components/schemas/PortMapping' }
+        available: { type: boolean }
+        conflict: { type: string }
+        reachable: { type: boolean }
+
+    ResourceSpec:
+      type: object
+      properties:
+        cpu_cores: { type: integer }
+        ram_gb: { type: integer }
+        disk_gb: { type: integer }
+
+    BackupConfig:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        target: { type: string }
+        schedule: { type: string }
+        retain_days: { type: integer }
+
+    Backup:
+      type: object
+      properties:
+        id: { type: string }
+        server_id: { type: string }
+        type:
+          type: string
+          enum: [full, incremental]
+        target: { type: string }
+        size_bytes: { type: integer }
+        checksum: { type: string }
+        created_at: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [pending, running, complete, failed]
+
+    Job:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        server_id: { type: string }
+        status:
+          type: string
+          enum: [pending, running, success, failed]
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        message: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    SBOM:
+      type: object
+      properties:
+        bomFormat: { type: string }
+        specVersion: { type: string }
+        version: { type: integer }
+        components:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              name: { type: string }
+              version: { type: string }
+              purl: { type: string }
+
+    CVEReport:
+      type: object
+      properties:
+        generated_at: { type: string, format: date-time }
+        scanner: { type: string }
+        status: { type: string }
+        findings: { type: array }
+        summary:
+          type: object
+          properties:
+            critical: { type: integer }
+            high: { type: integer }
+            medium: { type: integer }
+            low: { type: integer }
+        evidence:
+          type: object
+          properties:
+            scanner_hash: { type: string }
+            last_checked: { type: string, format: date-time }
+            authoritative_link: { type: string }
+            cve_status: { type: string }
+
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string }
+        expires_at: { type: string, format: date-time }
+        mfa_required: { type: boolean }
+        user:
+          type: object
+          properties:
+            id: { type: string }
+            username: { type: string }
+            roles:
+              type: array
+              items: { type: string }
+            totp_enabled: { type: boolean }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }

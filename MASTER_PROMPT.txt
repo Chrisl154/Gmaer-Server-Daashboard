@@ -1,0 +1,137 @@
+MASTER_PROMPT.txt — Games Dashboard v1.0.0
+==========================================
+This file is the canonical specification for the Gaming Server Dashboard project.
+It is committed to the repository root per the spec requirement.
+
+Full specification text is embedded in the repository README.md and docs/ directory.
+See docs/architecture.md for system design, docs/operator-runbook.md for operations,
+and docs/api-reference.yaml for the complete OpenAPI v3 spec.
+
+--- HEADLESS JSON EXAMPLES ---
+
+Docker mode example (small):
+{
+  "mode": "docker",
+  "install_dir": "/opt/games-dashboard",
+  "container_runtime": "docker",
+  "min_hardware_profile": "small",
+  "reuse_existing": true,
+  "tls": { "use_provided": false },
+  "storage": {
+    "nfs_mounts": [{ "server": "10.0.0.5", "path": "/exports/games", "mount_point": "/mnt/games", "options": "rw" }]
+  },
+  "auth": {
+    "enable_local": true,
+    "local_admin": { "username": "admin", "password_hash": "<bcrypt-hash>" }
+  },
+  "mod_manager": { "enabled": true },
+  "probes": { "remote_validator": "https://validator.example.com" },
+  "games": [
+    {
+      "id": "valheim-1",
+      "adapter": "valheim",
+      "deploy_method": "steamcmd",
+      "steamcmd": { "app_id": "896660", "install_dir": "/mnt/games/valheim" },
+      "ports": [{ "internal": 2456, "external": 2456, "protocol": "udp" }],
+      "backup": { "enabled": true, "target": "nfs:/mnt/games/backups/valheim", "schedule": "0 3 * * *" }
+    },
+    {
+      "id": "minecraft-1",
+      "adapter": "minecraft",
+      "deploy_method": "manual",
+      "manual": { "archive_url": "https://example.com/minecraft-server.tar.gz", "install_dir": "/mnt/games/minecraft" },
+      "ports": [{ "internal": 25565, "external": 25565, "protocol": "tcp" }],
+      "backup": { "enabled": true, "target": "nfs:/mnt/games/backups/minecraft", "schedule": "0 4 * * *" }
+    }
+  ],
+  "installer_options": {
+    "install_helm": false,
+    "install_metalb": false,
+    "install_csi_nfs": false,
+    "enable_prometheus": true,
+    "enable_trivy_scan": true
+  }
+}
+
+Kubernetes mode example (k3s, medium):
+{
+  "mode": "k8s",
+  "install_dir": "/opt/games-dashboard",
+  "container_runtime": "containerd",
+  "k8s_distribution": "k3s",
+  "min_hardware_profile": "medium",
+  "reuse_existing": false,
+  "storage": {
+    "nfs_mounts": [{ "server": "10.0.0.5", "path": "/exports/games", "mount_point": "/mnt/games", "options": "rw" }],
+    "s3": { "endpoint": "https://s3.example.com", "bucket": "game-backups", "access_key": "AKIA...", "secret_key": "REDACTED" }
+  },
+  "auth": {
+    "enable_local": true,
+    "local_admin": { "username": "admin", "password_hash": "<bcrypt-hash>" },
+    "enable_oidc": true,
+    "oidc_provider": { "issuer": "https://auth.example.com", "client_id": "games-ui", "client_secret": "REDACTED" }
+  },
+  "mod_manager": { "enabled": true, "sandbox_sidecar": true },
+  "probes": { "remote_validator": "https://validator.example.com" },
+  "games": [
+    {
+      "id": "satisfactory-1",
+      "adapter": "satisfactory",
+      "deploy_method": "steamcmd",
+      "steamcmd": { "app_id": "1690800", "install_dir": "/data/games/satisfactory" },
+      "ports": [
+        { "internal": 7777, "external": 7777, "protocol": "udp" },
+        { "internal": 15000, "external": 15000, "protocol": "tcp" }
+      ],
+      "backup": { "enabled": true, "target": "s3://game-backups/satisfactory", "schedule": "0 2 * * *" }
+    },
+    {
+      "id": "enshrouded-1",
+      "adapter": "enshrouded",
+      "deploy_method": "manual",
+      "manual": { "archive_url": "https://example.com/enshrouded.tar.gz", "install_dir": "/data/games/enshrouded" },
+      "ports": [{ "internal": 27015, "external": 27015, "protocol": "udp" }],
+      "backup": { "enabled": true, "target": "s3://game-backups/enshrouded", "schedule": "0 5 * * *" }
+    }
+  ],
+  "installer_options": {
+    "install_helm": true,
+    "install_metalb": true,
+    "install_csi_nfs": true,
+    "enable_prometheus": true,
+    "enable_trivy_scan": true
+  }
+}
+
+--- CI PIPELINE TEMPLATE ---
+See .github/workflows/ci.yml for the complete GitHub Actions pipeline.
+
+--- OPENAPI SKELETON ---
+See docs/api-reference.yaml for the complete OpenAPI v3 specification.
+
+--- SBOM & SCANNER COMMANDS ---
+
+CycloneDX generation:
+  cyclonedx-cli create --output sbom.json --format json --include-deps
+
+Trivy scan:
+  trivy image --format json --output trivy-report.json <image>
+
+Grype scan:
+  grype <image> -o json > grype-report.json
+
+OSV query:
+  osv query --package <pkg> --version <ver>
+
+--- COMMIT MESSAGE FORMAT ---
+checkpoint/<n>: <short description> — artifacts: sbom-post.json, preflight-report.json, install-audit.json
+
+--- RELEASE NOTES FORMAT ---
+Title: Games Dashboard v<X.Y.Z>
+Summary: <one paragraph>
+Checkpoints: [list with commit hashes]
+SBOM: <link>
+CVE Report: <link>
+Installation Quickstart: <snippet>
+Breaking Changes: <list or none>
+Upgrade Notes: <steps>

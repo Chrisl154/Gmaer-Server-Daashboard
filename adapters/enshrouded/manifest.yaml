@@ -1,0 +1,74 @@
+id: enshrouded
+name: Enshrouded Dedicated Server
+engine: Custom (Keen Games)
+steam_app_id: "2278520"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+  - manual
+
+start_command: "./enshrouded_server"
+stop_command: "kill -SIGTERM $(cat /tmp/enshrouded.pid)"
+restart_command: "kill -SIGTERM $(cat /tmp/enshrouded.pid) && sleep 5 && ./enshrouded_server"
+
+console:
+  type: stdio
+  attach_command: "docker attach enshrouded-server"
+  rcon_enabled: false
+
+backup_paths:
+  - /opt/enshrouded/savegame
+  - /opt/enshrouded/enshrouded_server.json
+
+config_templates:
+  - path: /opt/enshrouded/enshrouded_server.json
+    description: "Server configuration"
+    sample: |
+      {
+        "name": "Enshrouded Server",
+        "password": "",
+        "saveDirectory": "./savegame",
+        "logDirectory": "./logs",
+        "ip": "0.0.0.0",
+        "queryPort": 15636,
+        "slotCount": 16,
+        "gamePort": 15636
+      }
+
+ports:
+  - internal: 15636
+    default_external: 15636
+    protocol: udp
+    description: "Game port"
+  - internal: 15637
+    default_external: 15637
+    protocol: udp
+    description: "Query port"
+
+health_checks:
+  - type: udp
+    host: localhost
+    port: 15636
+    timeout_seconds: 10
+
+mod_support: false
+mod_sources: []
+
+recommended_resources:
+  cpu_cores: 4
+  ram_gb: 8
+  disk_gb: 10
+
+notes: |
+  Enshrouded Dedicated Server - survival/action RPG.
+  SteamCMD App ID: 2278520.
+  No RCON - console via stdio.
+  Config via enshrouded_server.json.
+  Saves in ./savegame directory.
+
+steamcmd:
+  login: anonymous
+  app_id: "2278520"
+  validate: true
+  platform: linux

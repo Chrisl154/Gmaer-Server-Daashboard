@@ -1,0 +1,211 @@
+## Games Dashboard Helm Values
+## Overrides for production deployments
+
+replicaCount: 1
+
+image:
+  daemon:
+    repository: ghcr.io/games-dashboard/daemon
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  ui:
+    repository: ghcr.io/games-dashboard/ui
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+## Daemon configuration
+daemon:
+  bindAddr: ":8443"
+  logLevel: "info"
+  tls:
+    enabled: true
+    certFile: "/etc/games-dashboard/tls/server.crt"
+    keyFile:  "/etc/games-dashboard/tls/server.key"
+    autoGenerate: true
+
+  auth:
+    local:
+      enabled: true
+      adminUser: "admin"
+    oidc:
+      enabled: false
+      issuer: ""
+      clientId: ""
+      clientSecretRef: ""
+    mfaRequired: false
+
+  secrets:
+    backend: "local"  # local | vault
+    vault:
+      enabled: false
+      addr: ""
+      tokenRef: ""
+      path: "secret/games-dashboard"
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+## UI configuration
+ui:
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "200m"
+
+## Storage
+storage:
+  nfs:
+    enabled: false
+    server: ""
+    path: ""
+    mountPoint: "/mnt/games"
+
+  s3:
+    enabled: false
+    endpoint: ""
+    bucket: ""
+    accessKeyRef: ""
+    secretKeyRef: ""
+    region: "us-east-1"
+    useSSL: true
+
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+
+## Services
+service:
+  daemon:
+    type: ClusterIP
+    port: 8443
+    targetPort: 8443
+  ui:
+    type: LoadBalancer
+    port: 443
+    targetPort: 443
+  http:
+    type: LoadBalancer
+    port: 80
+    targetPort: 80
+
+## Ingress
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+  hosts:
+    - host: games-dashboard.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: games-dashboard-tls
+      hosts:
+        - games-dashboard.example.com
+
+## Mod Manager
+modManager:
+  enabled: true
+  sandboxSidecar: true
+  image:
+    repository: ghcr.io/games-dashboard/mod-sandbox
+    tag: "1.0.0"
+
+## Metrics / Monitoring
+prometheus:
+  enabled: true
+  server:
+    retention: "30d"
+
+grafana:
+  enabled: true
+  adminPassword: "changeme"
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: games-dashboard
+          orgId: 1
+          folder: "Games Dashboard"
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/games-dashboard
+
+## Game instance operator
+operator:
+  enabled: true
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "50m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+## Node selection
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+## Pod security
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+## Pod disruption budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+## Horizontal pod autoscaler
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+## RBAC
+rbac:
+  create: true
+  rules:
+    - apiGroups: ["games.dashboard.dev"]
+      resources: ["gameinstances", "gameinstances/status"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    - apiGroups: [""]
+      resources: ["pods", "pods/log", "pods/exec", "services", "configmaps", "secrets"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    - apiGroups: ["apps"]
+      resources: ["deployments", "statefulsets"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

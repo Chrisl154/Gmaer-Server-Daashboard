@@ -1,0 +1,10 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {"timestamp": "2024-01-01T00:00:00Z"},
+  "components": [
+    {"type": "application", "name": "games-dashboard-daemon", "version": "1.0.0"},
+    {"type": "application", "name": "games-dashboard-ui", "version": "1.0.0"}
+  ]
+}

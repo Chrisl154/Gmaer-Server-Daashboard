@@ -1,0 +1,105 @@
+id: valheim
+name: Valheim Dedicated Server
+engine: Custom (Iron Gate AB)
+steam_app_id: "896660"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+  - manual
+
+start_command: "./valheim_server.x86_64 -name \"My Server\" -port 2456 -world \"Dedicated\" -password \"secret\" -savedir /data/worlds"
+stop_command: "kill -SIGTERM $(cat /tmp/valheim.pid)"
+restart_command: "kill -HUP $(cat /tmp/valheim.pid)"
+
+console:
+  type: stdio
+  attach_command: "docker attach valheim-server"
+  rcon_enabled: false
+
+backup_paths:
+  - /data/worlds
+  - /data/characters
+  - /opt/valheim/config
+
+config_templates:
+  - path: /opt/valheim/start_valheim.sh
+    description: "Server startup script"
+    sample: |
+      #!/bin/bash
+      export templdpath=$LD_LIBRARY_PATH
+      export LD_LIBRARY_PATH=./linux64:$LD_LIBRARY_PATH
+      export SteamAppId=892970
+      ./valheim_server.x86_64 \
+        -name "${SERVER_NAME:-My Valheim Server}" \
+        -port ${SERVER_PORT:-2456} \
+        -world "${WORLD_NAME:-Dedicated}" \
+        -password "${SERVER_PASSWORD:-changeme}" \
+        -savedir "/data/worlds" \
+        -public ${PUBLIC:-1} \
+        "$@"
+      export LD_LIBRARY_PATH=$templdpath
+
+ports:
+  - internal: 2456
+    default_external: 2456
+    protocol: udp
+    description: "Game port"
+  - internal: 2457
+    default_external: 2457
+    protocol: udp
+    description: "Game port +1 (auto)"
+  - internal: 2458
+    default_external: 2458
+    protocol: udp
+    description: "Game port +2 (auto)"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 2456
+    timeout_seconds: 5
+  - type: command
+    command: "nc -zu localhost 2456 && echo 'ok' || echo 'fail'"
+    expected_output: "ok"
+
+mod_support: true
+mod_sources:
+  - nexusmods
+  - thunderstore
+  - local
+
+recommended_resources:
+  cpu_cores: 2
+  ram_gb: 4
+  disk_gb: 5
+
+notes: |
+  Valheim Dedicated Server is a Viking survival game server.
+  SteamCMD App ID: 896660 (server), 892970 (game).
+  No RCON support - attach via stdio or docker exec.
+  Worlds are stored per-character in /data/worlds.
+  The server must be public (0) or listed (1).
+  Port +1 and +2 are automatically opened by the server.
+
+steamcmd:
+  login: anonymous
+  app_id: "896660"
+  validate: true
+  beta: ""
+  install_dir_env: "VALHEIM_DIR"
+
+docker:
+  image: lloesche/valheim-server
+  pull: docker pull lloesche/valheim-server
+  env_vars:
+    SERVER_NAME: "My Valheim Server"
+    WORLD_NAME: "Dedicated"
+    SERVER_PASSWORD: "changeme"
+    SERVER_PUBLIC: "1"
+    UPDATE_CRON: "*/15 * * * *"
+    RESTART_CRON: "0 5 * * *"
+    STEAMCMD_ARGS: "validate"
+    SUPERVISOR_HTTP: "1"
+    SUPERVISOR_HTTP_PASS: "changeme"
+    SUPERVISOR_HTTP_USER: "admin"

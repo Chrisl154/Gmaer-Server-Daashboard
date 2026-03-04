@@ -1,0 +1,42 @@
+{
+  "installer_version": "1.0.0",
+  "install_timestamp": "2026-03-04T17:25:25Z",
+  "mode": "docker",
+  "install_dir": "/opt/games-dashboard",
+  "hardware_profile": "small",
+  "dry_run": true,
+  "reuse_existing": false,
+  "components": {
+    "daemon": {"installed": true, "version": "1.0.0"},
+    "ui": {"installed": true, "version": "1.0.0"},
+    "cli": {"installed": true, "version": "1.0.0"},
+    "steamcmd": {"installed": true},
+    "prometheus": {"installed": true},
+    "grafana": {"installed": true},
+    "mod_manager": {"installed": true}
+  },
+  "adapters": {
+    "valheim": {"installed": true, "steam_app_id": "896660"},
+    "minecraft": {"installed": true, "steam_app_id": null},
+    "satisfactory": {"installed": true, "steam_app_id": "1690800"},
+    "palworld": {"installed": true, "steam_app_id": "2394010"},
+    "eco": {"installed": true, "steam_app_id": "382310"},
+    "enshrouded": {"installed": true, "steam_app_id": "2278520"},
+    "riftbreaker": {"installed": true, "steam_app_id": null}
+  },
+  "checkpoints": [
+    {"id": "checkpoint-1", "status": "complete", "description": "pre-docker-install"},
+    {"id": "checkpoint-2", "status": "complete", "description": "docker-deps-installed"},
+    {"id": "checkpoint-3", "status": "complete", "description": "config-complete"},
+    {"id": "checkpoint-4", "status": "complete", "description": "compose-generated"},
+    {"id": "checkpoint-5", "status": "complete", "description": "services-started"}
+  ],
+  "smoke_tests": {"daemon_healthy": true, "ui_reachable": true, "sample_deploy": "skipped-dry-run"},
+  "sbom_pre": "/tmp/sbom-pre.json",
+  "sbom_post": "/tmp/sbom-post.json",
+  "cve_report": "/tmp/cve-report.json",
+  "test_results": "/tmp/test-results.xml",
+  "log_file": "/tmp/games-dashboard-install.log",
+  "signed": false,
+  "signature_method": "cosign/sigstore (production only)"
+}

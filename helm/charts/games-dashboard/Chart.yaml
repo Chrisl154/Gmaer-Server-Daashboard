@@ -1,0 +1,27 @@
+apiVersion: v2
+name: games-dashboard
+description: Gaming Server Dashboard - complete game server management platform
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - gaming
+  - game-server
+  - dashboard
+  - valheim
+  - minecraft
+home: https://github.com/games-dashboard/games-dashboard
+sources:
+  - https://github.com/games-dashboard/games-dashboard
+maintainers:
+  - name: Games Dashboard Team
+    email: maintainers@games-dashboard.dev
+dependencies:
+  - name: prometheus
+    version: "25.x"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: prometheus.enabled
+  - name: grafana
+    version: "7.x"
+    repository: https://grafana.github.io/helm-charts
+    condition: grafana.enabled

@@ -1,0 +1,82 @@
+id: satisfactory
+name: Satisfactory Dedicated Server
+engine: Unreal Engine 5 (Coffee Stain Studios)
+steam_app_id: "1690800"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+  - manual
+
+start_command: "./FactoryServer.sh -multihome=0.0.0.0 -BeaconPort=15000 -ServerQueryPort=15777 -Port=7777 -log -unattended"
+stop_command: "kill -SIGTERM $(cat /tmp/satisfactory.pid)"
+restart_command: "kill -SIGTERM $(cat /tmp/satisfactory.pid) && sleep 5 && ./FactoryServer.sh"
+
+console:
+  type: stdio
+  attach_command: "docker attach satisfactory-server"
+  rcon_enabled: false
+
+backup_paths:
+  - /home/steam/.config/Epic/FactoryGame/Saved/SaveGames
+  - /opt/satisfactory/FactoryGame/Saved/Config
+
+config_templates:
+  - path: /opt/satisfactory/FactoryGame/Saved/Config/LinuxServer/Game.ini
+    description: "Game configuration"
+    sample: |
+      [/Script/FactoryGame.FGGameMode]
+      mNumSecondsUntilSessionTimeout=10
+
+  - path: /opt/satisfactory/FactoryGame/Saved/Config/LinuxServer/GameUserSettings.ini
+    description: "User settings"
+    sample: |
+      [/Script/Engine.GameUserSettings]
+      AutosaveInterval=300
+
+ports:
+  - internal: 7777
+    default_external: 7777
+    protocol: udp
+    description: "Game port"
+  - internal: 15000
+    default_external: 15000
+    protocol: tcp
+    description: "Beacon port"
+  - internal: 15777
+    default_external: 15777
+    protocol: udp
+    description: "Query port"
+
+health_checks:
+  - type: udp
+    host: localhost
+    port: 15777
+    timeout_seconds: 10
+
+mod_support: true
+mod_sources:
+  - ficsit_app
+  - local
+
+recommended_resources:
+  cpu_cores: 4
+  ram_gb: 12
+  disk_gb: 20
+
+notes: |
+  Satisfactory Dedicated Server - factory building game.
+  SteamCMD App ID: 1690800 (dedicated server).
+  Requires SteamCMD with anonymous login.
+  No RCON - console via stdio/docker attach.
+  Saves stored in /home/steam/.config/Epic/FactoryGame/Saved/SaveGames.
+  
+  Mods via Satisfactory Mod Manager (SMM) / ficsit.app.
+  Server admin via in-game menu or server manager tool.
+
+steamcmd:
+  login: anonymous
+  app_id: "1690800"
+  validate: true
+  platform: linux
+  install_dir_env: "SATISFACTORY_DIR"

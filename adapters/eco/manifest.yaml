@@ -1,0 +1,88 @@
+id: eco
+name: Eco Server (Strange Loop Games)
+engine: Unity (Strange Loop Games)
+steam_app_id: "382310"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+  - manual
+
+start_command: "mono EcoServer.exe"
+stop_command: "echo 'shutdown' | rcon-cli --host localhost --port 3001 --password ${ADMIN_PASSWORD}"
+restart_command: "echo 'shutdown' | rcon-cli; sleep 5; mono EcoServer.exe"
+
+console:
+  type: websocket
+  attach_command: "wscat -c ws://localhost:3001/console"
+  rcon_enabled: true
+  rcon_port: 3001
+  websocket_path: "/console"
+
+backup_paths:
+  - /opt/eco/Storage
+  - /opt/eco/Configs
+  - /opt/eco/Mods
+
+config_templates:
+  - path: /opt/eco/Configs/Network.eco
+    description: "Network configuration"
+    sample: |
+      {
+        "IPAddress": "Any",
+        "GameServerPort": 3000,
+        "WebServerPort": 3001,
+        "AdminPassword": "changeme",
+        "Password": "",
+        "ServerName": "Eco Server",
+        "Description": "A sustainable world",
+        "ServerCategory": "None",
+        "PublicServer": true,
+        "DiscordAddress": ""
+      }
+
+ports:
+  - internal: 3000
+    default_external: 3000
+    protocol: udp
+    description: "Game port"
+  - internal: 3001
+    default_external: 3001
+    protocol: tcp
+    description: "Web API / RCON port"
+
+health_checks:
+  - type: http
+    url: "http://localhost:3001/api/v1/server/info"
+    expected_status: 200
+  - type: tcp
+    host: localhost
+    port: 3000
+    timeout_seconds: 10
+
+mod_support: true
+mod_sources:
+  - eco_mods
+  - git
+  - local
+
+recommended_resources:
+  cpu_cores: 4
+  ram_gb: 8
+  disk_gb: 20
+
+notes: |
+  Eco Server - ecology simulation / civilization game.
+  SteamCMD App ID: 382310.
+  Web-based admin panel at http://SERVER:3001.
+  WebSocket console at ws://SERVER:3001/console.
+  Requires Mono runtime on Linux.
+  Extensive configuration via JSON files in Configs/.
+  Mod support via Eco Mod Kit.
+
+steamcmd:
+  login: anonymous
+  app_id: "382310"
+  validate: true
+  platform: linux
+  mono_required: true

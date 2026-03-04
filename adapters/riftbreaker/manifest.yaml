@@ -1,0 +1,59 @@
+id: riftbreaker
+name: The Riftbreaker Server
+engine: Custom (EXOR Studios)
+steam_app_id: null
+version: "1.0.0"
+
+deploy_methods:
+  - manual
+  - custom
+
+start_command: "./riftbreaker-server --port 27015"
+stop_command: "kill -SIGTERM $(cat /tmp/riftbreaker.pid)"
+restart_command: "kill -SIGTERM $(cat /tmp/riftbreaker.pid) && sleep 3 && ./riftbreaker-server --port 27015"
+
+console:
+  type: stdio
+  attach_command: "docker attach riftbreaker-server"
+  rcon_enabled: false
+
+backup_paths:
+  - /opt/riftbreaker/saves
+  - /opt/riftbreaker/config
+
+config_templates:
+  - path: /opt/riftbreaker/config/server.ini
+    description: "Server configuration"
+    sample: |
+      [Server]
+      Port=27015
+      MaxPlayers=4
+      ServerName=Riftbreaker Server
+      Password=
+
+ports:
+  - internal: 27015
+    default_external: 27015
+    protocol: udp
+    description: "Game port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 27015
+    timeout_seconds: 5
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - local
+
+recommended_resources:
+  cpu_cores: 2
+  ram_gb: 4
+  disk_gb: 5
+
+notes: |
+  The Riftbreaker - sci-fi action RPG / base builder.
+  No dedicated server SteamCMD - manual install required.
+  Steam Workshop mod support available.

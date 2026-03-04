@@ -1,0 +1,1 @@
+# daemon binary (compile with: cd daemon && go build ./cmd/daemon)

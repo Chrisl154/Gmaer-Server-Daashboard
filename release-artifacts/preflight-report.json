@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-03-04T17:25:25Z",
+  "installer_version": "1.0.0",
+  "mode": "docker",
+  "hardware_profile": "small",
+  "checks": {
+    "os": {"status": "pass", "value": "Linux Ubuntu 24.04"},
+    "cpu": {"status": "pass", "cores": 2, "required": 4},
+    "ram": {"status": "pass", "gb": 9, "required": 8},
+    "disk": {"status": "warn", "free_gb": 10, "required": 120},
+    "io": {"status": "pass"},
+    "network": {"status": "pass"},
+    "ports": {"status": "pass"},
+    "container_runtime": {"status": "warn", "note": "Docker will be installed"},
+    "security": {"status": "pass"}
+  },
+  "warnings": ["RAM: below 8GB minimum for small profile", "disk: below 120GB minimum"],
+  "errors": [],
+  "passed": true
+}
