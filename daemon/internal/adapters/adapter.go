@@ -277,7 +277,7 @@ func (r *Registry) loadDefaults() {
 	defaults := []*Manifest{
 		{
 			ID: "valheim", Name: "Valheim Dedicated Server",
-			SteamAppID: "896660", DeployMethods: []string{"steamcmd", "manual"},
+			SteamAppID: "896660", DeployMethods: []string{"steamcmd", "manual", "docker"},
 			BackupPaths: []string{"/data/worlds", "/data/characters"},
 			Ports: []PortSpec{
 				{Internal: 2456, DefaultExternal: 2456, Protocol: "udp", Description: "Game port"},
@@ -287,6 +287,7 @@ func (r *Registry) loadDefaults() {
 			Resources:  ResourceSpec{CPUCores: 2, RAMGB: 4, DiskGB: 5},
 			ModSupport: true, ModSources: []string{"nexusmods", "thunderstore"},
 			Console: ConsoleConfig{Type: "stdio"},
+			Docker:  DockerSpec{Image: "lloesche/valheim-server:latest", Pull: "missing"},
 		},
 		{
 			ID: "minecraft", Name: "Minecraft Java Edition Server",
@@ -298,6 +299,7 @@ func (r *Registry) loadDefaults() {
 			Resources:  ResourceSpec{CPUCores: 2, RAMGB: 4, DiskGB: 20},
 			ModSupport: true, ModSources: []string{"curseforge", "modrinth"},
 			Console: ConsoleConfig{Type: "rcon", RCONEnabled: true, RCONPort: 25575},
+			Docker:  DockerSpec{Image: "itzg/minecraft-server:latest", Pull: "missing"},
 		},
 		{
 			ID: "satisfactory", Name: "Satisfactory Dedicated Server",

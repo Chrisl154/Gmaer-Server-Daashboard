@@ -62,14 +62,29 @@ export function ServersPage() {
 }
 
 function CreateServerModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const [form, setForm] = useState({ id: '', name: '', adapter: 'minecraft', deployMethod: 'manual', installDir: '/opt/games' });
+  const [form, setForm] = useState({ id: '', name: '', adapter: 'minecraft', deployMethod: 'manual', installDir: '/opt/games', dockerImage: '' });
   const [loading, setLoading] = useState(false);
   const ADAPTERS = ['valheim','minecraft','satisfactory','palworld','eco','enshrouded','riftbreaker'];
+  const DEPLOY_METHODS = [
+    { value: 'manual',   label: 'Manual (archive)' },
+    { value: 'steamcmd', label: 'SteamCMD' },
+    { value: 'docker',   label: 'Docker' },
+  ];
 
   const handleCreate = async () => {
     setLoading(true);
     try {
-      await api.post('/api/v1/servers', { id: form.id, name: form.name, adapter: form.adapter, deploy_method: form.deployMethod, install_dir: form.installDir });
+      const config = form.deployMethod === 'docker' && form.dockerImage
+        ? { docker_image: form.dockerImage }
+        : undefined;
+      await api.post('/api/v1/servers', {
+        id: form.id,
+        name: form.name,
+        adapter: form.adapter,
+        deploy_method: form.deployMethod,
+        install_dir: form.installDir,
+        ...(config ? { config } : {}),
+      });
       toast.success('Server created!');
       onCreated();
     } catch (e: any) {
@@ -97,6 +112,21 @@ function CreateServerModal({ onClose, onCreated }: { onClose: () => void; onCrea
             {ADAPTERS.map(a => <option key={a} value={a}>{a}</option>)}
           </select>
         </div>
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Deploy Method</label>
+          <select value={form.deployMethod} onChange={e => setForm(p => ({...p, deployMethod: e.target.value}))}
+            className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500">
+            {DEPLOY_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+        </div>
+        {form.deployMethod === 'docker' && (
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Docker Image <span className="text-gray-600">(leave blank to use adapter default)</span></label>
+            <input type="text" value={form.dockerImage} onChange={e => setForm(p => ({...p, dockerImage: e.target.value}))}
+              placeholder="e.g. itzg/minecraft-server:latest"
+              className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500" />
+          </div>
+        )}
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="flex-1 px-4 py-2 text-sm text-gray-300 bg-[#1a1a1a] hover:bg-[#252525] rounded-lg">Cancel</button>
           <button onClick={handleCreate} disabled={loading || !form.id || !form.name}

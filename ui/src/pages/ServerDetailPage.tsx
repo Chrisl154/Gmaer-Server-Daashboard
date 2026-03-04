@@ -128,6 +128,9 @@ function OverviewTab({ server }: { server: any }) {
         <InfoRow label="Deploy Method" value={server.deploy_method || 'steamcmd'} />
         <InfoRow label="State" value={server.state} />
         <InfoRow label="Install Dir" value={server.install_dir || '/opt/games'} mono />
+        {server.container_id && (
+          <InfoRow label="Container ID" value={server.container_id.slice(0, 12)} mono />
+        )}
       </InfoCard>
       <InfoCard title="Resources">
         <InfoRow label="CPU Cores" value={String(server.resources?.cpu_cores ?? '—')} />

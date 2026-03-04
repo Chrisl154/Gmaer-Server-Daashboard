@@ -499,12 +499,24 @@ func (b *Broker) DeleteServer(ctx context.Context, id string) error {
 	}
 	nodeID := s.NodeID
 	resources := s.Resources
+	deployMethod := s.DeployMethod
+	containerID := s.ContainerID
 	delete(b.servers, id)
 	if ch, ok := b.consoleChs[id]; ok {
 		close(ch)
 		delete(b.consoleChs, id)
 	}
 	b.mu.Unlock()
+
+	// Best-effort: remove the Docker container on deletion.
+	if deployMethod == "docker" && containerID != "" {
+		if dockerPath, err := exec.LookPath("docker"); err == nil {
+			if err := exec.Command(dockerPath, "rm", "-f", containerID).Run(); err != nil { //nolint:gosec
+				b.logger.Warn("Failed to remove docker container on server delete",
+					zap.String("id", id), zap.String("container", containerID), zap.Error(err))
+			}
+		}
+	}
 
 	// Release cluster resources if the server was on a remote node.
 	if nodeID != "" && b.clusterMgr != nil {
@@ -544,6 +556,12 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 	s, ok := b.servers[id]
 	b.mu.RUnlock()
 	if !ok {
+		return
+	}
+
+	// Docker servers have their own lifecycle; bypass process management.
+	if s.DeployMethod == "docker" {
+		b.startDockerContainer(ctx, id, s)
 		return
 	}
 
@@ -660,6 +678,19 @@ func (b *Broker) StopServer(ctx context.Context, id string) error {
 func (b *Broker) doStop(ctx context.Context, id string) {
 	b.logger.Info("Stopping server", zap.String("id", id))
 
+	b.mu.RLock()
+	s, sOk := b.servers[id]
+	var containerID string
+	if sOk {
+		containerID = s.ContainerID
+	}
+	b.mu.RUnlock()
+
+	if sOk && s.DeployMethod == "docker" && containerID != "" {
+		b.stopDockerContainer(ctx, id, containerID)
+		return
+	}
+
 	b.mu.Lock()
 	cmd := b.processes[id]
 	b.mu.Unlock()
@@ -736,6 +767,8 @@ func (b *Broker) doDeploy(ctx context.Context, id string, req DeployRequest, job
 		deployErr = b.deploySteamCMD(ctx, id, req, job)
 	case "manual":
 		deployErr = b.deployManual(ctx, id, req, job)
+	case "docker":
+		deployErr = b.deployDocker(ctx, id, req, job)
 	default:
 		deployErr = fmt.Errorf("unknown deploy method: %s", req.Method)
 	}
@@ -911,6 +944,254 @@ func (b *Broker) deployManual(ctx context.Context, id string, req DeployRequest,
 	b.updateJob(job.ID, "success", 100, "Manual deployment complete")
 	b.logger.Info("Manual deployment complete", zap.String("server", id), zap.String("dir", installDir))
 	return nil
+}
+
+// resolveDockerImage returns the Docker image to use for a server.
+// Priority: server.Config["docker_image"] > manifest.Docker.Image > error.
+func (b *Broker) resolveDockerImage(s *Server) (string, error) {
+	if img, ok := s.Config["docker_image"].(string); ok && img != "" {
+		return img, nil
+	}
+	if m, ok := b.adapters.Get(s.Adapter); ok && m.Docker.Image != "" {
+		return m.Docker.Image, nil
+	}
+	return "", fmt.Errorf("no Docker image configured for adapter %s; set docker_image in server config", s.Adapter)
+}
+
+func (b *Broker) deployDocker(ctx context.Context, id string, req DeployRequest, job *Job) error {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("server not found: %s", id)
+	}
+
+	image, err := b.resolveDockerImage(s)
+	if err != nil {
+		return err
+	}
+
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil {
+		return fmt.Errorf("docker not found in PATH: %w", err)
+	}
+
+	// Determine pull policy from adapter manifest (default: always pull).
+	pullPolicy := "always"
+	if m, ok := b.adapters.Get(s.Adapter); ok && m.Docker.Pull != "" {
+		pullPolicy = m.Docker.Pull
+	}
+
+	if pullPolicy != "never" {
+		b.updateJob(job.ID, "running", 20, fmt.Sprintf("Pulling image %s...", image))
+		b.logger.Info("Pulling Docker image", zap.String("server", id), zap.String("image", image))
+
+		pullCmd := exec.CommandContext(ctx, dockerPath, "pull", image) //nolint:gosec
+		stdout, _ := pullCmd.StdoutPipe()
+		pullCmd.Stderr = pullCmd.Stdout
+		if err := pullCmd.Start(); err != nil {
+			return fmt.Errorf("docker pull start: %w", err)
+		}
+
+		progress := 20
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`, jsonStr(line), time.Now().Unix()))
+			if progress < 80 {
+				progress++
+			}
+			b.updateJob(job.ID, "running", progress, line)
+		}
+		if err := pullCmd.Wait(); err != nil {
+			return fmt.Errorf("docker pull failed: %w", err)
+		}
+	}
+
+	b.updateJob(job.ID, "success", 100, fmt.Sprintf("Image %s ready; container will be created on Start", image))
+	b.logger.Info("Docker deploy complete", zap.String("server", id), zap.String("image", image))
+	return nil
+}
+
+func (b *Broker) startDockerContainer(ctx context.Context, id string, s *Server) {
+	image, err := b.resolveDockerImage(s)
+	if err != nil {
+		b.logger.Error("Cannot start docker container: no image", zap.String("id", id), zap.Error(err))
+		b.mu.Lock()
+		if sv, ok := b.servers[id]; ok {
+			sv.State = StateError
+		}
+		b.mu.Unlock()
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(err.Error()), time.Now().Unix()))
+		return
+	}
+
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil {
+		b.logger.Error("docker not in PATH", zap.String("id", id), zap.Error(err))
+		b.mu.Lock()
+		if sv, ok := b.servers[id]; ok {
+			sv.State = StateError
+		}
+		b.mu.Unlock()
+		return
+	}
+
+	containerName := "gd-" + id
+	containerID := ""
+
+	// Try to restart an existing container first.
+	b.mu.RLock()
+	existingCID := s.ContainerID
+	b.mu.RUnlock()
+
+	if existingCID != "" {
+		startCmd := exec.CommandContext(ctx, dockerPath, "start", existingCID) //nolint:gosec
+		if out, startErr := startCmd.Output(); startErr == nil {
+			containerID = strings.TrimSpace(string(out))
+		} else {
+			b.logger.Warn("docker start failed, recreating container",
+				zap.String("id", id), zap.String("container", existingCID), zap.Error(startErr))
+			// Clear the stale ID and fall through to docker run.
+			b.mu.Lock()
+			if sv, ok := b.servers[id]; ok {
+				sv.ContainerID = ""
+			}
+			b.mu.Unlock()
+		}
+	}
+
+	// Create and start a new container.
+	if containerID == "" {
+		args := []string{"run", "-d", "--name", containerName, "--restart", "unless-stopped"}
+
+		// Port mappings: -p external:internal/proto
+		b.mu.RLock()
+		ports := s.Ports
+		installDir := s.InstallDir
+		configCopy := make(map[string]any, len(s.Config))
+		for k, v := range s.Config {
+			configCopy[k] = v
+		}
+		b.mu.RUnlock()
+
+		for _, p := range ports {
+			if p.Exposed {
+				args = append(args, "-p", fmt.Sprintf("%d:%d/%s", p.External, p.Internal, p.Protocol))
+			}
+		}
+
+		// Volume: install_dir → /data
+		if installDir != "" {
+			args = append(args, "-v", installDir+":/data")
+		}
+
+		// Env vars from adapter manifest.
+		if m, ok := b.adapters.Get(s.Adapter); ok {
+			for k, v := range m.Docker.EnvVars {
+				args = append(args, "-e", k+"="+v)
+			}
+		}
+
+		// Env vars from server config["docker_env"] (map[string]any).
+		if envMap, ok := configCopy["docker_env"].(map[string]any); ok {
+			for k, v := range envMap {
+				args = append(args, "-e", fmt.Sprintf("%s=%v", k, v))
+			}
+		}
+
+		args = append(args, image)
+
+		runCmd := exec.CommandContext(ctx, dockerPath, args...) //nolint:gosec
+		out, runErr := runCmd.Output()
+		if runErr != nil {
+			b.logger.Error("docker run failed", zap.String("id", id), zap.Error(runErr))
+			b.mu.Lock()
+			if sv, ok := b.servers[id]; ok {
+				sv.State = StateError
+			}
+			b.mu.Unlock()
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(runErr.Error()), time.Now().Unix()))
+			return
+		}
+		containerID = strings.TrimSpace(string(out))
+	}
+
+	now := time.Now()
+	b.mu.Lock()
+	if sv, ok := b.servers[id]; ok {
+		sv.ContainerID = containerID
+		sv.State = StateRunning
+		sv.LastStarted = &now
+	}
+	b.mu.Unlock()
+
+	b.logger.Info("Docker container started", zap.String("id", id), zap.String("container", containerID))
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Container %s started","ts":%d}`, containerID[:min(12, len(containerID))], now.Unix()))
+
+	// Stream docker logs to the console channel.
+	go func() {
+		logsCmd := exec.Command(dockerPath, "logs", "-f", "--tail", "100", containerID) //nolint:gosec
+		logsOut, _ := logsCmd.StdoutPipe()
+		logsCmd.Stderr = logsCmd.Stdout
+		if err := logsCmd.Start(); err != nil {
+			return
+		}
+		sc := bufio.NewScanner(logsOut)
+		for sc.Scan() {
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"stdout","msg":%s,"ts":%d}`, jsonStr(sc.Text()), time.Now().Unix()))
+		}
+		_ = logsCmd.Wait()
+	}()
+
+	// Watch for container exit and auto-transition state.
+	go func() {
+		waitCmd := exec.Command(dockerPath, "wait", containerID) //nolint:gosec
+		_ = waitCmd.Run()
+		b.mu.Lock()
+		if sv, ok := b.servers[id]; ok && sv.State == StateRunning {
+			sv.State = StateStopped
+			t := time.Now()
+			sv.LastStopped = &t
+		}
+		b.mu.Unlock()
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Container %s exited","ts":%d}`, containerID[:min(12, len(containerID))], time.Now().Unix()))
+	}()
+}
+
+func (b *Broker) stopDockerContainer(ctx context.Context, id, containerID string) {
+	b.logger.Info("Stopping docker container", zap.String("id", id), zap.String("container", containerID))
+
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil {
+		b.logger.Error("docker not in PATH", zap.String("id", id), zap.Error(err))
+		return
+	}
+
+	stopCmd := exec.CommandContext(ctx, dockerPath, "stop", "--time", "15", containerID) //nolint:gosec
+	done := make(chan error, 1)
+	go func() { done <- stopCmd.Run() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			b.logger.Warn("docker stop error, sending kill", zap.String("container", containerID), zap.Error(err))
+			_ = exec.Command(dockerPath, "kill", containerID).Run() //nolint:gosec
+		}
+	case <-time.After(20 * time.Second):
+		b.logger.Warn("docker stop timed out, sending kill", zap.String("container", containerID))
+		_ = exec.Command(dockerPath, "kill", containerID).Run() //nolint:gosec
+	}
+
+	now := time.Now()
+	b.mu.Lock()
+	if s, ok := b.servers[id]; ok {
+		s.State = StateStopped
+		s.LastStopped = &now
+	}
+	b.mu.Unlock()
+
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Container %s stopped","ts":%d}`, containerID[:min(12, len(containerID))], now.Unix()))
 }
 
 // extractTarGz extracts a .tar.gz archive into destDir with path-traversal protection.
