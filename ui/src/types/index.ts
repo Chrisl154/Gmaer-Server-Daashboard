@@ -275,6 +275,65 @@ export interface HeartbeatRequest {
   status: NodeStatus;
 }
 
+// ── Daemon settings ───────────────────────────────────────────────────────────
+
+export interface DaemonSettingsNFSMount {
+  server: string;
+  path: string;
+  mount_point: string;
+  options?: string;
+}
+
+export interface DaemonSettingsS3 {
+  endpoint: string;
+  bucket: string;
+  region: string;
+  use_ssl: boolean;
+}
+
+export interface DaemonSettings {
+  bind_addr: string;
+  shutdown_timeout_s: number;
+  data_dir: string;
+  log_level: string;
+  storage: {
+    data_dir: string;
+    nfs_mounts: DaemonSettingsNFSMount[];
+    s3?: DaemonSettingsS3;
+  };
+  backup: {
+    default_schedule: string;
+    retain_days: number;
+    compression: string;
+  };
+  metrics: {
+    enabled: boolean;
+    path: string;
+  };
+  cluster: {
+    enabled: boolean;
+    health_check_interval_s: number;
+    node_timeout_s: number;
+  };
+}
+
+export interface SettingsPatch {
+  log_level?: string;
+  backup?: {
+    default_schedule?: string;
+    retain_days?: number;
+    compression?: string;
+  };
+  metrics?: {
+    enabled?: boolean;
+    path?: string;
+  };
+  cluster?: {
+    health_check_interval_s?: number;
+    node_timeout_s?: number;
+  };
+}
+
 // ── API helpers ───────────────────────────────────────────────────────────────
 
 export interface APIError {

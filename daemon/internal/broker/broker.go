@@ -1,13 +1,25 @@
 package broker
 
 import (
+	"archive/tar"
+	"bufio"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/games-dashboard/daemon/internal/adapters"
+	backupsvc "github.com/games-dashboard/daemon/internal/backup"
 	"github.com/games-dashboard/daemon/internal/cluster"
 	"github.com/games-dashboard/daemon/internal/config"
 	"github.com/games-dashboard/daemon/internal/metrics"
@@ -214,10 +226,12 @@ type Broker struct {
 	sbomSvc    *sbom.Service
 	networkSvc *networking.Service
 	clusterMgr *cluster.Manager
+	backupSvc  *backupsvc.Service
 	servers    map[string]*Server
 	jobs       map[string]*Job
-	backups    map[string][]*Backup
 	consoleChs map[string]chan string
+	// processes tracks running game server processes by server ID
+	processes  map[string]*exec.Cmd
 	mu         sync.RWMutex
 }
 
@@ -246,6 +260,17 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		}, logger)
 	}
 
+	backupCfg := backupsvc.Config{}
+	if cfg != nil {
+		backupCfg = backupsvc.Config{
+			DefaultSchedule: cfg.Backup.DefaultSchedule,
+			RetainDays:      cfg.Backup.RetainDays,
+			Compression:     cfg.Backup.Compression,
+			DataDir:         cfg.Storage.DataDir + "/backups",
+		}
+	}
+	bkpSvc := backupsvc.NewService(backupCfg, logger)
+
 	return &Broker{
 		cfg:        cfg,
 		secrets:    secretsMgr,
@@ -255,16 +280,22 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		sbomSvc:    sbomSvc,
 		networkSvc: networkSvc,
 		clusterMgr: clusterMgr,
+		backupSvc:  bkpSvc,
 		servers:    make(map[string]*Server),
 		jobs:       make(map[string]*Job),
-		backups:    make(map[string][]*Backup),
 		consoleChs: make(map[string]chan string),
+		processes:  make(map[string]*exec.Cmd),
 	}, nil
 }
 
 // ClusterManager returns the cluster manager (may be nil if cluster disabled)
 func (b *Broker) ClusterManager() *cluster.Manager {
 	return b.clusterMgr
+}
+
+// BackupService returns the backup service
+func (b *Broker) BackupService() *backupsvc.Service {
+	return b.backupSvc
 }
 
 // Start begins background goroutines
@@ -363,6 +394,35 @@ func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Se
 		}
 	}
 
+	// Determine which node to place the server on.
+	nodeID := req.NodeID
+	if nodeID == "" && b.clusterMgr != nil {
+		// Auto-place using BestFit: convert ResourceSpec to NodeCapacity.
+		cap := cluster.NodeCapacity{
+			CPUCores: float64(resources.CPUCores),
+			MemoryGB: float64(resources.RAMGB),
+			DiskGB:   float64(resources.DiskGB),
+		}
+		bestNode, fitErr := b.clusterMgr.BestFit(cap)
+		if fitErr == nil && bestNode != "" {
+			nodeID = bestNode
+		}
+	}
+	// Validate explicit node ID and allocate resources.
+	if nodeID != "" && b.clusterMgr != nil {
+		cap := cluster.NodeCapacity{
+			CPUCores: float64(resources.CPUCores),
+			MemoryGB: float64(resources.RAMGB),
+			DiskGB:   float64(resources.DiskGB),
+		}
+		if allocErr := b.clusterMgr.AllocateOnNode(nodeID, cap); allocErr != nil {
+			// Node not found or error — fall back to local.
+			b.logger.Warn("Node allocation failed, placing locally",
+				zap.String("node_id", nodeID), zap.Error(allocErr))
+			nodeID = ""
+		}
+	}
+
 	now := time.Now()
 	server := &Server{
 		ID:           req.ID,
@@ -375,6 +435,7 @@ func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Se
 		Config:       req.Config,
 		Resources:    resources,
 		BackupConfig: req.BackupConfig,
+		NodeID:       nodeID,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -382,7 +443,10 @@ func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Se
 	b.servers[req.ID] = server
 	b.consoleChs[req.ID] = make(chan string, 1000)
 
-	b.logger.Info("Server created", zap.String("id", req.ID), zap.String("adapter", req.Adapter))
+	b.logger.Info("Server created",
+		zap.String("id", req.ID),
+		zap.String("adapter", req.Adapter),
+		zap.String("node_id", nodeID))
 	return server, nil
 }
 
@@ -424,18 +488,32 @@ func (b *Broker) UpdateServer(ctx context.Context, id string, req UpdateServerRe
 // DeleteServer removes a server
 func (b *Broker) DeleteServer(ctx context.Context, id string) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	s, ok := b.servers[id]
 	if !ok {
+		b.mu.Unlock()
 		return fmt.Errorf("server not found: %s", id)
 	}
 	if s.State == StateRunning {
+		b.mu.Unlock()
 		return fmt.Errorf("cannot delete running server; stop it first")
 	}
+	nodeID := s.NodeID
+	resources := s.Resources
 	delete(b.servers, id)
 	if ch, ok := b.consoleChs[id]; ok {
 		close(ch)
 		delete(b.consoleChs, id)
+	}
+	b.mu.Unlock()
+
+	// Release cluster resources if the server was on a remote node.
+	if nodeID != "" && b.clusterMgr != nil {
+		cap := cluster.NodeCapacity{
+			CPUCores: float64(resources.CPUCores),
+			MemoryGB: float64(resources.RAMGB),
+			DiskGB:   float64(resources.DiskGB),
+		}
+		_ = b.clusterMgr.ReleaseFromNode(nodeID, cap)
 	}
 	return nil
 }
@@ -461,18 +539,103 @@ func (b *Broker) StartServer(ctx context.Context, id string) error {
 
 func (b *Broker) doStart(ctx context.Context, id string) {
 	b.logger.Info("Starting server", zap.String("id", id))
-	time.Sleep(2 * time.Second) // simulate startup
+
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	// Get the adapter's start command.
+	manifest, hasManifest := b.adapters.Get(s.Adapter)
+	startCmd := ""
+	if hasManifest && manifest.StartCommand != "" {
+		startCmd = expandServerVars(manifest.StartCommand, s)
+	}
+
+	setState := func(state ServerState, pid int) {
+		b.mu.Lock()
+		if sv, ok2 := b.servers[id]; ok2 {
+			sv.State = state
+			sv.PID = pid
+			if state == StateRunning {
+				now := time.Now()
+				sv.LastStarted = &now
+			}
+		}
+		b.mu.Unlock()
+	}
+
+	if startCmd == "" {
+		// No launch command defined — mark running immediately (manual/docker mode).
+		b.logger.Warn("No start_command for adapter; marking running without process",
+			zap.String("adapter", s.Adapter))
+		setState(StateRunning, 0)
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Server %s marked running (no start command)","ts":%d}`, id, time.Now().Unix()))
+		return
+	}
+
+	installDir := s.InstallDir
+	if installDir == "" {
+		installDir = "."
+	}
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", startCmd) //nolint:gosec // user-configured command
+	cmd.Dir = installDir
+
+	// Pipe stdout and stderr into the console channel.
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+
+	if err := cmd.Start(); err != nil {
+		b.logger.Error("Failed to start server process",
+			zap.String("id", id), zap.String("cmd", startCmd), zap.Error(err))
+		setState(StateError, 0)
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":"Failed to start: %s","ts":%d}`, err.Error(), time.Now().Unix()))
+		return
+	}
+
+	pid := cmd.Process.Pid
+	setState(StateRunning, pid)
 
 	b.mu.Lock()
-	if s, ok := b.servers[id]; ok {
-		s.State = StateRunning
+	b.processes[id] = cmd
+	b.mu.Unlock()
+
+	b.logger.Info("Server process started", zap.String("id", id), zap.Int("pid", pid))
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Server %s started (pid %d)","ts":%d}`, id, pid, time.Now().Unix()))
+
+	// Stream stdout and stderr to the console channel.
+	pipe := func(r io.ReadCloser, prefix string) {
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"%s","msg":%s,"ts":%d}`,
+				prefix, jsonStr(sc.Text()), time.Now().Unix()))
+		}
+	}
+	go pipe(stdout, "stdout")
+	go pipe(stderr, "stderr")
+
+	// Wait for the process to exit, then update state.
+	if err := cmd.Wait(); err != nil {
+		b.logger.Warn("Server process exited with error",
+			zap.String("id", id), zap.Error(err))
+	} else {
+		b.logger.Info("Server process exited cleanly", zap.String("id", id))
+	}
+
+	b.mu.Lock()
+	delete(b.processes, id)
+	if sv, ok2 := b.servers[id]; ok2 && sv.State != StateStopping {
+		sv.State = StateStopped
 		now := time.Now()
-		s.LastStarted = &now
+		sv.LastStopped = &now
+		sv.PID = 0
 	}
 	b.mu.Unlock()
 
-	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Server %s started","ts":%d}`, id, time.Now().Unix()))
-	b.logger.Info("Server started", zap.String("id", id))
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Server %s process exited","ts":%d}`, id, time.Now().Unix()))
 }
 
 // StopServer stops a game server
@@ -496,13 +659,35 @@ func (b *Broker) StopServer(ctx context.Context, id string) error {
 
 func (b *Broker) doStop(ctx context.Context, id string) {
 	b.logger.Info("Stopping server", zap.String("id", id))
-	time.Sleep(1 * time.Second)
 
 	b.mu.Lock()
+	cmd := b.processes[id]
+	b.mu.Unlock()
+
+	if cmd != nil && cmd.Process != nil {
+		// Send SIGTERM first; give the process 15 s to exit cleanly.
+		_ = cmd.Process.Signal(os.Interrupt)
+		done := make(chan struct{})
+		go func() {
+			_ = cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			b.logger.Info("Server process exited after SIGTERM", zap.String("id", id))
+		case <-time.After(15 * time.Second):
+			b.logger.Warn("Server did not exit after 15 s; sending SIGKILL", zap.String("id", id))
+			_ = cmd.Process.Kill()
+		}
+	}
+
+	b.mu.Lock()
+	delete(b.processes, id)
 	if s, ok := b.servers[id]; ok {
 		s.State = StateStopped
 		now := time.Now()
 		s.LastStopped = &now
+		s.PID = 0
 	}
 	b.mu.Unlock()
 
@@ -514,7 +699,16 @@ func (b *Broker) RestartServer(ctx context.Context, id string) error {
 	if err := b.StopServer(ctx, id); err != nil {
 		return err
 	}
-	time.Sleep(2 * time.Second)
+	// doStop runs asynchronously; poll until the server is no longer stopping.
+	for i := 0; i < 30; i++ {
+		time.Sleep(500 * time.Millisecond)
+		b.mu.RLock()
+		state := b.servers[id].State
+		b.mu.RUnlock()
+		if state == StateStopped || state == StateError {
+			break
+		}
+	}
 	return b.StartServer(ctx, id)
 }
 
@@ -535,40 +729,234 @@ func (b *Broker) doDeploy(ctx context.Context, id string, req DeployRequest, job
 	b.mu.Unlock()
 
 	b.updateJob(job.ID, "running", 10, "Starting deployment...")
-	time.Sleep(2 * time.Second)
 
+	var deployErr error
 	switch req.Method {
 	case "steamcmd":
-		b.deploySteamCMD(ctx, id, req, job)
+		deployErr = b.deploySteamCMD(ctx, id, req, job)
 	case "manual":
-		b.deployManual(ctx, id, req, job)
+		deployErr = b.deployManual(ctx, id, req, job)
 	default:
-		b.updateJob(job.ID, "failed", 0, "unknown deploy method")
+		deployErr = fmt.Errorf("unknown deploy method: %s", req.Method)
 	}
-}
-
-func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployRequest, job *Job) {
-	b.updateJob(job.ID, "running", 50, "Downloading via SteamCMD...")
-	time.Sleep(3 * time.Second)
-	b.updateJob(job.ID, "success", 100, "Deployment complete")
 
 	b.mu.Lock()
 	if s, ok := b.servers[id]; ok {
-		s.State = StateStopped
+		if deployErr != nil {
+			s.State = StateError
+		} else {
+			s.State = StateStopped
+		}
 	}
 	b.mu.Unlock()
+
+	if deployErr != nil {
+		b.updateJob(job.ID, "failed", 0, deployErr.Error())
+		b.logger.Error("Deployment failed", zap.String("id", id), zap.Error(deployErr))
+	}
 }
 
-func (b *Broker) deployManual(ctx context.Context, id string, req DeployRequest, job *Job) {
-	b.updateJob(job.ID, "running", 50, "Downloading archive...")
-	time.Sleep(2 * time.Second)
+func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployRequest, job *Job) error {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("server not found: %s", id)
+	}
+
+	// Determine app ID: request overrides manifest.
+	appID := ""
+	if req.SteamCMD != nil && req.SteamCMD.AppID != "" {
+		appID = req.SteamCMD.AppID
+	} else if m, ok2 := b.adapters.Get(s.Adapter); ok2 {
+		appID = m.SteamCMD.AppID
+		if appID == "" {
+			appID = m.SteamAppID
+		}
+	}
+	if appID == "" {
+		return fmt.Errorf("no Steam app ID configured for adapter %s", s.Adapter)
+	}
+
+	installDir := s.InstallDir
+	if installDir == "" {
+		return fmt.Errorf("install_dir must be set for SteamCMD deployment")
+	}
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		return fmt.Errorf("create install dir: %w", err)
+	}
+
+	steamcmd, err := exec.LookPath("steamcmd")
+	if err != nil {
+		return fmt.Errorf("steamcmd not found in PATH: %w", err)
+	}
+
+	args := []string{
+		"+@ShutdownOnFailedCommand", "1",
+		"+login", "anonymous",
+		"+force_install_dir", installDir,
+		"+app_update", appID, "validate",
+	}
+	if req.SteamCMD != nil && req.SteamCMD.Beta != "" {
+		args = append(args, "-beta", req.SteamCMD.Beta)
+		if req.SteamCMD.BetaPass != "" {
+			args = append(args, "-betapassword", req.SteamCMD.BetaPass)
+		}
+	}
+	args = append(args, "+quit")
+
+	b.updateJob(job.ID, "running", 30, fmt.Sprintf("Running SteamCMD for app %s...", appID))
+	b.logger.Info("Executing SteamCMD",
+		zap.String("server", id), zap.String("app_id", appID), zap.String("dir", installDir))
+
+	cmd := exec.CommandContext(ctx, steamcmd, args...) //nolint:gosec
+	cmd.Dir = installDir
+
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start steamcmd: %w", err)
+	}
+
+	// Stream output to console and update progress.
+	progress := 30
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`, jsonStr(line), time.Now().Unix()))
+		// Bump progress a little each line (capped at 90).
+		if progress < 90 {
+			progress++
+		}
+		b.updateJob(job.ID, "running", progress, line)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("steamcmd exited with error: %w", err)
+	}
+
+	b.updateJob(job.ID, "success", 100, "SteamCMD deployment complete")
+	b.logger.Info("SteamCMD deployment complete", zap.String("server", id))
+	return nil
+}
+
+func (b *Broker) deployManual(ctx context.Context, id string, req DeployRequest, job *Job) error {
+	if req.Manual == nil || req.Manual.ArchiveURL == "" {
+		return fmt.Errorf("manual deployment requires archive_url")
+	}
+
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("server not found: %s", id)
+	}
+
+	installDir := s.InstallDir
+	if installDir == "" {
+		return fmt.Errorf("install_dir must be set for manual deployment")
+	}
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		return fmt.Errorf("create install dir: %w", err)
+	}
+
+	b.updateJob(job.ID, "running", 20, "Downloading archive...")
+	b.logger.Info("Downloading archive", zap.String("url", req.Manual.ArchiveURL))
+
+	httpResp, err := (&http.Client{Timeout: 30 * time.Minute}).Get(req.Manual.ArchiveURL) //nolint:noctx
+	if err != nil {
+		return fmt.Errorf("download archive: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download returned HTTP %d", httpResp.StatusCode)
+	}
+
+	// Write to a temporary file while computing checksum.
+	tmp, err := os.CreateTemp("", "gdash-deploy-*.tar.gz")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+
+	h := sha256.New()
+	mw := io.MultiWriter(tmp, h)
+	if _, err := io.Copy(mw, httpResp.Body); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write archive: %w", err)
+	}
+	tmp.Close()
+
+	// Verify checksum if provided.
+	if req.Manual.Checksum != "" {
+		actual := fmt.Sprintf("sha256:%x", h.Sum(nil))
+		if !strings.EqualFold(actual, req.Manual.Checksum) {
+			return fmt.Errorf("checksum mismatch: expected %s, got %s", req.Manual.Checksum, actual)
+		}
+	}
+
+	b.updateJob(job.ID, "running", 60, "Extracting archive...")
+
+	// Re-open the temp file for extraction.
+	f, err := os.Open(tmp.Name())
+	if err != nil {
+		return fmt.Errorf("open temp archive: %w", err)
+	}
+	defer f.Close()
+
+	if err := extractTarGz(f, installDir); err != nil {
+		return fmt.Errorf("extract archive: %w", err)
+	}
+
 	b.updateJob(job.ID, "success", 100, "Manual deployment complete")
+	b.logger.Info("Manual deployment complete", zap.String("server", id), zap.String("dir", installDir))
+	return nil
+}
 
-	b.mu.Lock()
-	if s, ok := b.servers[id]; ok {
-		s.State = StateStopped
+// extractTarGz extracts a .tar.gz archive into destDir with path-traversal protection.
+func extractTarGz(r io.Reader, destDir string) error {
+	gr, err := gzip.NewReader(r)
+	if err != nil {
+		return fmt.Errorf("gzip reader: %w", err)
 	}
-	b.mu.Unlock()
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+	cleanDest := filepath.Clean(destDir)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("tar read: %w", err)
+		}
+
+		outPath := filepath.Join(destDir, filepath.Clean(hdr.Name))
+		if !strings.HasPrefix(filepath.Clean(outPath), cleanDest+string(os.PathSeparator)) &&
+			filepath.Clean(outPath) != cleanDest {
+			continue // skip path traversal attempts
+		}
+
+		if hdr.FileInfo().IsDir() {
+			os.MkdirAll(outPath, hdr.FileInfo().Mode())
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o750); err != nil {
+			continue
+		}
+		out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, hdr.FileInfo().Mode())
+		if err != nil {
+			continue
+		}
+		_, copyErr := io.Copy(out, tr)
+		out.Close()
+		if copyErr != nil {
+			return fmt.Errorf("write %s: %w", outPath, copyErr)
+		}
+	}
+	return nil
 }
 
 // GetServerStatus returns current server status
@@ -595,13 +983,88 @@ func (b *Broker) getUptime(s *Server) int64 {
 	return int64(time.Since(*s.LastStarted).Seconds())
 }
 
-// GetServerLogs returns recent log lines
+// GetServerLogs returns recent log lines from the server's log files.
+// The lines parameter is the maximum number of tail lines to return (default 100).
 func (b *Broker) GetServerLogs(ctx context.Context, id, lines string) ([]string, error) {
-	return []string{
-		"[INFO] Server starting...",
-		"[INFO] Loading world...",
-		"[INFO] Server ready on port 2456",
-	}, nil
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("server not found: %s", id)
+	}
+
+	maxLines := 100
+	if n, err := strconv.Atoi(lines); err == nil && n > 0 {
+		maxLines = n
+	}
+
+	// Candidate log file locations in preference order.
+	candidates := []string{}
+	if s.InstallDir != "" {
+		candidates = []string{
+			filepath.Join(s.InstallDir, "logs", "latest.log"),
+			filepath.Join(s.InstallDir, "server.log"),
+			filepath.Join(s.InstallDir, "output.log"),
+		}
+		// Also find any *.log files in the logs/ sub-directory.
+		if matches, err := filepath.Glob(filepath.Join(s.InstallDir, "logs", "*.log")); err == nil {
+			for _, m := range matches {
+				if filepath.Base(m) != "latest.log" {
+					candidates = append(candidates, m)
+				}
+			}
+		}
+	}
+
+	for _, path := range candidates {
+		if result, err := tailFile(path, maxLines); err == nil && len(result) > 0 {
+			return result, nil
+		}
+	}
+
+	// Fall back to recent console channel messages.
+	return []string{"[system] No log file found. Check server install_dir configuration."}, nil
+}
+
+// tailFile reads the last n lines from a file efficiently.
+func tailFile(path string, n int) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	// Collect all lines into a circular buffer of size n.
+	ring := make([]string, n)
+	idx := 0
+	total := 0
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	for scanner.Scan() {
+		ring[idx%n] = scanner.Text()
+		idx++
+		total++
+	}
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		return nil, err
+	}
+
+	if total == 0 {
+		return nil, nil
+	}
+
+	// Reconstruct ordered slice.
+	count := total
+	if count > n {
+		count = n
+	}
+	out := make([]string, count)
+	start := idx % n
+	for i := 0; i < count; i++ {
+		out[i] = ring[(start+i)%n]
+	}
+	return out, nil
 }
 
 // GetConsoleStream returns a channel for live console output
@@ -630,46 +1093,76 @@ func (b *Broker) sendConsoleMessage(id, msg string) {
 // Backup operations
 
 func (b *Broker) ListBackups(ctx context.Context, serverID string) ([]*Backup, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.backups[serverID], nil
+	records := b.backupSvc.ListRecords(serverID)
+	out := make([]*Backup, 0, len(records))
+	for _, r := range records {
+		out = append(out, backupRecordToBroker(r))
+	}
+	return out, nil
 }
 
 func (b *Broker) TriggerBackup(ctx context.Context, serverID string, req BackupRequest) (*Job, error) {
-	job := b.newJob("backup", serverID)
-	go b.doBackup(context.Background(), serverID, req, job)
-	return job, nil
-}
-
-func (b *Broker) doBackup(ctx context.Context, serverID string, req BackupRequest, job *Job) {
-	b.updateJob(job.ID, "running", 20, "Creating backup...")
-	time.Sleep(2 * time.Second)
-
-	backup := &Backup{
-		ID:        generateID(),
-		ServerID:  serverID,
-		Type:      req.Type,
-		SizeBytes: 1024 * 1024 * 100, // 100MB placeholder
-		Checksum:  "sha256:placeholder",
-		CreatedAt: time.Now(),
-		Status:    "complete",
+	b.mu.RLock()
+	s, ok := b.servers[serverID]
+	b.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("server not found: %s", serverID)
 	}
 
-	b.mu.Lock()
-	b.backups[serverID] = append(b.backups[serverID], backup)
-	b.mu.Unlock()
+	// Determine which paths to back up.
+	paths := []string{}
+	if s.BackupConfig != nil && len(s.BackupConfig.Paths) > 0 {
+		paths = s.BackupConfig.Paths
+	} else if s.InstallDir != "" {
+		paths = []string{s.InstallDir}
+	}
 
-	b.updateJob(job.ID, "success", 100, "Backup complete")
+	target := ""
+	if s.BackupConfig != nil {
+		target = s.BackupConfig.Target
+	}
+
+	svcJob, err := b.backupSvc.TriggerBackup(ctx, serverID, paths, target, req.Type)
+	if err != nil {
+		return nil, err
+	}
+	return backupJobToBroker(svcJob), nil
 }
 
 func (b *Broker) RestoreBackup(ctx context.Context, serverID, backupID string) (*Job, error) {
-	job := b.newJob("restore", serverID)
-	go func() {
-		b.updateJob(job.ID, "running", 50, "Restoring backup...")
-		time.Sleep(3 * time.Second)
-		b.updateJob(job.ID, "success", 100, "Restore complete")
-	}()
-	return job, nil
+	svcJob, err := b.backupSvc.Restore(ctx, serverID, backupID)
+	if err != nil {
+		return nil, err
+	}
+	return backupJobToBroker(svcJob), nil
+}
+
+// backupRecordToBroker converts a backup service Record to the broker's Backup type.
+func backupRecordToBroker(r *backupsvc.Record) *Backup {
+	return &Backup{
+		ID:        r.ID,
+		ServerID:  r.ServerID,
+		Type:      r.Type,
+		Target:    r.Target,
+		SizeBytes: r.SizeBytes,
+		Checksum:  r.Checksum,
+		CreatedAt: r.CreatedAt,
+		Status:    r.Status,
+	}
+}
+
+// backupJobToBroker converts a backup service Job to the broker's Job type.
+func backupJobToBroker(j *backupsvc.Job) *Job {
+	return &Job{
+		ID:        j.ID,
+		Type:      j.Type,
+		ServerID:  j.ServerID,
+		Status:    j.Status,
+		Progress:  j.Progress,
+		Message:   j.Message,
+		CreatedAt: j.CreatedAt,
+		UpdatedAt: j.UpdatedAt,
+	}
 }
 
 // Port operations
@@ -897,4 +1390,27 @@ func generateID() string {
 	b := make([]byte, 8)
 	_, _ = fmt.Sscanf(fmt.Sprintf("%d", time.Now().UnixNano()), "%s", &b)
 	return fmt.Sprintf("%x", time.Now().UnixNano())
+}
+
+// expandServerVars replaces {variable} placeholders in a command template
+// using values from the server record.
+func expandServerVars(tmpl string, s *Server) string {
+	port := ""
+	if len(s.Ports) > 0 {
+		port = strconv.Itoa(s.Ports[0].External)
+	}
+	r := strings.NewReplacer(
+		"{name}", s.Name,
+		"{id}", s.ID,
+		"{install_dir}", s.InstallDir,
+		"{port}", port,
+		"{adapter}", s.Adapter,
+	)
+	return r.Replace(tmpl)
+}
+
+// jsonStr encodes a string as a JSON string literal (including the surrounding quotes).
+func jsonStr(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

@@ -2,8 +2,10 @@ package networking
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -148,25 +150,63 @@ func (s *Service) isPortAvailable(protocol string, port int) (bool, error) {
 	}
 }
 
-// probeReachability checks if the port is reachable from the internet
-// using the configured remote validator endpoint (best-effort).
+// probeReachability checks if the port is reachable from the internet via
+// the configured remote validator endpoint.
+// The validator is expected to respond to:
+//
+//	GET {ValidatorURL}/probe?proto=<tcp|udp>&port=<port>
+//
+// with a JSON body:  {"reachable": true|false, "latency_ms": <n>}
+//
+// When no ValidatorURL is configured (empty string), the function returns
+// (false, 0) so callers treat it as "not probed".
 func (s *Service) probeReachability(ctx context.Context, protocol string, port int) (reachable bool, latencyMS int64) {
-	// In production this would call the remote validator endpoint
-	// e.g. GET https://validator.example.com/probe?proto=udp&port=7777
-	// For now we check localhost connectivity as a proxy
+	if s.cfg.ValidatorURL == "" {
+		return false, 0
+	}
+
+	reqURL := fmt.Sprintf("%s/probe?proto=%s&port=%d", s.cfg.ValidatorURL, protocol, port)
+
 	start := time.Now()
-	timeout := s.cfg.Timeout
+	client := &http.Client{Timeout: s.cfg.Timeout}
 
-	dialer := &net.Dialer{Timeout: timeout}
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		s.logger.Warn("Failed to build reachability probe request",
+			zap.String("url", reqURL), zap.Error(err))
+		return false, 0
+	}
 
-	conn, err := dialer.DialContext(ctx, protocol, addr)
+	resp, err := client.Do(req)
 	latencyMS = time.Since(start).Milliseconds()
 	if err != nil {
+		s.logger.Warn("Reachability probe request failed",
+			zap.String("url", reqURL), zap.Error(err))
 		return false, latencyMS
 	}
-	conn.Close()
-	return true, latencyMS
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Warn("Reachability probe returned non-200",
+			zap.String("url", reqURL), zap.Int("status", resp.StatusCode))
+		return false, latencyMS
+	}
+
+	var body struct {
+		Reachable bool  `json:"reachable"`
+		LatencyMS int64 `json:"latency_ms"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		s.logger.Warn("Failed to decode reachability probe response",
+			zap.String("url", reqURL), zap.Error(err))
+		return false, latencyMS
+	}
+
+	// Prefer the latency reported by the remote validator if available.
+	if body.LatencyMS > 0 {
+		latencyMS = body.LatencyMS
+	}
+	return body.Reachable, latencyMS
 }
 
 // FindFreePort finds the next available port starting from start

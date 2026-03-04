@@ -6,15 +6,18 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/games-dashboard/daemon/internal/auth"
 	"github.com/games-dashboard/daemon/internal/broker"
+	daemonconfig "github.com/games-dashboard/daemon/internal/config"
 	"github.com/games-dashboard/daemon/internal/health"
 	"github.com/games-dashboard/daemon/internal/metrics"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 )
 
 // Config holds API server configuration
@@ -30,6 +33,10 @@ type Config struct {
 	Broker         *broker.Broker
 	HealthSvc      *health.Service
 	MetricsSvc     *metrics.Service
+	// DaemonCfg is the live daemon configuration used by the settings API.
+	DaemonCfg  *daemonconfig.Config
+	// ConfigPath is the path to daemon.yaml; when set, PATCH /settings writes back to disk.
+	ConfigPath string
 }
 
 // Server is the HTTP/WebSocket API server
@@ -175,6 +182,8 @@ func (s *Server) registerRoutes() {
 	admin.DELETE("/users/:userId", s.deleteUser)
 	admin.GET("/audit", s.getAuditLog)
 	admin.POST("/secrets/rotate", s.rotateSecrets)
+	admin.GET("/settings", s.getSettings)
+	admin.PATCH("/settings", s.patchSettings)
 
 	// System
 	v1.GET("/status", s.getSystemStatus)
@@ -656,6 +665,184 @@ func (s *Server) rotateSecrets(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "secrets rotated"})
+}
+
+// settingsResponse is the safe, secrets-free view of the daemon configuration.
+type settingsResponse struct {
+	BindAddr          string               `json:"bind_addr"`
+	ShutdownTimeoutS  int                  `json:"shutdown_timeout_s"`
+	DataDir           string               `json:"data_dir"`
+	LogLevel          string               `json:"log_level"`
+	Storage           settingsStorage      `json:"storage"`
+	Backup            settingsBackup       `json:"backup"`
+	Metrics           settingsMetrics      `json:"metrics"`
+	Cluster           settingsCluster      `json:"cluster"`
+}
+
+type settingsStorage struct {
+	DataDir   string              `json:"data_dir"`
+	NFSMounts []settingsNFSMount  `json:"nfs_mounts"`
+	S3        *settingsS3         `json:"s3,omitempty"`
+}
+
+type settingsNFSMount struct {
+	Server     string `json:"server"`
+	Path       string `json:"path"`
+	MountPoint string `json:"mount_point"`
+	Options    string `json:"options,omitempty"`
+}
+
+type settingsS3 struct {
+	Endpoint string `json:"endpoint"`
+	Bucket   string `json:"bucket"`
+	Region   string `json:"region"`
+	UseSSL   bool   `json:"use_ssl"`
+}
+
+type settingsBackup struct {
+	DefaultSchedule string `json:"default_schedule"`
+	RetainDays      int    `json:"retain_days"`
+	Compression     string `json:"compression"`
+}
+
+type settingsMetrics struct {
+	Enabled bool   `json:"enabled"`
+	Path    string `json:"path"`
+}
+
+type settingsCluster struct {
+	Enabled                bool  `json:"enabled"`
+	HealthCheckIntervalS   int64 `json:"health_check_interval_s"`
+	NodeTimeoutS           int64 `json:"node_timeout_s"`
+}
+
+// settingsPatchRequest contains the mutable fields the UI can update.
+type settingsPatchRequest struct {
+	LogLevel *string             `json:"log_level,omitempty"`
+	Backup   *settingsBackup     `json:"backup,omitempty"`
+	Metrics  *settingsMetrics    `json:"metrics,omitempty"`
+	Cluster  *settingsClusterPatch `json:"cluster,omitempty"`
+}
+
+type settingsClusterPatch struct {
+	HealthCheckIntervalS *int64 `json:"health_check_interval_s,omitempty"`
+	NodeTimeoutS         *int64 `json:"node_timeout_s,omitempty"`
+}
+
+func (s *Server) getSettings(c *gin.Context) {
+	cfg := s.cfg.DaemonCfg
+	if cfg == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "daemon config not available"})
+		return
+	}
+
+	resp := settingsResponse{
+		BindAddr:         cfg.BindAddr,
+		ShutdownTimeoutS: int(cfg.ShutdownTimeout.Seconds()),
+		DataDir:          cfg.DataDir,
+		LogLevel:         cfg.LogLevel,
+		Storage: settingsStorage{
+			DataDir: cfg.Storage.DataDir,
+		},
+		Backup: settingsBackup{
+			DefaultSchedule: cfg.Backup.DefaultSchedule,
+			RetainDays:      cfg.Backup.RetainDays,
+			Compression:     cfg.Backup.Compression,
+		},
+		Metrics: settingsMetrics{
+			Enabled: cfg.Metrics.Enabled,
+			Path:    cfg.Metrics.Path,
+		},
+		Cluster: settingsCluster{
+			Enabled:              cfg.Cluster.Enabled,
+			HealthCheckIntervalS: int64(cfg.Cluster.HealthCheckInterval.Seconds()),
+			NodeTimeoutS:         int64(cfg.Cluster.NodeTimeout.Seconds()),
+		},
+	}
+
+	// NFS mounts
+	for _, m := range cfg.Storage.NFS {
+		resp.Storage.NFSMounts = append(resp.Storage.NFSMounts, settingsNFSMount{
+			Server:     m.Server,
+			Path:       m.Path,
+			MountPoint: m.MountPoint,
+			Options:    m.Options,
+		})
+	}
+	if resp.Storage.NFSMounts == nil {
+		resp.Storage.NFSMounts = []settingsNFSMount{}
+	}
+
+	// S3 (no credentials)
+	if cfg.Storage.S3 != nil {
+		resp.Storage.S3 = &settingsS3{
+			Endpoint: cfg.Storage.S3.Endpoint,
+			Bucket:   cfg.Storage.S3.Bucket,
+			Region:   cfg.Storage.S3.Region,
+			UseSSL:   cfg.Storage.S3.UseSSL,
+		}
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func (s *Server) patchSettings(c *gin.Context) {
+	cfg := s.cfg.DaemonCfg
+	if cfg == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "daemon config not available"})
+		return
+	}
+
+	var req settingsPatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Apply mutable fields
+	if req.LogLevel != nil {
+		cfg.LogLevel = *req.LogLevel
+	}
+	if req.Backup != nil {
+		if req.Backup.DefaultSchedule != "" {
+			cfg.Backup.DefaultSchedule = req.Backup.DefaultSchedule
+		}
+		if req.Backup.RetainDays > 0 {
+			cfg.Backup.RetainDays = req.Backup.RetainDays
+		}
+		if req.Backup.Compression != "" {
+			cfg.Backup.Compression = req.Backup.Compression
+		}
+	}
+	if req.Metrics != nil {
+		cfg.Metrics.Enabled = req.Metrics.Enabled
+		if req.Metrics.Path != "" {
+			cfg.Metrics.Path = req.Metrics.Path
+		}
+	}
+	if req.Cluster != nil {
+		if req.Cluster.HealthCheckIntervalS != nil {
+			cfg.Cluster.HealthCheckInterval = time.Duration(*req.Cluster.HealthCheckIntervalS) * time.Second
+		}
+		if req.Cluster.NodeTimeoutS != nil {
+			cfg.Cluster.NodeTimeout = time.Duration(*req.Cluster.NodeTimeoutS) * time.Second
+		}
+	}
+
+	// Persist to disk if a config path is configured
+	if s.cfg.ConfigPath != "" {
+		data, err := yaml.Marshal(cfg)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to serialise config: " + err.Error()})
+			return
+		}
+		if err := os.WriteFile(s.cfg.ConfigPath, data, 0o600); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write config file: " + err.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "settings updated"})
 }
 
 func (s *Server) getSystemStatus(c *gin.Context) {

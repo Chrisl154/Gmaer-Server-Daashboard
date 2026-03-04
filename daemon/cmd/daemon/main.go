@@ -105,6 +105,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		Broker:     gameBroker,
 		HealthSvc:  healthSvc,
 		MetricsSvc: metricsSvc,
+		DaemonCfg:  cfg,
+		ConfigPath: cfgFile,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to init API server: %w", err)
@@ -116,6 +118,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	go gameBroker.Start(ctx)
 	go healthSvc.Start(ctx)
+	go gameBroker.BackupService().Start(ctx)
 	if cm := gameBroker.ClusterManager(); cm != nil {
 		go cm.Start(ctx)
 		logger.Info("Cluster manager started")

@@ -2,13 +2,15 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Settings, Shield, Server, HardDrive, Network, Activity,
-  Plus, Trash2, User, QrCode, Info, Loader2, Key
+  Plus, Trash2, User, QrCode, Info, Loader2, Key, Save,
+  Database, RefreshCw,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { clsx } from 'clsx';
 import { api } from '../utils/api';
 import { useAuthStore } from '../store/authStore';
 import { useSystemStatus } from '../hooks/useServers';
+import type { DaemonSettings, SettingsPatch } from '../types';
 
 type Section = 'general' | 'users' | 'tls' | 'storage' | 'networking' | 'monitoring';
 
@@ -20,6 +22,28 @@ const NAV: { id: Section; icon: React.FC<any>; label: string }[] = [
   { id: 'networking', icon: Network,   label: 'Networking'  },
   { id: 'monitoring', icon: Activity,  label: 'Monitoring'  },
 ];
+
+// ── Shared hook ────────────────────────────────────────────────────────────────
+
+function useSettings() {
+  return useQuery<DaemonSettings>({
+    queryKey: ['settings'],
+    queryFn: () => api.get('/api/v1/admin/settings').then(r => r.data),
+  });
+}
+
+function usePatchSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: SettingsPatch) =>
+      api.patch('/api/v1/admin/settings', patch).then(r => r.data),
+    onSuccess: () => {
+      toast.success('Settings saved');
+      qc.invalidateQueries({ queryKey: ['settings'] });
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error ?? 'Save failed'),
+  });
+}
 
 // ── General section ───────────────────────────────────────────────────────────
 
@@ -75,11 +99,11 @@ function UsersSection() {
 
   const { data } = useQuery<{ users: any[] }>({
     queryKey: ['users'],
-    queryFn: () => api.get('/api/v1/auth/users').then(r => r.data),
+    queryFn: () => api.get('/api/v1/admin/users').then(r => r.data),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/api/v1/auth/users/${id}`),
+    mutationFn: (id: string) => api.delete(`/api/v1/admin/users/${id}`),
     onSuccess: () => { toast.success('User deleted'); qc.invalidateQueries({ queryKey: ['users'] }); },
     onError: () => toast.error('Delete failed'),
   });
@@ -218,7 +242,7 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const handleCreate = async () => {
     setLoading(true);
     try {
-      await api.post('/api/v1/auth/users', {
+      await api.post('/api/v1/admin/users', {
         username: form.username,
         password: form.password,
         roles: [form.roles],
@@ -311,17 +335,343 @@ function TLSSection() {
   );
 }
 
-// ── Placeholder sections ──────────────────────────────────────────────────────
+// ── Storage section ───────────────────────────────────────────────────────────
 
-function PlaceholderSection({ title, items }: { title: string; items: string[] }) {
+function StorageSection() {
+  const { data: settings, isLoading } = useSettings();
+  const patch = usePatchSettings();
+
+  const [backup, setBackup] = useState({
+    default_schedule: '',
+    retain_days: 30,
+    compression: 'zstd',
+  });
+  const [backupDirty, setBackupDirty] = useState(false);
+
+  React.useEffect(() => {
+    if (settings && !backupDirty) {
+      setBackup({
+        default_schedule: settings.backup.default_schedule,
+        retain_days: settings.backup.retain_days,
+        compression: settings.backup.compression,
+      });
+    }
+  }, [settings]);
+
+  const handleBackupChange = (key: string, value: string | number) => {
+    setBackup(prev => ({ ...prev, [key]: value }));
+    setBackupDirty(true);
+  };
+
+  const handleSaveBackup = () => {
+    patch.mutate({ backup }, {
+      onSuccess: () => setBackupDirty(false),
+    });
+  };
+
+  if (isLoading) return <SectionSkeleton />;
+
+  const s = settings?.storage;
+
+  return (
+    <div className="space-y-5">
+      <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Storage</h2>
+
+      {/* Data directory */}
+      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-2">
+        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider flex items-center gap-2">
+          <Database className="w-3.5 h-3.5" /> Data Directory
+        </h3>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-gray-500">Path</span>
+          <code className="font-mono text-xs text-gray-300">{s?.data_dir ?? '—'}</code>
+        </div>
+      </div>
+
+      {/* NFS Mounts */}
+      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
+        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider flex items-center gap-2">
+          <Server className="w-3.5 h-3.5" /> NFS Mounts
+        </h3>
+        {(s?.nfs_mounts.length ?? 0) === 0 ? (
+          <p className="text-sm text-gray-600">No NFS mounts configured.</p>
+        ) : (
+          <div className="divide-y divide-[#1e1e1e]">
+            {s?.nfs_mounts.map((m, i) => (
+              <div key={i} className="py-2 grid grid-cols-2 gap-x-4 text-xs">
+                <span className="text-gray-500">Server</span><code className="text-gray-300 font-mono">{m.server}</code>
+                <span className="text-gray-500">Remote path</span><code className="text-gray-300 font-mono">{m.path}</code>
+                <span className="text-gray-500">Mount point</span><code className="text-gray-300 font-mono">{m.mount_point}</code>
+                {m.options && <><span className="text-gray-500">Options</span><code className="text-gray-300 font-mono">{m.options}</code></>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* S3 */}
+      {s?.s3 && (
+        <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-2">
+          <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">S3 / Object Store</h3>
+          {[
+            ['Endpoint', s.s3.endpoint],
+            ['Bucket',   s.s3.bucket],
+            ['Region',   s.s3.region],
+            ['TLS',      s.s3.use_ssl ? 'Enabled' : 'Disabled'],
+          ].map(([label, value]) => (
+            <div key={label} className="flex items-center justify-between text-sm">
+              <span className="text-gray-500">{label}</span>
+              <span className="text-gray-300 font-mono text-xs">{value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Backup settings — editable */}
+      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-4">
+        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Backup</h3>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Schedule (cron)</label>
+            <input
+              className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 font-mono focus:outline-none focus:border-blue-500"
+              value={backup.default_schedule}
+              onChange={e => handleBackupChange('default_schedule', e.target.value)}
+              placeholder="0 3 * * *"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Retain (days)</label>
+            <input
+              type="number"
+              min={1}
+              className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+              value={backup.retain_days}
+              onChange={e => handleBackupChange('retain_days', parseInt(e.target.value) || 1)}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Compression</label>
+          <select
+            className="bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+            value={backup.compression}
+            onChange={e => handleBackupChange('compression', e.target.value)}
+          >
+            <option value="zstd">zstd (faster)</option>
+            <option value="gzip">gzip (compatible)</option>
+          </select>
+        </div>
+
+        <div className="flex items-center justify-between pt-1">
+          {backupDirty && <span className="text-xs text-yellow-400">Unsaved changes</span>}
+          <button
+            onClick={handleSaveBackup}
+            disabled={patch.isPending || !backupDirty}
+            className="ml-auto flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+          >
+            {patch.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Networking section ────────────────────────────────────────────────────────
+
+function NetworkingSection() {
+  const { data: settings, isLoading } = useSettings();
+
+  if (isLoading) return <SectionSkeleton />;
+
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">{title}</h2>
-      <div className="bg-[#141414] border border-[#252525] rounded-xl divide-y divide-[#1e1e1e]">
-        {items.map(item => (
-          <div key={item} className="flex items-center justify-between px-4 py-3">
-            <span className="text-sm text-gray-400">{item}</span>
-            <span className="text-xs text-gray-600">Configure in daemon.yaml</span>
+      <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Networking</h2>
+
+      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-2">
+        {[
+          { label: 'Bind Address',     value: settings?.bind_addr ?? '—',                    mono: true  },
+          { label: 'Shutdown Timeout', value: settings ? `${settings.shutdown_timeout_s}s` : '—' },
+        ].map(({ label, value, mono }) => (
+          <div key={label} className="flex items-center justify-between text-sm">
+            <span className="text-gray-500">{label}</span>
+            <span className={clsx('text-gray-300', mono && 'font-mono text-xs')}>{value}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-start gap-3 p-3 bg-[#141414] border border-[#252525] rounded-xl">
+        <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+        <p className="text-xs text-gray-400">
+          Network settings require a daemon restart to take effect. Edit{' '}
+          <code className="font-mono text-gray-300">daemon.yaml</code> to change these values.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Monitoring section ────────────────────────────────────────────────────────
+
+function MonitoringSection() {
+  const { data: settings, isLoading } = useSettings();
+  const patch = usePatchSettings();
+
+  const [logLevel, setLogLevel] = useState('info');
+  const [metricsEnabled, setMetricsEnabled] = useState(true);
+  const [metricsPath, setMetricsPath] = useState('/metrics');
+  const [clusterInterval, setClusterInterval] = useState(30);
+  const [clusterTimeout, setClusterTimeout] = useState(90);
+  const [dirty, setDirty] = useState(false);
+
+  React.useEffect(() => {
+    if (settings && !dirty) {
+      setLogLevel(settings.log_level);
+      setMetricsEnabled(settings.metrics.enabled);
+      setMetricsPath(settings.metrics.path);
+      setClusterInterval(settings.cluster.health_check_interval_s);
+      setClusterTimeout(settings.cluster.node_timeout_s);
+    }
+  }, [settings]);
+
+  const handleSave = () => {
+    patch.mutate({
+      log_level: logLevel,
+      metrics: { enabled: metricsEnabled, path: metricsPath },
+      cluster: {
+        health_check_interval_s: clusterInterval,
+        node_timeout_s: clusterTimeout,
+      },
+    }, {
+      onSuccess: () => setDirty(false),
+    });
+  };
+
+  const mark = () => setDirty(true);
+
+  if (isLoading) return <SectionSkeleton />;
+
+  return (
+    <div className="space-y-5">
+      <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Monitoring</h2>
+
+      {/* Logging */}
+      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
+        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Logging</h3>
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Log Level</label>
+          <select
+            className="bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+            value={logLevel}
+            onChange={e => { setLogLevel(e.target.value); mark(); }}
+          >
+            {['debug', 'info', 'warn', 'error'].map(l => (
+              <option key={l} value={l}>{l}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Metrics */}
+      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
+        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider flex items-center gap-2">
+          <Activity className="w-3.5 h-3.5" /> Prometheus Metrics
+        </h3>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => { setMetricsEnabled(v => !v); mark(); }}
+            className={clsx(
+              'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+              metricsEnabled ? 'bg-blue-600' : 'bg-[#333]'
+            )}
+          >
+            <span className={clsx(
+              'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow ring-0 transition-transform',
+              metricsEnabled ? 'translate-x-4' : 'translate-x-0'
+            )} />
+          </button>
+          <span className="text-sm text-gray-300">{metricsEnabled ? 'Enabled' : 'Disabled'}</span>
+        </div>
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Metrics Path</label>
+          <input
+            className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 font-mono focus:outline-none focus:border-blue-500"
+            value={metricsPath}
+            onChange={e => { setMetricsPath(e.target.value); mark(); }}
+            placeholder="/metrics"
+          />
+        </div>
+      </div>
+
+      {/* Cluster health check */}
+      {settings?.cluster.enabled && (
+        <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
+          <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider flex items-center gap-2">
+            <RefreshCw className="w-3.5 h-3.5" /> Cluster Health Checks
+          </h3>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Check Interval (s)</label>
+              <input
+                type="number"
+                min={5}
+                className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                value={clusterInterval}
+                onChange={e => { setClusterInterval(parseInt(e.target.value) || 30); mark(); }}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Node Timeout (s)</label>
+              <input
+                type="number"
+                min={10}
+                className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                value={clusterTimeout}
+                onChange={e => { setClusterTimeout(parseInt(e.target.value) || 90); mark(); }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-start gap-3 p-3 bg-[#141414] border border-[#252525] rounded-xl">
+        <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+        <p className="text-xs text-gray-400">
+          Changes are saved to <code className="font-mono text-gray-300">daemon.yaml</code> and take effect on the next daemon restart.
+        </p>
+      </div>
+
+      <div className="flex items-center justify-end gap-3">
+        {dirty && <span className="text-xs text-yellow-400">Unsaved changes</span>}
+        <button
+          onClick={handleSave}
+          disabled={patch.isPending || !dirty}
+          className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+        >
+          {patch.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Skeleton ──────────────────────────────────────────────────────────────────
+
+function SectionSkeleton() {
+  return (
+    <div className="space-y-4 animate-pulse">
+      <div className="h-4 w-24 bg-[#252525] rounded" />
+      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
+        {[1, 2, 3].map(i => (
+          <div key={i} className="flex justify-between">
+            <div className="h-3 w-28 bg-[#252525] rounded" />
+            <div className="h-3 w-36 bg-[#252525] rounded" />
           </div>
         ))}
       </div>
@@ -360,24 +710,9 @@ export function SettingsPage() {
         {section === 'general'    && <GeneralSection />}
         {section === 'users'      && <UsersSection />}
         {section === 'tls'        && <TLSSection />}
-        {section === 'storage'    && (
-          <PlaceholderSection
-            title="Storage"
-            items={['Data Directory', 'NFS Mounts', 'S3 Endpoint', 'Backup Target', 'Retention Days']}
-          />
-        )}
-        {section === 'networking' && (
-          <PlaceholderSection
-            title="Networking"
-            items={['Port Exposure Mode', 'UPnP / NAT-PMP', 'Firewall Rules', 'Bind Address']}
-          />
-        )}
-        {section === 'monitoring' && (
-          <PlaceholderSection
-            title="Monitoring"
-            items={['Prometheus Path (/metrics)', 'Grafana Dashboard', 'Alert Rules', 'Log Level']}
-          />
-        )}
+        {section === 'storage'    && <StorageSection />}
+        {section === 'networking' && <NetworkingSection />}
+        {section === 'monitoring' && <MonitoringSection />}
       </main>
     </div>
   );

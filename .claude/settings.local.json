@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go test ./internal/cluster/... -v)",
+      "Bash(\"/c/Program Files/Go/bin/go\" test ./internal/cluster/... -v)",
+      "Bash(ls go.*)"
+    ]
+  }
+}

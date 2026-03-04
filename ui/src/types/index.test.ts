@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { Server, Backup, Mod, CVEReport, User } from './index';
+import type { Server, Backup, Mod, CVEReport, User, Node, NodeCapacity, RegisterNodeRequest } from './index';
 
 /**
  * Runtime shape checks — ensures that objects matching our TypeScript types
@@ -100,5 +100,72 @@ describe('User type shape', () => {
     };
     expect(user.roles).toContain('admin');
     expect(user.totp_enabled).toBe(false);
+  });
+});
+
+describe('NodeCapacity type shape', () => {
+  it('has cpu_cores, memory_gb, and disk_gb', () => {
+    const cap: NodeCapacity = { cpu_cores: 4, memory_gb: 8, disk_gb: 100 };
+    expect(cap.cpu_cores).toBe(4);
+    expect(cap.memory_gb).toBe(8);
+    expect(cap.disk_gb).toBe(100);
+  });
+});
+
+describe('Node type shape', () => {
+  it('required fields exist on a minimal node object', () => {
+    const node: Node = {
+      id: 'node-1',
+      hostname: 'node-1.example.com',
+      address: '10.0.0.1:9090',
+      capacity: { cpu_cores: 8, memory_gb: 16, disk_gb: 200 },
+      allocated: { cpu_cores: 2, memory_gb: 4, disk_gb: 50 },
+      server_count: 1,
+      status: 'online',
+      registered_at: '2024-01-01T00:00:00Z',
+      last_seen: '2024-01-01T00:01:00Z',
+    };
+    expect(node.id).toBe('node-1');
+    expect(node.status).toBe('online');
+    expect(node.capacity.cpu_cores).toBe(8);
+    expect(node.allocated.memory_gb).toBe(4);
+    expect(node.server_count).toBe(1);
+  });
+
+  it('accepts all valid NodeStatus values', () => {
+    const statuses: Node['status'][] = ['online', 'offline', 'draining'];
+    statuses.forEach(s => {
+      expect(['online', 'offline', 'draining']).toContain(s);
+    });
+  });
+
+  it('optional fields can be omitted', () => {
+    const node: Node = {
+      id: 'node-2',
+      hostname: 'node-2',
+      address: '10.0.0.2:9090',
+      capacity: { cpu_cores: 4, memory_gb: 8, disk_gb: 50 },
+      allocated: { cpu_cores: 0, memory_gb: 0, disk_gb: 0 },
+      server_count: 0,
+      status: 'offline',
+      registered_at: '2024-01-01T00:00:00Z',
+      last_seen: '2024-01-01T00:00:00Z',
+    };
+    // labels and version are optional — should compile without them
+    expect(node.labels).toBeUndefined();
+    expect(node.version).toBeUndefined();
+  });
+});
+
+describe('RegisterNodeRequest type shape', () => {
+  it('required fields are hostname, address, and capacity', () => {
+    const req: RegisterNodeRequest = {
+      hostname: 'node-3',
+      address: '10.0.0.3:9090',
+      capacity: { cpu_cores: 16, memory_gb: 32, disk_gb: 500 },
+    };
+    expect(req.hostname).toBe('node-3');
+    expect(req.address).toBe('10.0.0.3:9090');
+    expect(req.capacity.cpu_cores).toBe(16);
   });
 });
