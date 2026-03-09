@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import axios from 'axios';
 
 const DAEMON_URL = import.meta.env.VITE_DAEMON_URL ?? 'https://localhost:8443';

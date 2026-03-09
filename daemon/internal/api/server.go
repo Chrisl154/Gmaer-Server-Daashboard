@@ -118,6 +118,15 @@ func (s *Server) registerRoutes() {
 	r.GET("/healthz", s.handleHealthz)
 	r.GET("/metrics", s.handleMetrics)
 
+	// Public auth endpoints (must be outside the authenticated group)
+	r.POST("/api/v1/auth/login", s.login)
+	r.GET("/api/v1/auth/oidc/login", s.oidcLogin)
+	r.GET("/api/v1/auth/oidc/callback", s.oidcCallback)
+
+	// First-run bootstrap (public; guarded internally when already initialised)
+	r.GET("/api/v1/system/init-status", s.getInitStatus)
+	r.POST("/api/v1/system/bootstrap", s.bootstrapSystem)
+
 	// API v1
 	v1 := r.Group("/api/v1")
 	v1.Use(s.authMiddleware())
@@ -161,13 +170,10 @@ func (s *Server) registerRoutes() {
 	v1.POST("/sbom/scan", s.triggerScan)
 	v1.GET("/cve-report", s.getCVEReport)
 
-	// Auth
-	v1.POST("/auth/login", s.login)
+	// Auth (protected — login/oidc are registered as public routes above)
 	v1.POST("/auth/logout", s.logout)
 	v1.POST("/auth/totp/setup", s.setupTOTP)
 	v1.POST("/auth/totp/verify", s.verifyTOTP)
-	v1.GET("/auth/oidc/login", s.oidcLogin)
-	v1.GET("/auth/oidc/callback", s.oidcCallback)
 
 	// Cluster nodes
 	v1.GET("/nodes", s.listNodes)
@@ -912,6 +918,48 @@ func (s *Server) patchSettings(c *gin.Context) {
 func (s *Server) getSystemStatus(c *gin.Context) {
 	status := s.cfg.HealthSvc.SystemStatus()
 	c.JSON(http.StatusOK, status)
+}
+
+// getInitStatus returns whether the system has been bootstrapped (≥1 user exists).
+// This endpoint is public so the UI can redirect to /setup on first run.
+func (s *Server) getInitStatus(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"initialized": s.cfg.AuthSvc.IsInitialized()})
+}
+
+// bootstrapRequest is the payload for the first-run bootstrap endpoint.
+type bootstrapRequest struct {
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+// bootstrapSystem creates the first admin account and, when ConfigPath is set,
+// persists the credentials to daemon.yaml so they survive restarts.
+// It refuses with 409 Conflict if the system is already initialised.
+func (s *Server) bootstrapSystem(c *gin.Context) {
+	var req bootstrapRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, hash, err := s.cfg.AuthSvc.BootstrapAdmin(c.Request.Context(),
+		auth.CreateUserRequest{Username: req.Username, Password: req.Password},
+	)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Best-effort: persist the hashed password to daemon.yaml so the admin
+	// account survives a daemon restart.
+	if s.cfg.ConfigPath != "" && s.cfg.DaemonCfg != nil {
+		s.cfg.DaemonCfg.Auth.Local.Enabled = true
+		s.cfg.DaemonCfg.Auth.Local.AdminUser = req.Username
+		s.cfg.DaemonCfg.Auth.Local.AdminPassHash = hash
+		_ = daemonconfig.Write(s.cfg.ConfigPath, s.cfg.DaemonCfg)
+	}
+
+	c.JSON(http.StatusCreated, user)
 }
 
 func (s *Server) getVersion(c *gin.Context) {

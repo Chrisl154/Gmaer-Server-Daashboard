@@ -454,6 +454,27 @@ func (s *Service) ListUsers(ctx context.Context) ([]*User, error) {
 	return users, nil
 }
 
+// IsInitialized returns true when at least one user account exists.
+func (s *Service) IsInitialized() bool {
+	return len(s.users) > 0
+}
+
+// BootstrapAdmin creates the very first admin user. It returns the sanitised
+// user and the raw bcrypt password hash so the caller can persist it to
+// daemon.yaml. Returns an error if the system is already initialised.
+func (s *Service) BootstrapAdmin(ctx context.Context, req CreateUserRequest) (*User, string, error) {
+	if s.IsInitialized() {
+		return nil, "", fmt.Errorf("system already initialized")
+	}
+	req.Roles = []string{"admin"}
+	user, err := s.CreateUser(ctx, req)
+	if err != nil {
+		return nil, "", err
+	}
+	hash := s.users[req.Username].PasswordHash
+	return user, hash, nil
+}
+
 // CreateUser creates a new user
 func (s *Service) CreateUser(ctx context.Context, req CreateUserRequest) (*User, error) {
 	if _, exists := s.users[req.Username]; exists {

@@ -108,6 +108,15 @@ type ClusterConfig struct {
 	NodeTimeout         time.Duration `yaml:"node_timeout" json:"node_timeout"`
 }
 
+// Write serialises cfg to a YAML file at path, creating or truncating it.
+func Write(path string, cfg *Config) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
 // Load reads configuration from a YAML file
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)

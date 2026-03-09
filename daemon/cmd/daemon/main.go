@@ -72,13 +72,41 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize secrets manager
-	secretsMgr, err := secrets.NewManager(cfg.Secrets, logger)
+	secretsMgr, err := secrets.NewManager(secrets.Config{
+		Backend:    cfg.Secrets.Backend,
+		KeyFile:    cfg.Secrets.KeyFile,
+		VaultAddr:  cfg.Secrets.VaultAddr,
+		VaultToken: cfg.Secrets.VaultToken,
+		VaultPath:  cfg.Secrets.VaultPath,
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to init secrets manager: %w", err)
 	}
 
+	// Map config.AuthConfig → auth.Config (the two packages define parallel types)
+	authCfg := auth.Config{
+		Local: auth.LocalAuthConfig{
+			Enabled: cfg.Auth.Local.Enabled,
+			Admin: auth.User{
+				Username:     cfg.Auth.Local.AdminUser,
+				PasswordHash: cfg.Auth.Local.AdminPassHash,
+			},
+		},
+		JWTSecret:   cfg.Auth.JWTSecret,
+		TokenTTL:    cfg.Auth.TokenTTL,
+		MFARequired: cfg.Auth.MFARequired,
+	}
+	if cfg.Auth.OIDC != nil {
+		authCfg.OIDC = &auth.OIDCConfig{
+			Issuer:       cfg.Auth.OIDC.Issuer,
+			ClientID:     cfg.Auth.OIDC.ClientID,
+			ClientSecret: cfg.Auth.OIDC.ClientSecret,
+			RedirectURL:  cfg.Auth.OIDC.RedirectURL,
+		}
+	}
+
 	// Initialize auth service
-	authSvc, err := auth.NewService(cfg.Auth, secretsMgr, logger)
+	authSvc, err := auth.NewService(authCfg, secretsMgr, logger)
 	if err != nil {
 		return fmt.Errorf("failed to init auth service: %w", err)
 	}

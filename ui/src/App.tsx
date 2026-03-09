@@ -1,10 +1,12 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'react-hot-toast';
 import { useAuthStore } from './store/authStore';
+import { api } from './utils/api';
 import { Layout } from './components/shared/Layout';
 import { LoginPage } from './pages/LoginPage';
+import { SetupWizardPage } from './pages/SetupWizardPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ServersPage } from './pages/ServersPage';
 import { ServerDetailPage } from './pages/ServerDetailPage';
@@ -32,18 +34,33 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-export function App() {
-  const { checkAuth } = useAuthStore();
+function InitCheck() {
+  const navigate = useNavigate();
+  const { checkAuth, isAuthenticated } = useAuthStore();
 
   useEffect(() => {
     checkAuth();
-  }, [checkAuth]);
+    // Redirect to setup wizard if no admin account exists yet.
+    api.get('/api/v1/system/init-status')
+      .then(r => {
+        if (!r.data.initialized && !isAuthenticated) {
+          navigate('/setup', { replace: true });
+        }
+      })
+      .catch(() => {/* daemon unreachable — let normal auth flow handle it */});
+  }, [checkAuth, isAuthenticated, navigate]);
 
+  return null;
+}
+
+export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
+        <InitCheck />
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/setup" element={<SetupWizardPage />} />
           <Route
             path="/"
             element={

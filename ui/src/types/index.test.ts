@@ -20,7 +20,6 @@ describe('Server type shape', () => {
       config: {},
       resources: { cpu_cores: 2, ram_gb: 4, disk_gb: 20 },
       created_at: '2024-01-01T00:00:00Z',
-      updated_at: '2024-01-01T00:00:00Z',
     };
     expect(server.id).toBe('srv-1');
     expect(server.adapter).toBe('valheim');
@@ -38,6 +37,7 @@ describe('Backup type shape', () => {
       target: 's3://bucket/bkp-1',
       size_bytes: 1024,
       checksum: 'sha256:abc',
+      paths: [],
       created_at: '2024-01-01T00:00:00Z',
       status: 'complete',
     };

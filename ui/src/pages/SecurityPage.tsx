@@ -166,7 +166,7 @@ function UsersSection() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {u.totp_enabled && <Shield className="w-4 h-4 text-green-400" title="MFA enabled" />}
+              {u.totp_enabled && <Shield className="w-4 h-4 text-green-400" aria-label="MFA enabled" />}
               {u.username !== 'admin' && (
                 <button onClick={() => deleteMutation.mutate(u.id)}
                   className="text-xs text-red-400 hover:text-red-300 px-2 py-1">Delete</button>
