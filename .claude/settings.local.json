@@ -16,7 +16,14 @@
       "Bash(export PATH=\"$HOME/.local/bin:$PATH\")",
       "Bash(~/.local/bin/curl --version)",
       "Bash(export PATH=\"$HOME/.local/bin:$HOME/.local/go/bin:$PATH\")",
-      "Bash(bash /home/admina/Gmaer-Server-Daashboard/tests/integration/run-tests.sh --mode docker --output /tmp/test-results-final.xml)"
+      "Bash(bash /home/admina/Gmaer-Server-Daashboard/tests/integration/run-tests.sh --mode docker --output /tmp/test-results-final.xml)",
+      "Bash(git -C /home/admina/Gmaer-Server-Daashboard remote -v)",
+      "Bash(GDASH_TEST_DIR=/tmp/gdash-live-test bash test-live.sh)",
+      "Bash(GDASH_TEST_DIR=/tmp/gdash-live-test bash /home/admina/Gmaer-Server-Daashboard/test-live.sh)",
+      "Bash(export GDASH_BIN=/tmp/gdash-test/gdash)",
+      "Bash(GDASH_DAEMON_URL=https://localhost:8443 GDASH_ADMIN_PASSWORD=AdminPass123! bash /home/admina/Gmaer-Server-Daashboard/tests/integration/run-tests.sh)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "additionalDirectories": [
       "/home/admina/Gmaer-Server-Daashboard/cli/PATH=$HOME/.local/go"
