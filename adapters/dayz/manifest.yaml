@@ -7,9 +7,9 @@ version: "1.0.0"
 deploy_methods:
   - steamcmd
 
-start_command: "./DayZServer -config=serverDZ.cfg -port=2302 -profiles=/data/profiles -BEpath=/data/battleye -dologs -adminlog -netlog -freezecheck"
-stop_command: "kill -SIGTERM $(cat /tmp/dayz.pid)"
-restart_command: "kill -HUP $(cat /tmp/dayz.pid)"
+start_command: "export LD_LIBRARY_PATH={install_dir}/linux64:$LD_LIBRARY_PATH; mkdir -p {install_dir}/data/profiles {install_dir}/data/battleye; ./DayZServer -config={install_dir}/serverDZ.cfg -port=2302 -profiles={install_dir}/data/profiles -BEpath={install_dir}/data/battleye -dologs -adminlog -netlog -freezecheck"
+stop_command: "pkill -SIGTERM -f DayZServer || true"
+restart_command: "pkill -SIGTERM -f DayZServer || true"
 
 console:
   type: stdio

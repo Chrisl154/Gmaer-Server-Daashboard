@@ -8,8 +8,8 @@ deploy_methods:
   - steamcmd
 
 start_command: "./startserver.sh -configfile=/data/serverconfig.xml"
-stop_command: "kill -SIGTERM $(cat /tmp/7dtd.pid)"
-restart_command: "kill -HUP $(cat /tmp/7dtd.pid)"
+stop_command: "pkill -SIGTERM -f startserver.sh || true"
+restart_command: "pkill -SIGTERM -f startserver.sh || true"
 
 console:
   type: telnet

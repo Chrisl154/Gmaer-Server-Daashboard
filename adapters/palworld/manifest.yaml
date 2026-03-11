@@ -9,7 +9,7 @@ deploy_methods:
   - manual
 
 start_command: "./PalServer.sh -port=8211 -players=32 -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS"
-stop_command: "kill -SIGTERM $(cat /tmp/palworld.pid)"
+stop_command: "pkill -SIGTERM -f PalServer || true"
 restart_command: "kill -SIGTERM $(cat /tmp/palworld.pid) && sleep 5 && ./PalServer.sh"
 
 console:

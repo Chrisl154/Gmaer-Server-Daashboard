@@ -8,9 +8,9 @@ deploy_methods:
   - steamcmd
   - manual
 
-start_command: "mono EcoServer.exe"
+start_command: "./EcoServer"
 stop_command: "echo 'shutdown' | rcon-cli --host localhost --port 3001 --password ${ADMIN_PASSWORD}"
-restart_command: "echo 'shutdown' | rcon-cli; sleep 5; mono EcoServer.exe"
+restart_command: "pkill -SIGTERM -f EcoServer || true"
 
 console:
   type: websocket
@@ -76,7 +76,7 @@ notes: |
   SteamCMD App ID: 382310.
   Web-based admin panel at http://SERVER:3001.
   WebSocket console at ws://SERVER:3001/console.
-  Requires Mono runtime on Linux.
+  Native Linux binary since v0.9.4+ (no Mono required). Uses .NET 6/7 runtime.
   Extensive configuration via JSON files in Configs/.
   Mod support via Eco Mod Kit.
 
@@ -85,4 +85,4 @@ steamcmd:
   app_id: "382310"
   validate: true
   platform: linux
-  mono_required: true
+  mono_required: false

@@ -8,8 +8,8 @@ deploy_methods:
   - steamcmd
 
 start_command: "./srcds_run -game left4dead2 -console -usercon -port 27015 +map c1m1_hotel +maxplayers 4"
-stop_command: "kill -SIGTERM $(cat /tmp/l4d2.pid)"
-restart_command: "kill -HUP $(cat /tmp/l4d2.pid)"
+stop_command: "pkill -SIGTERM -f 'srcds_run.*left4dead2' || true"
+restart_command: "pkill -SIGTERM -f 'srcds_run.*left4dead2' || true"
 
 console:
   type: rcon

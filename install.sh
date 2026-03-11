@@ -147,6 +147,16 @@ else
   ok "SteamCMD: $(command -v steamcmd)"
 fi
 
+# ── Java (required for Minecraft and other JVM-based game servers) ────────────
+if command -v java &>/dev/null && java -version 2>&1 | grep -qE "version \"(17|1[89]|2[0-9])"; then
+  ok "Java: $(java -version 2>&1 | head -1)"
+else
+  log "Installing Java 21 LTS (required for Minecraft and other game servers)..."
+  pkg_install openjdk-21-jre-headless 2>/dev/null || pkg_install openjdk-17-jre-headless 2>/dev/null || \
+    warn "Could not install Java via apt — Minecraft servers will need Java installed manually."
+  command -v java &>/dev/null && ok "Java: $(java -version 2>&1 | head -1)" || warn "Java not available"
+fi
+
 # ── Go ────────────────────────────────────────────────────────────────────────
 GO_BIN=""
 if command -v go &>/dev/null && go version 2>/dev/null | grep -qE "go1\.(2[2-9]|[3-9][0-9])"; then

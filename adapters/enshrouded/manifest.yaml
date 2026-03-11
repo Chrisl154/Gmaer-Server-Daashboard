@@ -9,7 +9,7 @@ deploy_methods:
   - manual
 
 start_command: "./enshrouded_server"
-stop_command: "kill -SIGTERM $(cat /tmp/enshrouded.pid)"
+stop_command: "pkill -SIGTERM -f enshrouded_server || true"
 restart_command: "kill -SIGTERM $(cat /tmp/enshrouded.pid) && sleep 5 && ./enshrouded_server"
 
 console:

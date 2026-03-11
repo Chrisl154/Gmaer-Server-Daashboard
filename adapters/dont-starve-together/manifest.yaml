@@ -8,8 +8,8 @@ deploy_methods:
   - steamcmd
 
 start_command: "./dontstarve_dedicated_server_nullrenderer_x64 -cluster ${CLUSTER_NAME:-MyDSTServer} -shard ${SHARD:-Master}"
-stop_command: "kill -SIGTERM $(cat /tmp/dst.pid)"
-restart_command: "kill -HUP $(cat /tmp/dst.pid)"
+stop_command: "pkill -SIGTERM -f dontstarve_dedicated || true"
+restart_command: "pkill -SIGTERM -f dontstarve_dedicated || true"
 
 console:
   type: stdio
