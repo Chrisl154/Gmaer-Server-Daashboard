@@ -1,0 +1,107 @@
+id: dayz
+name: DayZ Dedicated Server
+engine: Enfusion (Bohemia Interactive)
+steam_app_id: "223350"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./DayZServer -config=serverDZ.cfg -port=2302 -profiles=/data/profiles -BEpath=/data/battleye -dologs -adminlog -netlog -freezecheck"
+stop_command: "kill -SIGTERM $(cat /tmp/dayz.pid)"
+restart_command: "kill -HUP $(cat /tmp/dayz.pid)"
+
+console:
+  type: stdio
+  attach_command: "docker attach dayz-server"
+  rcon_enabled: false
+
+backup_paths:
+  - /data/profiles
+  - /data/mpmissions
+  - /opt/dayz/serverDZ.cfg
+
+config_templates:
+  - path: /opt/dayz/serverDZ.cfg
+    description: "DayZ server configuration"
+    sample: |
+      hostname = "My DayZ Server";
+      password = "";
+      passwordAdmin = "changeme";
+      maxPlayers = 60;
+      verifySignatures = 2;
+      forceSameBuild = 1;
+      disableVoN = 0;
+      vonCodecQuality = 20;
+      disable3rdPerson = 0;
+      disableCrosshair = 0;
+      serverTime = "SystemTime";
+      serverTimePersistent = 0;
+      guaranteedUpdates = 1;
+      loginQueueConcurrentPlayers = 5;
+      loginQueueMaxPlayers = 500;
+      instanceId = 1;
+      class Missions {
+        class DayZ {
+          template = "dayzOffline.chernarusplus";
+        };
+      };
+
+ports:
+  - internal: 2302
+    default_external: 2302
+    protocol: udp
+    description: "Game port"
+  - internal: 2303
+    default_external: 2303
+    protocol: udp
+    description: "Steam query port (game+1)"
+  - internal: 2304
+    default_external: 2304
+    protocol: udp
+    description: "BattlEye port (game+2)"
+  - internal: 27016
+    default_external: 27016
+    protocol: udp
+    description: "Steam master port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 2302
+    timeout_seconds: 15
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - local
+
+recommended_resources:
+  cpu_cores: 4
+  ram_gb: 8
+  disk_gb: 30
+
+notes: |
+  DayZ Dedicated Server via SteamCMD.
+  SteamCMD App ID: 223350 (anonymous login supported).
+  BattlEye anti-cheat is required for public servers.
+  Steam query port is always game port + 1.
+  BattlEye port is always game port + 2.
+  Workshop mods require matching keys in /keys directory.
+  Missions are stored in /mpmissions.
+
+steamcmd:
+  login: anonymous
+  app_id: "223350"
+  validate: true
+  beta: ""
+  install_dir_env: "DAYZ_DIR"
+
+docker:
+  image: thijsvanloef/dayz-server
+  env_vars:
+    PORT: "2302"
+    QUERYPORT: "2303"
+    MAX_PLAYERS: "60"
+    MODS: ""
+    SERVER_CONFIG: "serverDZ.cfg"

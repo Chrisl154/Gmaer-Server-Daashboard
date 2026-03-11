@@ -1,0 +1,118 @@
+id: project-zomboid
+name: Project Zomboid Dedicated Server
+engine: Custom (The Indie Stone)
+steam_app_id: "380870"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./start-server.sh -servername ${SERVER_NAME:-MyPZServer} -adminpassword ${ADMIN_PASSWORD:-changeme} -port ${SERVER_PORT:-16261} -udpport ${UDP_PORT:-16262}"
+stop_command: "kill -SIGTERM $(cat /tmp/pz.pid)"
+restart_command: "kill -HUP $(cat /tmp/pz.pid)"
+
+console:
+  type: stdio
+  attach_command: "docker attach project-zomboid-server"
+  rcon_enabled: false
+
+backup_paths:
+  - /data/Zomboid/Saves
+  - /data/Zomboid/Server
+  - /data/Zomboid/mods
+
+config_templates:
+  - path: /data/Zomboid/Server/MyPZServer.ini
+    description: "Project Zomboid server configuration"
+    sample: |
+      Public=false
+      PublicName=My PZ Server
+      PublicDescription=A Project Zomboid Server
+      MaxPlayers=32
+      PingLimit=400
+      Open=true
+      ServerWelcomeMessage=Welcome to <servername>! To interact with the Chat panel: press Tab, type a message and press Enter. Exiting will save the game.
+      ResetID=123456789
+      Password=
+      AdminPassword=changeme
+      Map=Muldraugh, KY
+      SteamPort1=8766
+      SteamPort2=8767
+      DefaultPort=16261
+      UDPPort=16262
+      GlobalChat=true
+      ChatStreams=s,r,a,w,y,sh,f,all
+      SpawnPoint=0,0,0
+      SafetySystem=true
+      ShowSafety=true
+      SafetyToggleTimer=100
+      SafetyCooldownTimer=3000
+      SpawnItems=
+      DefaultPort=16261
+      PlayerRespawnWithSelf=false
+      PlayerRespawnWithOther=false
+      FastForwardMultiplier=40.0
+      PauseEmpty=true
+      DisplayUserName=true
+      SpawnFilter=
+
+ports:
+  - internal: 16261
+    default_external: 16261
+    protocol: udp
+    description: "Game port"
+  - internal: 16262
+    default_external: 16262
+    protocol: udp
+    description: "Direct connection UDP port"
+  - internal: 8766
+    default_external: 8766
+    protocol: udp
+    description: "Steam port 1"
+  - internal: 8767
+    default_external: 8767
+    protocol: udp
+    description: "Steam port 2"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 16261
+    timeout_seconds: 15
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - local
+
+recommended_resources:
+  cpu_cores: 4
+  ram_gb: 8
+  disk_gb: 10
+
+notes: |
+  Project Zomboid Dedicated Server via SteamCMD.
+  SteamCMD App ID: 380870 (anonymous login supported).
+  Server configuration is in /data/Zomboid/Server/<servername>.ini.
+  Workshop mods defined in <servername>.ini under Mods= and WorkshopItems=.
+  Java 17 is required by the server runtime.
+  Saves are per-player in /data/Zomboid/Saves/Multiplayer/<servername>/.
+
+steamcmd:
+  login: anonymous
+  app_id: "380870"
+  validate: true
+  beta: ""
+  install_dir_env: "PZ_DIR"
+
+docker:
+  image: asledgehammer/project-zomboid-server
+  env_vars:
+    SERVER_NAME: "MyPZServer"
+    ADMIN_PASSWORD: "changeme"
+    SERVER_PORT: "16261"
+    UDP_PORT: "16262"
+    MAX_PLAYERS: "32"
+    PUBLIC: "false"
+    MOD_IDS: ""
+    WORKSHOP_IDS: ""

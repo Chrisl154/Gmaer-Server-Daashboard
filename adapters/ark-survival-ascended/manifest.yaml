@@ -1,0 +1,115 @@
+id: ark-survival-ascended
+name: ARK Survival Ascended Dedicated Server
+engine: Unreal Engine 5 (Studio Wildcard)
+steam_app_id: "2430930"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./ArkAscendedServer.sh TheIsland_WP?listen?SessionName=\"${SERVER_NAME:-My ARK Server}\"?MaxPlayers=${MAX_PLAYERS:-70}?ServerPassword=\"${SERVER_PASSWORD:-}\"?ServerAdminPassword=\"${ADMIN_PASSWORD:-changeme}\"?Port=${SERVER_PORT:-7777}?QueryPort=${QUERY_PORT:-27015}?RCONPort=${RCON_PORT:-27020}?RCONEnabled=True -server -log"
+stop_command: "kill -SIGTERM $(cat /tmp/asa.pid)"
+restart_command: "kill -HUP $(cat /tmp/asa.pid)"
+
+console:
+  type: rcon
+  attach_command: "rcon-cli --password ${ADMIN_PASSWORD} --host localhost --port 27020"
+  rcon_enabled: true
+  rcon_port: 27020
+
+backup_paths:
+  - /data/ShooterGame/Saved/SavedArks
+  - /data/ShooterGame/Saved/Config/WindowsServer
+  - /data/ShooterGame/Saved/Config/LinuxServer
+
+config_templates:
+  - path: /data/ShooterGame/Saved/Config/LinuxServer/GameUserSettings.ini
+    description: "ARK: SA server settings"
+    sample: |
+      [ServerSettings]
+      ServerAdminPassword=changeme
+      ServerPassword=
+      MaxPlayers=70
+      RCONEnabled=True
+      RCONPort=27020
+      TheMaxStructuresInRange=10500
+      OxygenSwimSpeedStatMultiplier=1.0
+      StructurePreventResourceRadiusMultiplier=1.0
+      TribeNameChangeCooldown=15
+      PlatformSaddleBuildAreaBoundsMultiplier=1.0
+      AlwaysAllowStructurePickup=True
+      bDisableStructurePlacementCollision=False
+      AllowIntegratedSPlusStructures=True
+      bAllowPlatformSaddleMultiFloors=False
+      OverrideStructurePlatformPrevention=False
+      ShowMapPlayerLocation=True
+      AllowHideDamageSourceFromLogs=True
+      [SessionSettings]
+      SessionName=My ARK Server
+      [/Script/Engine.GameSession]
+      MaxPlayers=70
+
+ports:
+  - internal: 7777
+    default_external: 7777
+    protocol: udp
+    description: "Game port"
+  - internal: 7778
+    default_external: 7778
+    protocol: udp
+    description: "Raw UDP socket port (game+1)"
+  - internal: 27015
+    default_external: 27015
+    protocol: udp
+    description: "Steam query port"
+  - internal: 27020
+    default_external: 27020
+    protocol: tcp
+    description: "RCON port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 7777
+    timeout_seconds: 30
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - curseforge
+  - local
+
+recommended_resources:
+  cpu_cores: 6
+  ram_gb: 16
+  disk_gb: 60
+
+notes: |
+  ARK: Survival Ascended Dedicated Server via SteamCMD.
+  SteamCMD App ID: 2430930.
+  Requires anonymous Steam login.
+  Available maps: TheIsland_WP, ScorchedEarth_WP, TheCenter_WP, Aberration_WP, Extinction_WP.
+  Raw UDP socket port is always game port + 1.
+  Mods supported via Steam Workshop or CurseForge.
+  High resource requirements — UE5 engine is demanding.
+  Proton/Wine required on Linux for Windows-only binaries.
+
+steamcmd:
+  login: anonymous
+  app_id: "2430930"
+  validate: true
+  beta: ""
+  install_dir_env: "ASA_DIR"
+
+docker:
+  image: mschnitzer/asa-linux-server
+  env_vars:
+    SERVER_MAP: "TheIsland_WP"
+    SERVER_NAME: "My ARK Server"
+    SERVER_PASSWORD: ""
+    SERVER_ADMIN_PASSWORD: "changeme"
+    MAX_PLAYERS: "70"
+    SERVER_PORT: "7777"
+    QUERY_PORT: "27015"
+    RCON_PORT: "27020"
+    MOD_IDS: ""

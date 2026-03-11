@@ -1,0 +1,133 @@
+id: 7-days-to-die
+name: 7 Days to Die Dedicated Server
+engine: Custom (The Fun Pimps)
+steam_app_id: "294420"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./startserver.sh -configfile=/data/serverconfig.xml"
+stop_command: "kill -SIGTERM $(cat /tmp/7dtd.pid)"
+restart_command: "kill -HUP $(cat /tmp/7dtd.pid)"
+
+console:
+  type: telnet
+  attach_command: "telnet localhost 8081"
+  rcon_enabled: false
+
+backup_paths:
+  - /data/Saves
+  - /data/serverconfig.xml
+
+config_templates:
+  - path: /data/serverconfig.xml
+    description: "7 Days to Die server configuration"
+    sample: |
+      <?xml version="1.0"?>
+      <ServerSettings>
+        <property name="ServerName" value="My 7DTD Server"/>
+        <property name="ServerDescription" value="A 7 Days to Die Server"/>
+        <property name="ServerPassword" value=""/>
+        <property name="ServerPort" value="26900"/>
+        <property name="ServerVisibility" value="2"/>
+        <property name="ServerDisabledNetworkProtocols" value="SteamNetworking"/>
+        <property name="MaxUncoveredMapChunksPerPlayer" value="131072"/>
+        <property name="ServerMaxPlayerCount" value="8"/>
+        <property name="ServerReservedSlots" value="0"/>
+        <property name="ServerReservedSlotsPermission" value="100"/>
+        <property name="ServerAdminSlots" value="0"/>
+        <property name="ServerAdminSlotsPermission" value="0"/>
+        <property name="ServerLoginConfirmationText" value=""/>
+        <property name="Region" value="NorthAmericaEast"/>
+        <property name="Language" value="English"/>
+        <property name="TelnetEnabled" value="true"/>
+        <property name="TelnetPort" value="8081"/>
+        <property name="TelnetPassword" value="changeme"/>
+        <property name="GameWorld" value="Navezgane"/>
+        <property name="WorldGenSeed" value="asdf"/>
+        <property name="WorldGenSize" value="6144"/>
+        <property name="GameName" value="My Game"/>
+        <property name="GameMode" value="GameModeSurvival"/>
+        <property name="ZombieFeralSense" value="0"/>
+        <property name="ZombieMove" value="0"/>
+        <property name="ZombieMoveNight" value="3"/>
+        <property name="ZombieFeralMove" value="3"/>
+        <property name="ZombieBMMove" value="3"/>
+        <property name="BloodMoonFrequency" value="7"/>
+        <property name="BloodMoonRange" value="0"/>
+        <property name="BloodMoonWarning" value="8"/>
+        <property name="BloodMoonEnemyCount" value="8"/>
+        <property name="LootAbundance" value="100"/>
+        <property name="LootRespawnDays" value="7"/>
+        <property name="AirDropFrequency" value="72"/>
+        <property name="DropOnDeath" value="1"/>
+        <property name="DropOnQuit" value="0"/>
+        <property name="BedrollDeadZoneSize" value="15"/>
+        <property name="BedrollExpiryTime" value="45"/>
+      </ServerSettings>
+
+ports:
+  - internal: 26900
+    default_external: 26900
+    protocol: tcp
+    description: "Game port (TCP)"
+  - internal: 26900
+    default_external: 26900
+    protocol: udp
+    description: "Game port (UDP)"
+  - internal: 26901
+    default_external: 26901
+    protocol: udp
+    description: "Steam query port (game+1)"
+  - internal: 26902
+    default_external: 26902
+    protocol: udp
+    description: "Steam query port (game+2)"
+  - internal: 8081
+    default_external: 8081
+    protocol: tcp
+    description: "Telnet console port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 26900
+    timeout_seconds: 15
+
+mod_support: true
+mod_sources:
+  - nexusmods
+  - local
+
+recommended_resources:
+  cpu_cores: 4
+  ram_gb: 8
+  disk_gb: 15
+
+notes: |
+  7 Days to Die Dedicated Server via SteamCMD.
+  SteamCMD App ID: 294420 (anonymous login supported).
+  Console is accessible via Telnet on port 8081 (TelnetEnabled=true).
+  Steam ports are always game port +1 and +2.
+  Game worlds: Navezgane (fixed), Random Gen (procedural with seed).
+  Mod framework: XMLs in Mods/ folder; no plugin API (only data mods).
+  Alloc's Server Fixes provides additional admin features.
+
+steamcmd:
+  login: anonymous
+  app_id: "294420"
+  validate: true
+  beta: ""
+  install_dir_env: "SDTD_DIR"
+
+docker:
+  image: vinanrra/7dtd-server
+  env_vars:
+    START_MODE: "1"
+    VERSION: "stable"
+    PUID: "1000"
+    PGID: "1000"
+    TimeZone: "UTC"
+    TEST_ALERT: "NO"
+    ALLOC_FIXES: "YES"

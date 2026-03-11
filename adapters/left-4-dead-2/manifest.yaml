@@ -1,0 +1,96 @@
+id: left-4-dead-2
+name: Left 4 Dead 2 Dedicated Server
+engine: Source (Valve)
+steam_app_id: "222860"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./srcds_run -game left4dead2 -console -usercon -port 27015 +map c1m1_hotel +maxplayers 4"
+stop_command: "kill -SIGTERM $(cat /tmp/l4d2.pid)"
+restart_command: "kill -HUP $(cat /tmp/l4d2.pid)"
+
+console:
+  type: rcon
+  attach_command: "rcon-cli --password ${RCON_PASSWORD} --host localhost --port 27015"
+  rcon_enabled: true
+  rcon_port: 27015
+
+backup_paths:
+  - /opt/l4d2/left4dead2/cfg
+  - /opt/l4d2/left4dead2/addons
+
+config_templates:
+  - path: /opt/l4d2/left4dead2/cfg/server.cfg
+    description: "L4D2 server configuration"
+    sample: |
+      hostname "My L4D2 Server"
+      sv_password ""
+      rcon_password "changeme"
+      sv_lan 0
+      sv_region 255
+      sv_gametypes "coop,realism,survival,versus,scavenge"
+      sv_allow_lobby_connect_only 0
+      sv_consistency 0
+      sv_cheats 0
+      mp_gamemode coop
+      z_difficulty Normal
+      sv_alltalk 0
+      sv_voiceenable 1
+
+ports:
+  - internal: 27015
+    default_external: 27015
+    protocol: udp
+    description: "Game port"
+  - internal: 27015
+    default_external: 27015
+    protocol: tcp
+    description: "RCON port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 27015
+    timeout_seconds: 10
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - sourcemod
+  - local
+
+recommended_resources:
+  cpu_cores: 2
+  ram_gb: 4
+  disk_gb: 15
+
+notes: |
+  Left 4 Dead 2 Dedicated Server via SteamCMD.
+  SteamCMD App ID: 222860 (anonymous login supported).
+  Game modes: coop, realism, survival, versus, scavenge.
+  SourceMod + MetaMod:Source provide plugin support.
+  A GSLT is required for public server listing.
+  Workshop addons supported via +host_workshop_collection.
+  sv_allow_lobby_connect_only 0 allows direct IP connections.
+  Max players: 4 (coop/survival), 8 (versus/scavenge).
+
+steamcmd:
+  login: anonymous
+  app_id: "222860"
+  validate: true
+  beta: ""
+  install_dir_env: "L4D2_DIR"
+
+docker:
+  image: cm2network/l4d2
+  env_vars:
+    SRCDS_TOKEN: ""
+    SRCDS_RCONPW: "changeme"
+    SRCDS_PW: ""
+    SRCDS_PORT: "27015"
+    SRCDS_IP: "0.0.0.0"
+    SRCDS_MAXPLAYERS: "4"
+    SRCDS_STARTMAP: "c1m1_hotel"
+    SRCDS_GAMEMODE: "coop"

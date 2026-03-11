@@ -1,0 +1,105 @@
+id: garrys-mod
+name: Garry's Mod Dedicated Server
+engine: Source (Facepunch Studios)
+steam_app_id: "4020"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./srcds_run -game garrysmod -console -usercon -port 27015 +map gm_flatgrass +maxplayers 16 +gamemode sandbox"
+stop_command: "kill -SIGTERM $(cat /tmp/gmod.pid)"
+restart_command: "kill -HUP $(cat /tmp/gmod.pid)"
+
+console:
+  type: rcon
+  attach_command: "rcon-cli --password ${RCON_PASSWORD} --host localhost --port 27015"
+  rcon_enabled: true
+  rcon_port: 27015
+
+backup_paths:
+  - /opt/gmod/garrysmod/cfg
+  - /opt/gmod/garrysmod/addons
+  - /opt/gmod/garrysmod/data
+  - /opt/gmod/garrysmod/lua
+
+config_templates:
+  - path: /opt/gmod/garrysmod/cfg/server.cfg
+    description: "GMod server configuration"
+    sample: |
+      hostname "My Garry's Mod Server"
+      sv_password ""
+      rcon_password "changeme"
+      sv_lan 0
+      sv_region 255
+      sv_downloadurl ""
+      sv_allowupload 1
+      sv_allowdownload 1
+      net_maxfilesize 64
+      sv_minrate 0
+      sv_maxrate 30000
+      sv_mincmdrate 10
+      sv_maxcmdrate 66
+      sv_minupdaterate 10
+      sv_maxupdaterate 66
+      sv_voiceenable 1
+
+ports:
+  - internal: 27015
+    default_external: 27015
+    protocol: udp
+    description: "Game port"
+  - internal: 27015
+    default_external: 27015
+    protocol: tcp
+    description: "RCON port"
+  - internal: 27005
+    default_external: 27005
+    protocol: udp
+    description: "Client port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 27015
+    timeout_seconds: 10
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - local
+
+recommended_resources:
+  cpu_cores: 2
+  ram_gb: 4
+  disk_gb: 20
+
+notes: |
+  Garry's Mod Dedicated Server via SteamCMD.
+  SteamCMD App ID: 4020 (anonymous login supported).
+  Gamemode is configurable: sandbox, darkrp, deathrun, murder, etc.
+  Workshop addons via collection ID: +host_workshop_collection <id>.
+  ULX + ULib are the standard admin plugins.
+  FastDL (sv_downloadurl) recommended for custom content distribution.
+  A GSLT is required for public listing on Steam.
+
+steamcmd:
+  login: anonymous
+  app_id: "4020"
+  validate: true
+  beta: ""
+  install_dir_env: "GMOD_DIR"
+
+docker:
+  image: cm2network/garrysmod
+  env_vars:
+    SRCDS_TOKEN: ""
+    SRCDS_RCONPW: "changeme"
+    SRCDS_PW: ""
+    SRCDS_PORT: "27015"
+    SRCDS_NET_PUBLIC_ADDRESS: "0"
+    SRCDS_IP: "0.0.0.0"
+    SRCDS_MAXPLAYERS: "16"
+    SRCDS_STARTMAP: "gm_flatgrass"
+    SRCDS_GAMEMODE: "sandbox"
+    SRCDS_WORKSHOP_COLLECTION: ""

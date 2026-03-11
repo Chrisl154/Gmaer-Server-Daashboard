@@ -1,0 +1,122 @@
+id: dont-starve-together
+name: Don't Starve Together Dedicated Server
+engine: Custom (Klei Entertainment)
+steam_app_id: "343050"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./dontstarve_dedicated_server_nullrenderer_x64 -cluster ${CLUSTER_NAME:-MyDSTServer} -shard ${SHARD:-Master}"
+stop_command: "kill -SIGTERM $(cat /tmp/dst.pid)"
+restart_command: "kill -HUP $(cat /tmp/dst.pid)"
+
+console:
+  type: stdio
+  attach_command: "docker attach dst-server"
+  rcon_enabled: false
+
+backup_paths:
+  - /data/clusters/${CLUSTER_NAME:-MyDSTServer}
+
+config_templates:
+  - path: /data/clusters/MyDSTServer/cluster.ini
+    description: "DST cluster configuration"
+    sample: |
+      [NETWORK]
+      cluster_name = My DST Server
+      cluster_description = A Don't Starve Together Server
+      cluster_password =
+      cluster_intention = cooperative
+      max_players = 6
+      pvp = false
+      game_mode = survival
+      enable_vote_kick = true
+      pause_when_empty = true
+
+      [MISC]
+      console_enabled = true
+      max_snapshots = 6
+
+      [SHARD]
+      shard_enabled = false
+      bind_ip = 127.0.0.1
+      master_ip = 127.0.0.1
+      master_port = 10888
+      cluster_key = defaultkey
+  - path: /data/clusters/MyDSTServer/Master/server.ini
+    description: "DST Master shard configuration"
+    sample: |
+      [NETWORK]
+      server_port = 10999
+
+      [SHARD]
+      is_master = true
+
+      [STEAM]
+      master_server_port = 27018
+      authentication_port = 8766
+
+ports:
+  - internal: 10999
+    default_external: 10999
+    protocol: udp
+    description: "Game port (Master shard)"
+  - internal: 10998
+    default_external: 10998
+    protocol: udp
+    description: "Game port (Caves shard)"
+  - internal: 10888
+    default_external: 10888
+    protocol: udp
+    description: "Shard inter-communication port"
+  - internal: 27018
+    default_external: 27018
+    protocol: udp
+    description: "Steam master server port"
+  - internal: 8766
+    default_external: 8766
+    protocol: udp
+    description: "Steam authentication port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 10999
+    timeout_seconds: 15
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - local
+
+recommended_resources:
+  cpu_cores: 2
+  ram_gb: 4
+  disk_gb: 5
+
+notes: |
+  Don't Starve Together Dedicated Server via SteamCMD.
+  SteamCMD App ID: 343050 (anonymous login supported).
+  Requires a cluster token from Klei account (https://accounts.klei.com).
+  Caves shard requires a second server process on port 10998.
+  Workshop mods configured via modoverrides.lua in each shard.
+  cluster.ini controls global settings; each shard has its own server.ini.
+
+steamcmd:
+  login: anonymous
+  app_id: "343050"
+  validate: true
+  beta: ""
+  install_dir_env: "DST_DIR"
+
+docker:
+  image: jamesits/dst-dedicated-server
+  env_vars:
+    DST_SERVER_ARCH: "amd64"
+    CLUSTER_NAME: "MyDSTServer"
+    CLUSTER_TOKEN: ""
+    GAME_MODE: "survival"
+    MAX_PLAYERS: "6"
+    PVP: "false"
+    MOD_IDS: ""

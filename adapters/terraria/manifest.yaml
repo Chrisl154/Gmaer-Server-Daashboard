@@ -1,0 +1,86 @@
+id: terraria
+name: Terraria Dedicated Server
+engine: Custom (Re-Logic)
+steam_app_id: null
+version: "1.0.0"
+
+deploy_methods:
+  - manual
+
+start_command: "./TerrariaServer -config /data/serverconfig.txt -world /data/worlds/${WORLD_NAME:-World1}.wld -port ${SERVER_PORT:-7777} -maxplayers ${MAX_PLAYERS:-16} -password \"${SERVER_PASSWORD:-}\" -autocreate 2"
+stop_command: "kill -SIGTERM $(cat /tmp/terraria.pid)"
+restart_command: "kill -HUP $(cat /tmp/terraria.pid)"
+
+console:
+  type: stdio
+  attach_command: "docker attach terraria-server"
+  rcon_enabled: false
+
+backup_paths:
+  - /data/worlds
+  - /data/serverconfig.txt
+
+config_templates:
+  - path: /data/serverconfig.txt
+    description: "Terraria server configuration"
+    sample: |
+      world=/data/worlds/World1.wld
+      autocreate=2
+      worldname=World1
+      difficulty=0
+      maxplayers=16
+      port=7777
+      password=
+      motd=Welcome to my Terraria Server!
+      worldpath=/data/worlds/
+      banlist=/data/banlist.txt
+      secure=1
+      language=en/US
+      upnp=0
+      npcstream=60
+      priority=1
+
+ports:
+  - internal: 7777
+    default_external: 7777
+    protocol: tcp
+    description: "Game port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 7777
+    timeout_seconds: 10
+
+mod_support: true
+mod_sources:
+  - local
+
+recommended_resources:
+  cpu_cores: 2
+  ram_gb: 2
+  disk_gb: 5
+
+notes: |
+  Terraria Dedicated Server (vanilla).
+  No Steam App - download standalone server from Re-Logic or Steam install.
+  tModLoader is a popular mod framework; it ships its own server binary.
+  Worlds are stored as .wld files; back them up regularly.
+  autocreate sizes: 1=small, 2=medium, 3=large.
+  difficulty: 0=classic, 1=expert, 2=master, 3=journey.
+
+manual:
+  download_url_template: "https://terraria.org"
+  java_required: ""
+  accept_eula: false
+
+docker:
+  image: beardandbytes/terraria-server
+  env_vars:
+    WORLD_FILENAME: "World1.wld"
+    MAX_PLAYERS: "16"
+    SERVER_PORT: "7777"
+    SERVER_PASSWORD: ""
+    AUTOCREATE: "2"
+    WORLD_SIZE: "2"
+    DIFFICULTY: "0"

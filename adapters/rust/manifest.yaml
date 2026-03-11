@@ -1,0 +1,100 @@
+id: rust
+name: Rust Dedicated Server
+engine: Custom (Facepunch Studios)
+steam_app_id: "252490"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./RustDedicated -batchmode -nographics +server.port ${SERVER_PORT:-28015} +server.queryport ${QUERY_PORT:-28016} +server.level \"Procedural Map\" +server.seed ${WORLD_SEED:-12345} +server.worldsize ${WORLD_SIZE:-3000} +server.maxplayers ${MAX_PLAYERS:-100} +server.hostname \"${SERVER_NAME:-My Rust Server}\" +server.description \"${SERVER_DESCRIPTION}\" +server.url \"\" +server.headerimage \"\" +rcon.port ${RCON_PORT:-28016} +rcon.password \"${RCON_PASSWORD:-changeme}\" +rcon.web 1"
+stop_command: "kill -SIGTERM $(cat /tmp/rust.pid)"
+restart_command: "kill -HUP $(cat /tmp/rust.pid)"
+
+console:
+  type: webrcon
+  attach_command: "rcon-cli --password ${RCON_PASSWORD} --host localhost --port 28016"
+  rcon_enabled: true
+  rcon_port: 28016
+
+backup_paths:
+  - /data/server/my_server_identity/saves
+  - /data/server/my_server_identity/cfg
+
+config_templates:
+  - path: /data/server/cfg/server.cfg
+    description: "Rust server configuration"
+    sample: |
+      server.hostname "My Rust Server"
+      server.description "A Rust Server"
+      server.maxplayers 100
+      server.worldsize 3000
+      server.seed 12345
+      server.saveinterval 600
+      server.pve false
+      decay.scale 1.0
+      antihack.enabled true
+      antihack.noclip_protection 2
+      antihack.speedhack_protection 2
+      rcon.password "changeme"
+      rcon.web 1
+
+ports:
+  - internal: 28015
+    default_external: 28015
+    protocol: udp
+    description: "Game port"
+  - internal: 28016
+    default_external: 28016
+    protocol: tcp
+    description: "RCON / query port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 28015
+    timeout_seconds: 15
+
+mod_support: true
+mod_sources:
+  - umod
+  - oxide
+  - carbon
+  - local
+
+recommended_resources:
+  cpu_cores: 4
+  ram_gb: 12
+  disk_gb: 20
+
+notes: |
+  Rust Dedicated Server via SteamCMD.
+  SteamCMD App ID: 252490 (anonymous login supported).
+  uMod/Oxide and Carbon are the primary plugin frameworks.
+  Map wipes are typically scheduled monthly; seed changes the map.
+  WebRCON is enabled by default (rcon.web 1) for web-based console access.
+  Server identity dir: /server/<identity>/saves, /server/<identity>/cfg.
+  Facepunch forced updates require server restarts on wipe day (first Thursday of month).
+
+steamcmd:
+  login: anonymous
+  app_id: "252490"
+  validate: true
+  beta: ""
+  install_dir_env: "RUST_DIR"
+
+docker:
+  image: didstopia/rust-server
+  env_vars:
+    RUST_SERVER_STARTUP_ARGUMENTS: "-batchmode -nographics"
+    RUST_SERVER_IDENTITY: "my_server_identity"
+    RUST_SERVER_SEED: "12345"
+    RUST_SERVER_NAME: "My Rust Server"
+    RUST_SERVER_DESCRIPTION: "A Rust Server"
+    RUST_SERVER_URL: ""
+    RUST_SERVER_WORLDSIZE: "3000"
+    RUST_SERVER_MAXPLAYERS: "100"
+    RUST_RCON_PASSWORD: "changeme"
+    RUST_RCON_WEB: "1"
+    RUST_UPDATE_CHECKING: "1"
+    RUST_AUTO_WIPE: "0"

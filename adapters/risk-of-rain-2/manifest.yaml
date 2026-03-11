@@ -1,0 +1,81 @@
+id: risk-of-rain-2
+name: Risk of Rain 2 Dedicated Server
+engine: Unity (Hopoo Games / Gearbox)
+steam_app_id: "1180760"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./RiskOfRain2.exe -batchmode -nographics -port ${SERVER_PORT:-27015} +queryport ${QUERY_PORT:-27016} -dedicatedServer"
+stop_command: "kill -SIGTERM $(cat /tmp/ror2.pid)"
+restart_command: "kill -HUP $(cat /tmp/ror2.pid)"
+
+console:
+  type: stdio
+  attach_command: "docker attach ror2-server"
+  rcon_enabled: false
+
+backup_paths:
+  - /data/RiskOfRain2/config
+
+config_templates:
+  - path: /data/RiskOfRain2/config/server.cfg
+    description: "Risk of Rain 2 server configuration"
+    sample: |
+      # Risk of Rain 2 dedicated server config
+      sv_hostname = "My RoR2 Server"
+      sv_password = ""
+      sv_max_players = 4
+      sv_port = 27015
+
+ports:
+  - internal: 27015
+    default_external: 27015
+    protocol: udp
+    description: "Game port"
+  - internal: 27016
+    default_external: 27016
+    protocol: udp
+    description: "Steam query port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 27015
+    timeout_seconds: 10
+
+mod_support: true
+mod_sources:
+  - thunderstore
+  - local
+
+recommended_resources:
+  cpu_cores: 2
+  ram_gb: 4
+  disk_gb: 10
+
+notes: |
+  Risk of Rain 2 Dedicated Server via SteamCMD.
+  SteamCMD App ID: 1180760 (dedicated server app).
+  BepInEx + R2API are the standard modding frameworks.
+  r2modman is the popular mod manager for clients.
+  Max players default is 4; mods can increase this.
+  Proton/Wine required on Linux as server binary is Windows-only.
+  All players and server must run matching mods.
+
+steamcmd:
+  login: anonymous
+  app_id: "1180760"
+  validate: true
+  beta: ""
+  install_dir_env: "ROR2_DIR"
+
+docker:
+  image: cm2network/steamcmd
+  env_vars:
+    STEAMAPP: "1180760"
+    STEAMAPPDIR: "/opt/ror2"
+    SERVER_PORT: "27015"
+    QUERY_PORT: "27016"
+    MAX_PLAYERS: "4"

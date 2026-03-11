@@ -1,0 +1,82 @@
+id: dota2
+name: Dota 2 Dedicated Server
+engine: Source 2 (Valve)
+steam_app_id: "570"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./srcds_run -game dota -console -usercon +sv_lan 0 +host_workshop_map 0 -port 27015"
+stop_command: "kill -SIGTERM $(cat /tmp/dota2.pid)"
+restart_command: "kill -HUP $(cat /tmp/dota2.pid)"
+
+console:
+  type: rcon
+  attach_command: "rcon-cli --password ${RCON_PASSWORD} --host localhost --port 27015"
+  rcon_enabled: true
+  rcon_port: 27015
+
+backup_paths:
+  - /opt/dota2/game/dota/cfg
+  - /opt/dota2/game/dota/addons
+
+config_templates:
+  - path: /opt/dota2/game/dota/cfg/server.cfg
+    description: "Dota 2 server configuration"
+    sample: |
+      hostname "My Dota 2 Server"
+      sv_password ""
+      rcon_password "changeme"
+      sv_lan 0
+      tv_enable 1
+      tv_name "My Dota 2 TV"
+      tv_port 27020
+      dota_auto_surrender_all_disconnected_timeout 300
+
+ports:
+  - internal: 27015
+    default_external: 27015
+    protocol: udp
+    description: "Game/RCON port"
+  - internal: 27020
+    default_external: 27020
+    protocol: udp
+    description: "SourceTV port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 27015
+    timeout_seconds: 10
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - local
+
+recommended_resources:
+  cpu_cores: 4
+  ram_gb: 8
+  disk_gb: 30
+
+notes: |
+  Dota 2 Dedicated Server via SteamCMD.
+  SteamCMD App ID: 570 (anonymous login supported).
+  Custom lobbies and workshop maps are supported.
+  SourceTV is enabled by default for spectating.
+  Valve Anti-Cheat (VAC) is recommended for public servers.
+
+steamcmd:
+  login: anonymous
+  app_id: "570"
+  validate: true
+  beta: ""
+  install_dir_env: "DOTA2_DIR"
+
+docker:
+  image: cm2network/steamcmd
+  env_vars:
+    STEAMAPP: "570"
+    STEAMAPPDIR: "/opt/dota2"
+    RCON_PASSWORD: "changeme"

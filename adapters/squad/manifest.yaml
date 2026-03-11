@@ -1,0 +1,103 @@
+id: squad
+name: Squad Dedicated Server
+engine: Unreal Engine 4 (Offworld Industries)
+steam_app_id: "403240"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./SquadGameServer.sh Port=${SERVER_PORT:-7787} QueryPort=${QUERY_PORT:-27165} FIXEDMAXPLAYERS=${MAX_PLAYERS:-80} RANDOM=NONE -log"
+stop_command: "kill -SIGTERM $(cat /tmp/squad.pid)"
+restart_command: "kill -HUP $(cat /tmp/squad.pid)"
+
+console:
+  type: rcon
+  attach_command: "rcon-cli --password ${RCON_PASSWORD} --host localhost --port 21114"
+  rcon_enabled: true
+  rcon_port: 21114
+
+backup_paths:
+  - /opt/squad/SquadGame/ServerConfig
+  - /opt/squad/SquadGame/Saved/Logs
+
+config_templates:
+  - path: /opt/squad/SquadGame/ServerConfig/Server.cfg
+    description: "Squad server configuration"
+    sample: |
+      [Server]
+      ServerName=My Squad Server
+      MaxPlayers=80
+      NumReservedSlots=0
+      ServerPassword=
+      ServerMessageOfTheDay=Welcome to my Squad Server!
+      MaxTickRate=50
+      RecordStats=true
+      bRandomizeMapRotation=false
+      ProfanityFilter=true
+      LogDownloadURL=
+  - path: /opt/squad/SquadGame/ServerConfig/Rcon.cfg
+    description: "RCON configuration"
+    sample: |
+      [Rcon]
+      Password=changeme
+      Port=21114
+      bEnabled=true
+
+ports:
+  - internal: 7787
+    default_external: 7787
+    protocol: udp
+    description: "Game port"
+  - internal: 27165
+    default_external: 27165
+    protocol: udp
+    description: "Steam query port"
+  - internal: 21114
+    default_external: 21114
+    protocol: tcp
+    description: "RCON port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 7787
+    timeout_seconds: 30
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - local
+
+recommended_resources:
+  cpu_cores: 8
+  ram_gb: 16
+  disk_gb: 60
+
+notes: |
+  Squad Dedicated Server via SteamCMD.
+  SteamCMD App ID: 403240 (anonymous login supported).
+  Map rotation configured in MapRotation.cfg.
+  Layer rotation configured in LayerRotation.cfg.
+  RCON enabled via Rcon.cfg (port 21114).
+  Admin lists managed in Admins.cfg.
+  Reserved slots configured in Server.cfg (NumReservedSlots).
+  High CPU/RAM requirements due to UE4 + 80-player servers.
+
+steamcmd:
+  login: anonymous
+  app_id: "403240"
+  validate: true
+  beta: ""
+  install_dir_env: "SQUAD_DIR"
+
+docker:
+  image: andrewmhub/squad-server
+  env_vars:
+    SERVER_PORT: "7787"
+    QUERY_PORT: "27165"
+    RCON_PORT: "21114"
+    RCON_PASSWORD: "changeme"
+    MAX_PLAYERS: "80"
+    SERVER_NAME: "My Squad Server"
+    SERVER_PASSWORD: ""

@@ -1,0 +1,128 @@
+id: conan-exiles
+name: Conan Exiles Dedicated Server
+engine: Unreal Engine 4 (Funcom)
+steam_app_id: "443030"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./ConanSandboxServer.sh -log -MaxPlayers=${MAX_PLAYERS:-40} Port=${SERVER_PORT:-7777} QueryPort=${QUERY_PORT:-27015} RCONPort=${RCON_PORT:-25575} RCONEnabled=true RCONPassword=\"${RCON_PASSWORD:-changeme}\""
+stop_command: "kill -SIGTERM $(cat /tmp/conan.pid)"
+restart_command: "kill -HUP $(cat /tmp/conan.pid)"
+
+console:
+  type: rcon
+  attach_command: "rcon-cli --password ${RCON_PASSWORD} --host localhost --port 25575"
+  rcon_enabled: true
+  rcon_port: 25575
+
+backup_paths:
+  - /data/ConanSandbox/Saved/savegames
+  - /data/ConanSandbox/Saved/Config/WindowsServer
+  - /data/ConanSandbox/Saved/Config/LinuxServer
+
+config_templates:
+  - path: /data/ConanSandbox/Saved/Config/LinuxServer/Engine.ini
+    description: "Conan Exiles engine configuration"
+    sample: |
+      [URL]
+      Port=7777
+
+      [OnlineSubsystem]
+      ServerName=My Conan Exiles Server
+
+      [OnlineSubsystemSteam]
+      GameServerQueryPort=27015
+  - path: /data/ConanSandbox/Saved/Config/LinuxServer/Game.ini
+    description: "Conan Exiles game configuration"
+    sample: |
+      [/Script/ConanSandbox.ConanGameMode]
+      bServerVACEnabled=True
+      MaxNudity=2
+      serverName=My Conan Exiles Server
+      serverPassword=
+      AdminPassword=changeme
+      MaxPlayers=40
+      PVPEnabled=True
+      ServerRegion=0
+      DayTimeSpeedRate=1.0
+      NightTimeSpeedRate=1.0
+      HarvestAmountMultiplier=1.0
+      ResourceRespawnSpeedMultiplier=1.0
+      AnimalSpawnMultiplier=1.0
+      NPCSpawnMultiplier=1.0
+      DropEquipmentOnDeath=4
+      AvatarLifetime=86.0
+      ItemSpoilRateScale=1.0
+      IdleThirstMultiplier=1.0
+      ActiveThirstMultiplier=1.0
+      IdleHungerMultiplier=1.0
+      ActiveHungerMultiplier=1.0
+      CraftingSpeedMultiplier=1.0
+      PlayerXPRateMultiplier=1.0
+      bSaveOnKilledPlayer=True
+
+ports:
+  - internal: 7777
+    default_external: 7777
+    protocol: udp
+    description: "Game port"
+  - internal: 7778
+    default_external: 7778
+    protocol: udp
+    description: "Game raw UDP port (game+1)"
+  - internal: 27015
+    default_external: 27015
+    protocol: udp
+    description: "Steam query port"
+  - internal: 25575
+    default_external: 25575
+    protocol: tcp
+    description: "RCON port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 7777
+    timeout_seconds: 30
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - local
+
+recommended_resources:
+  cpu_cores: 6
+  ram_gb: 16
+  disk_gb: 40
+
+notes: |
+  Conan Exiles Dedicated Server via SteamCMD.
+  SteamCMD App ID: 443030 (anonymous login supported).
+  Configuration split across Engine.ini and Game.ini.
+  PVP, PVE, and RP server types available via PVPEnabled setting.
+  MaxNudity: 0=none, 1=partial, 2=full (region-locked in some deployments).
+  Mods via Steam Workshop; mod order matters and must match clients.
+  Database backups are .db files in /Saved/savegames.
+  Admin password set in Game.ini (AdminPassword=).
+
+steamcmd:
+  login: anonymous
+  app_id: "443030"
+  validate: true
+  beta: ""
+  install_dir_env: "CONAN_DIR"
+
+docker:
+  image: alinmear/docker-conanexiles
+  env_vars:
+    CE_SERVER_NAME: "My Conan Exiles Server"
+    CE_MAX_PLAYERS: "40"
+    CE_SERVER_PASSWORD: ""
+    CE_ADMIN_PASSWORD: "changeme"
+    CE_PVP_ENABLED: "True"
+    CE_SERVER_REGION: "0"
+    CE_RCON_ENABLED: "True"
+    CE_RCON_PORT: "25575"
+    CE_RCON_PASSWORD: "changeme"

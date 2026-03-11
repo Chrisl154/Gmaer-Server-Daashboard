@@ -21,7 +21,13 @@ func TestRegistry_Defaults(t *testing.T) {
 		t.Fatalf("NewRegistry returned error: %v", err)
 	}
 
-	expected := []string{"valheim", "minecraft", "satisfactory", "palworld", "eco", "enshrouded", "riftbreaker"}
+	expected := []string{
+		"valheim", "minecraft", "satisfactory", "palworld", "eco", "enshrouded", "riftbreaker",
+		"among-us", "dota2", "counter-strike-2", "dayz", "terraria", "rust",
+		"team-fortress-2", "garrys-mod", "ark-survival-ascended", "dont-starve-together",
+		"project-zomboid", "7-days-to-die", "left-4-dead-2", "factorio",
+		"risk-of-rain-2", "squad", "conan-exiles",
+	}
 	for _, id := range expected {
 		if _, ok := r.Get(id); !ok {
 			t.Errorf("expected adapter %q to be loaded", id)
@@ -77,6 +83,78 @@ func TestRegistry_BackupPaths(t *testing.T) {
 	paths := r.BackupPaths("minecraft")
 	if len(paths) == 0 {
 		t.Error("minecraft should have backup paths")
+	}
+}
+
+func TestRegistry_NewAdapters_Ports(t *testing.T) {
+	r, _ := NewRegistry("", newTestLogger(t))
+
+	cases := []struct {
+		id           string
+		wantPort     int
+		wantProtocol string
+	}{
+		{"rust", 28015, "udp"},
+		{"factorio", 34197, "udp"},
+		{"dayz", 2302, "udp"},
+		{"terraria", 7777, "tcp"},
+		{"squad", 7787, "udp"},
+		{"project-zomboid", 16261, "udp"},
+		{"7-days-to-die", 26900, "udp"},
+		{"among-us", 22023, "udp"},
+		{"counter-strike-2", 27015, "udp"},
+		{"conan-exiles", 7777, "udp"},
+		{"dont-starve-together", 10999, "udp"},
+		{"ark-survival-ascended", 7777, "udp"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.id, func(t *testing.T) {
+			ports := r.DefaultPorts(tc.id)
+			if len(ports) == 0 {
+				t.Fatalf("%s: expected at least one port", tc.id)
+			}
+			if ports[0].Internal != tc.wantPort {
+				t.Errorf("%s: expected primary port %d, got %d", tc.id, tc.wantPort, ports[0].Internal)
+			}
+			if ports[0].Protocol != tc.wantProtocol {
+				t.Errorf("%s: expected protocol %s, got %s", tc.id, tc.wantProtocol, ports[0].Protocol)
+			}
+		})
+	}
+}
+
+func TestRegistry_NewAdapters_RCONEnabled(t *testing.T) {
+	r, _ := NewRegistry("", newTestLogger(t))
+
+	rconGames := []string{"rust", "factorio", "squad", "team-fortress-2", "garrys-mod", "conan-exiles", "ark-survival-ascended", "counter-strike-2", "dota2", "left-4-dead-2"}
+	for _, id := range rconGames {
+		m, ok := r.Get(id)
+		if !ok {
+			t.Errorf("%s: adapter not found", id)
+			continue
+		}
+		if !m.Console.RCONEnabled {
+			t.Errorf("%s: expected RCON to be enabled", id)
+		}
+	}
+}
+
+func TestRegistry_NewAdapters_Resources(t *testing.T) {
+	r, _ := NewRegistry("", newTestLogger(t))
+
+	// High-requirement games should have >=8 GB RAM
+	heavyGames := []string{"ark-survival-ascended", "rust", "squad", "conan-exiles"}
+	for _, id := range heavyGames {
+		m, ok := r.Get(id)
+		if !ok {
+			t.Errorf("%s: adapter not found", id)
+			continue
+		}
+		if m.Resources.RAMGB < 8 {
+			t.Errorf("%s: expected >=8 GB RAM recommendation, got %d", id, m.Resources.RAMGB)
+		}
 	}
 }
 

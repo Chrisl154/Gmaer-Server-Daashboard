@@ -1,0 +1,121 @@
+id: factorio
+name: Factorio Dedicated Server
+engine: Custom (Wube Software)
+steam_app_id: "427520"
+version: "1.0.0"
+
+deploy_methods:
+  - manual
+  - steamcmd
+
+start_command: "./factorio --start-server /data/saves/${SAVE_NAME:-world.zip} --server-settings /data/server-settings.json --port ${SERVER_PORT:-34197} --rcon-port ${RCON_PORT:-27015} --rcon-password ${RCON_PASSWORD:-changeme}"
+stop_command: "kill -SIGTERM $(cat /tmp/factorio.pid)"
+restart_command: "kill -HUP $(cat /tmp/factorio.pid)"
+
+console:
+  type: rcon
+  attach_command: "rcon-cli --password ${RCON_PASSWORD} --host localhost --port 27015"
+  rcon_enabled: true
+  rcon_port: 27015
+
+backup_paths:
+  - /data/saves
+  - /data/mods
+  - /data/server-settings.json
+
+config_templates:
+  - path: /data/server-settings.json
+    description: "Factorio server settings"
+    sample: |
+      {
+        "name": "My Factorio Server",
+        "description": "A Factorio multiplayer server",
+        "tags": ["game"],
+        "max_players": 0,
+        "visibility": {
+          "public": true,
+          "lan": true
+        },
+        "username": "",
+        "password": "",
+        "token": "",
+        "game_password": "",
+        "require_user_verification": true,
+        "max_upload_in_kilobytes_per_second": 0,
+        "max_upload_slots": 5,
+        "minimum_latency_in_ticks": 0,
+        "max_heartbeats_per_second": 60,
+        "ignore_player_limit_for_returning_players": false,
+        "allow_commands": "admins-only",
+        "autosave_interval": 10,
+        "autosave_slots": 5,
+        "afk_autokick_interval": 0,
+        "auto_pause": true,
+        "only_admins_can_pause_the_game": true,
+        "autosave_only_on_server": true,
+        "non_blocking_saving": false,
+        "minimum_segment_size": 25,
+        "minimum_segment_size_peer_count": 20,
+        "maximum_segment_size": 100,
+        "maximum_segment_size_peer_count": 10
+      }
+
+ports:
+  - internal: 34197
+    default_external: 34197
+    protocol: udp
+    description: "Game port"
+  - internal: 27015
+    default_external: 27015
+    protocol: tcp
+    description: "RCON port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 34197
+    timeout_seconds: 10
+
+mod_support: true
+mod_sources:
+  - factorio_mod_portal
+  - local
+
+recommended_resources:
+  cpu_cores: 4
+  ram_gb: 4
+  disk_gb: 5
+
+notes: |
+  Factorio Dedicated Server — no Steam App ID required for headless.
+  Headless server download: https://factorio.com/download (Linux server build).
+  SteamCMD App ID 427520 can also be used for licensed installs.
+  A Factorio account token is required for public listing (server-settings.json).
+  Mods are stored in /data/mods and must match client mods exactly.
+  Saves are stored as .zip files in /data/saves.
+  RCON provides a remote console for admin commands.
+  auto_pause pauses the game when no players are connected.
+
+manual:
+  download_url_template: "https://factorio.com/download"
+  java_required: ""
+  accept_eula: false
+
+steamcmd:
+  login: anonymous
+  app_id: "427520"
+  validate: true
+  beta: ""
+  install_dir_env: "FACTORIO_DIR"
+
+docker:
+  image: factoriotools/factorio
+  env_vars:
+    PORT: "34197"
+    RCON_PORT: "27015"
+    SAVE_NAME: "world"
+    GENERATE_NEW_SAVE: "true"
+    PRESET: ""
+    TOKEN: ""
+    USERNAME: ""
+    HEADLESS: "true"

@@ -1,0 +1,102 @@
+id: counter-strike-2
+name: Counter-Strike 2 Dedicated Server
+engine: Source 2 (Valve)
+steam_app_id: "730"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./game/bin/linuxsteamrt64/cs2 -dedicated -console -usercon -port 27015 +map de_dust2 +game_type 0 +game_mode 1 +sv_setsteamaccount ${GSLT}"
+stop_command: "kill -SIGTERM $(cat /tmp/cs2.pid)"
+restart_command: "kill -HUP $(cat /tmp/cs2.pid)"
+
+console:
+  type: rcon
+  attach_command: "rcon-cli --password ${RCON_PASSWORD} --host localhost --port 27015"
+  rcon_enabled: true
+  rcon_port: 27015
+
+backup_paths:
+  - /opt/cs2/game/csgo/cfg
+  - /opt/cs2/game/csgo/addons
+  - /opt/cs2/game/csgo/maps
+
+config_templates:
+  - path: /opt/cs2/game/csgo/cfg/server.cfg
+    description: "CS2 server configuration"
+    sample: |
+      hostname "My CS2 Server"
+      sv_password ""
+      rcon_password "changeme"
+      sv_lan 0
+      sv_cheats 0
+      mp_autoteambalance 1
+      mp_limitteams 1
+      mp_friendlyfire 0
+      mp_roundtime 1.92
+      mp_maxrounds 30
+      mp_overtime_enable 1
+      bot_quota 0
+      sv_alltalk 0
+
+ports:
+  - internal: 27015
+    default_external: 27015
+    protocol: udp
+    description: "Game port"
+  - internal: 27015
+    default_external: 27015
+    protocol: tcp
+    description: "RCON port"
+  - internal: 27020
+    default_external: 27020
+    protocol: udp
+    description: "SourceTV port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 27015
+    timeout_seconds: 10
+
+mod_support: true
+mod_sources:
+  - steam_workshop
+  - local
+
+recommended_resources:
+  cpu_cores: 4
+  ram_gb: 8
+  disk_gb: 60
+
+notes: |
+  Counter-Strike 2 Dedicated Server via SteamCMD.
+  SteamCMD App ID: 730 (requires anonymous login).
+  A Game Server Login Token (GSLT) is required for public listing.
+  Obtain a GSLT at: https://steamcommunity.com/dev/managegameservers
+  CounterStrikeSharp (CSSharp) is the primary plugin framework.
+  game_type/game_mode: 0/0=casual, 0/1=competitive, 1/2=deathmatch.
+
+steamcmd:
+  login: anonymous
+  app_id: "730"
+  validate: true
+  beta: ""
+  install_dir_env: "CS2_DIR"
+
+docker:
+  image: joedwards32/cs2
+  env_vars:
+    CS2_SERVERNAME: "My CS2 Server"
+    CS2_CHEATS: "0"
+    CS2_PORT: "27015"
+    CS2_GAMETYPE: "0"
+    CS2_GAMEMODE: "1"
+    CS2_MAPGROUP: "mg_active"
+    CS2_STARTMAP: "de_dust2"
+    CS2_MAXPLAYERS: "16"
+    CS2_RCON_PORT: "27015"
+    RCON_PASSWORD: "changeme"
+    CS2_LAN: "0"
+    CS2_GSLT: ""

@@ -1,0 +1,105 @@
+id: team-fortress-2
+name: Team Fortress 2 Dedicated Server
+engine: Source (Valve)
+steam_app_id: "232250"
+version: "1.0.0"
+
+deploy_methods:
+  - steamcmd
+
+start_command: "./srcds_run -game tf -console -usercon -port 27015 -tv_port 27020 +map cp_badlands +maxplayers 24 -autoupdate"
+stop_command: "kill -SIGTERM $(cat /tmp/tf2.pid)"
+restart_command: "kill -HUP $(cat /tmp/tf2.pid)"
+
+console:
+  type: rcon
+  attach_command: "rcon-cli --password ${RCON_PASSWORD} --host localhost --port 27015"
+  rcon_enabled: true
+  rcon_port: 27015
+
+backup_paths:
+  - /opt/tf2/tf/cfg
+  - /opt/tf2/tf/addons
+  - /opt/tf2/tf/maps
+
+config_templates:
+  - path: /opt/tf2/tf/cfg/server.cfg
+    description: "TF2 server configuration"
+    sample: |
+      hostname "My TF2 Server"
+      sv_password ""
+      rcon_password "changeme"
+      sv_lan 0
+      sv_region 255
+      mp_timelimit 30
+      mp_maxrounds 5
+      mp_winlimit 0
+      tf_bot_quota 0
+      sv_pure 1
+      sv_alltalk 0
+      sv_voiceenable 1
+      log on
+      sv_logbans 1
+      sv_logecho 1
+      sv_logfile 1
+      sv_log_onefile 0
+
+ports:
+  - internal: 27015
+    default_external: 27015
+    protocol: udp
+    description: "Game port"
+  - internal: 27015
+    default_external: 27015
+    protocol: tcp
+    description: "RCON port"
+  - internal: 27020
+    default_external: 27020
+    protocol: udp
+    description: "SourceTV port"
+
+health_checks:
+  - type: tcp
+    host: localhost
+    port: 27015
+    timeout_seconds: 10
+
+mod_support: true
+mod_sources:
+  - sourcemod
+  - metamod
+  - local
+
+recommended_resources:
+  cpu_cores: 2
+  ram_gb: 4
+  disk_gb: 20
+
+notes: |
+  Team Fortress 2 Dedicated Server via SteamCMD.
+  SteamCMD App ID: 232250 (anonymous login supported).
+  SourceMod + MetaMod:Source are the standard plugin frameworks.
+  A Game Server Login Token (GSLT) is recommended for public listing.
+  sv_pure 1 enforces VAC-like content checking.
+  SourceTV (tv_port 27020) allows spectating.
+
+steamcmd:
+  login: anonymous
+  app_id: "232250"
+  validate: true
+  beta: ""
+  install_dir_env: "TF2_DIR"
+
+docker:
+  image: cm2network/tf2
+  env_vars:
+    SRCDS_TOKEN: ""
+    SRCDS_RCONPW: "changeme"
+    SRCDS_PW: ""
+    SRCDS_PORT: "27015"
+    SRCDS_TV_PORT: "27020"
+    SRCDS_NET_PUBLIC_ADDRESS: "0"
+    SRCDS_IP: "0.0.0.0"
+    SRCDS_MAXPLAYERS: "24"
+    SRCDS_STARTMAP: "cp_badlands"
+    SRCDS_REGION: "3"

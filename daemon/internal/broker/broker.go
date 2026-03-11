@@ -28,6 +28,8 @@ import (
 	rconpkg "github.com/games-dashboard/daemon/internal/rcon"
 	"github.com/games-dashboard/daemon/internal/sbom"
 	"github.com/games-dashboard/daemon/internal/secrets"
+	telnetsvc "github.com/games-dashboard/daemon/internal/telnet"
+	webrconpkg "github.com/games-dashboard/daemon/internal/webrcon"
 	"go.uber.org/zap"
 )
 
@@ -689,6 +691,7 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", startCmd) //nolint:gosec // user-configured command
 	cmd.Dir = installDir
+	cmd.Env = buildProcessEnv(s, manifest)
 
 	// Pipe stdout and stderr into the console channel.
 	stdout, _ := cmd.StdoutPipe()
@@ -1447,7 +1450,9 @@ func (b *Broker) GetConsoleStream(ctx context.Context, id string) (<-chan string
 	return ch, nil
 }
 
-// SendConsoleCommand sends a command to a running server via RCON.
+// SendConsoleCommand sends a command to a running server's console.
+// Dispatches to Source RCON, WebRCON (Rust), or Telnet (7DTD) based on
+// the adapter's console.type field.
 // The command and its response are also echoed into the console stream.
 func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (string, error) {
 	b.mu.RLock()
@@ -1461,23 +1466,57 @@ func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (st
 	}
 
 	manifest, hasManifest := b.adapters.Get(s.Adapter)
-	if !hasManifest || !manifest.Console.RCONEnabled {
-		return "", fmt.Errorf("RCON is not enabled for adapter %s", s.Adapter)
+	if !hasManifest {
+		return "", fmt.Errorf("unknown adapter %s", s.Adapter)
 	}
-
-	password, _ := s.Config["rcon_password"].(string)
-	if password == "" {
-		return "", fmt.Errorf("rcon_password not set in server config")
+	if !manifest.Console.RCONEnabled && manifest.Console.Type != "telnet" {
+		return "", fmt.Errorf("remote console is not enabled for adapter %s", s.Adapter)
 	}
 
 	addr := fmt.Sprintf("localhost:%d", manifest.Console.RCONPort)
-	response, err := rconpkg.Exec(addr, password, command, 5*time.Second)
-	if err != nil {
-		return "", fmt.Errorf("RCON error: %w", err)
+
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"rcon_cmd","msg":%s,"ts":%d}`, jsonStr("> "+command), time.Now().Unix()))
+
+	var (
+		response string
+		err      error
+	)
+
+	switch manifest.Console.Type {
+	case "webrcon":
+		// Rust WebSocket-based RCON: ws://host:port/<password>
+		password, _ := s.Config["rcon_password"].(string)
+		if password == "" {
+			return "", fmt.Errorf("rcon_password not set in server config")
+		}
+		response, err = webrconpkg.Exec(addr, password, command, 10*time.Second)
+		if err != nil {
+			return "", fmt.Errorf("WebRCON error: %w", err)
+		}
+
+	case "telnet":
+		// 7 Days to Die telnet console
+		password, _ := s.Config["telnet_password"].(string)
+		if password == "" {
+			password, _ = s.Config["rcon_password"].(string)
+		}
+		response, err = telnetsvc.Exec(addr, password, command, 10*time.Second)
+		if err != nil {
+			return "", fmt.Errorf("telnet error: %w", err)
+		}
+
+	default:
+		// Source RCON protocol (Minecraft, CS2, TF2, GMod, ARK, Factorio, etc.)
+		password, _ := s.Config["rcon_password"].(string)
+		if password == "" {
+			return "", fmt.Errorf("rcon_password not set in server config")
+		}
+		response, err = rconpkg.Exec(addr, password, command, 5*time.Second)
+		if err != nil {
+			return "", fmt.Errorf("RCON error: %w", err)
+		}
 	}
 
-	// Echo into the console stream so the UI log shows command + response.
-	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"rcon_cmd","msg":%s,"ts":%d}`, jsonStr("> "+command), time.Now().Unix()))
 	if response != "" {
 		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"rcon_resp","msg":%s,"ts":%d}`, jsonStr(response), time.Now().Unix()))
 	}
@@ -1805,6 +1844,50 @@ func generateID() string {
 	b := make([]byte, 8)
 	_, _ = fmt.Sscanf(fmt.Sprintf("%d", time.Now().UnixNano()), "%s", &b)
 	return fmt.Sprintf("%x", time.Now().UnixNano())
+}
+
+// buildProcessEnv constructs the environment for a game server child process.
+// Priority (highest wins): server config values > adapter manifest Docker.EnvVars defaults > inherited daemon env.
+func buildProcessEnv(s *Server, manifest *adapters.Manifest) []string {
+	// Start from the daemon's own environment.
+	env := os.Environ()
+
+	// Helper: set or override a key in the env slice.
+	set := func(k, v string) {
+		prefix := k + "="
+		for i, e := range env {
+			if strings.HasPrefix(e, prefix) {
+				env[i] = prefix + v
+				return
+			}
+		}
+		env = append(env, prefix+v)
+	}
+
+	// Apply adapter manifest Docker.EnvVars as baseline defaults.
+	if manifest != nil {
+		for k, v := range manifest.Docker.EnvVars {
+			set(k, v)
+		}
+	}
+
+	// Computed convenience vars always available in start commands.
+	set("INSTALL_DIR", s.InstallDir)
+	set("SERVER_NAME", s.Name)
+	set("SERVER_ID", s.ID)
+	if len(s.Ports) > 0 {
+		set("SERVER_PORT", strconv.Itoa(s.Ports[0].External))
+	}
+
+	// Apply all string-typed values from s.Config, uppercased as env vars.
+	// e.g. config key "rcon_password" → env var "RCON_PASSWORD".
+	for k, v := range s.Config {
+		if str, ok := v.(string); ok && str != "" {
+			set(strings.ToUpper(k), str)
+		}
+	}
+
+	return env
 }
 
 // expandServerVars replaces {variable} placeholders in a command template
