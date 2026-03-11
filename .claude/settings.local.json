@@ -3,7 +3,23 @@
     "allow": [
       "Bash(go test ./internal/cluster/... -v)",
       "Bash(\"/c/Program Files/Go/bin/go\" test ./internal/cluster/... -v)",
-      "Bash(ls go.*)"
+      "Bash(ls go.*)",
+      "Bash(pkill -f games-daemon)",
+      "Read(//tmp/gdash-test/**)",
+      "Bash(node_modules/.bin/tsc --noEmit)",
+      "Bash(node_modules/.bin/vite build:*)",
+      "Bash(ls /home/admina/Gmaer-Server-Daashboard/ui/*.html)",
+      "Bash(ls /home/admina/Gmaer-Server-Daashboard/ui/src/*.tsx /home/admina/Gmaer-Server-Daashboard/ui/src/*.ts)",
+      "Bash(ls /home/admina/Gmaer-Server-Daashboard/ui/src/*.css)",
+      "Bash(mkdir -p ~/.local/bin)",
+      "Bash(cp /tmp/curl ~/.local/bin/curl)",
+      "Bash(export PATH=\"$HOME/.local/bin:$PATH\")",
+      "Bash(~/.local/bin/curl --version)",
+      "Bash(export PATH=\"$HOME/.local/bin:$HOME/.local/go/bin:$PATH\")",
+      "Bash(bash /home/admina/Gmaer-Server-Daashboard/tests/integration/run-tests.sh --mode docker --output /tmp/test-results-final.xml)"
+    ],
+    "additionalDirectories": [
+      "/home/admina/Gmaer-Server-Daashboard/cli/PATH=$HOME/.local/go"
     ]
   }
 }

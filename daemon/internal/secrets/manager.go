@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	vaultapi "github.com/hashicorp/vault/api"
 	"go.uber.org/zap"
@@ -246,7 +247,7 @@ func (m *Manager) generateAndSaveKey() error {
 }
 
 func (m *Manager) saveKey() error {
-	if err := os.MkdirAll(fmt.Sprintf("%s/..", m.cfg.KeyFile), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(m.cfg.KeyFile), 0700); err != nil {
 		return err
 	}
 	encoded := base64.StdEncoding.EncodeToString(m.key)
