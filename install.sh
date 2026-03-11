@@ -19,6 +19,8 @@ INSTALL_DIR="/opt/gdash"
 DAEMON_PORT="8443"
 UI_PORT="443"
 GO_VERSION="1.22.4"
+# UI talks to nginx (443), nginx proxies /api/* to daemon internally.
+# Do NOT point UI directly at daemon port — it binds to 127.0.0.1 only.
 GO_ARCH="linux-amd64"
 NODE_VERSION="20"
 LOCAL_BIN="$HOME/.local/bin"
@@ -66,7 +68,8 @@ detect_ip() {
 }
 
 SERVER_IP="${GDASH_HOST:-$(detect_ip)}"
-DAEMON_URL="https://${SERVER_IP}:${DAEMON_PORT}"
+DAEMON_URL="https://${SERVER_IP}:${DAEMON_PORT}"   # internal only
+UI_API_URL="https://${SERVER_IP}"                  # nginx on 443 — what browser sees
 
 # =============================================================================
 section "Step 0: Install System Requirements"
@@ -241,11 +244,11 @@ log "Building CLI..."
 $SUDO ln -sf "$BIN_DIR/gdash" /usr/local/bin/gdash 2>/dev/null || true
 ok "CLI → $BIN_DIR/gdash (linked to /usr/local/bin/gdash)"
 
-log "Building UI (VITE_DAEMON_URL=$DAEMON_URL)..."
+log "Building UI (VITE_DAEMON_URL=$UI_API_URL)..."
 chmod +x "$REPO_DIR/ui/node_modules/.bin/"* 2>/dev/null || true
 (cd "$REPO_DIR/ui" && \
   npm install --silent 2>/dev/null && \
-  VITE_DAEMON_URL="$DAEMON_URL" node_modules/.bin/vite build --outDir "$INSTALL_DIR/ui" 2>/dev/null)
+  VITE_DAEMON_URL="$UI_API_URL" node_modules/.bin/vite build --outDir "$INSTALL_DIR/ui" 2>/dev/null)
 ok "UI → $INSTALL_DIR/ui"
 
 # =============================================================================
@@ -500,7 +503,7 @@ echo -e "${GREEN}${BOLD}  ╔═════════════════
 echo -e "  ║       Games Dashboard is ready!              ║"
 echo -e "  ╚══════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  ${BOLD}Dashboard URL:${NC}  https://${SERVER_IP}"
+echo -e "  ${BOLD}Dashboard URL:${NC}  https://${SERVER_IP}  (port 443 via nginx)"
 echo -e "  ${BOLD}Username:${NC}       admin"
 echo -e "  ${BOLD}Password:${NC}       ${ADMIN_PASS}"
 echo ""
