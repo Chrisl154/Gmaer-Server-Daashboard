@@ -1,11 +1,32 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Shield, Key, Users, Lock, RefreshCw, Plus, CheckCircle } from 'lucide-react';
+import { Shield, Key, Users, Lock, RefreshCw, Plus, CheckCircle, Eye, EyeOff, Copy, X } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../utils/api';
 import { useAuthStore } from '../store/authStore';
 import { cn } from '../utils/cn';
+
+const ROLE_NAMES: Record<string, string> = {
+  viewer:   'Viewer',
+  operator: 'Operator',
+  modder:   'Mod Manager',
+  admin:    'Administrator',
+};
+
+const ROLE_DESCRIPTIONS: Record<string, string> = {
+  viewer:   'Read Only',
+  operator: 'Restart & Monitor',
+  modder:   'Mods, Restart & Monitor',
+  admin:    'Full Access',
+};
+
+const ROLE_STYLES: Record<string, React.CSSProperties> = {
+  viewer:   { background: 'rgba(148,163,184,0.15)', color: '#94a3b8' },
+  operator: { background: 'rgba(59,130,246,0.15)',  color: '#60a5fa' },
+  modder:   { background: 'rgba(168,85,247,0.15)',  color: '#c084fc' },
+  admin:    { background: 'rgba(249,115,22,0.15)',  color: '#fb923c' },
+};
 
 export function SecurityPage() {
   const { user } = useAuthStore();
@@ -29,6 +50,199 @@ export function SecurityPage() {
     </div>
   );
 }
+
+/* ─────────────────────────────────────────────────────────── OIDCCard ── */
+
+function OIDCCard() {
+  const [enabled, setEnabled]             = useState(false);
+  const [providerUrl, setProviderUrl]     = useState('');
+  const [clientId, setClientId]           = useState('');
+  const [clientSecret, setClientSecret]   = useState('');
+  const [showSecret, setShowSecret]       = useState(false);
+  const [scopes, setScopes]               = useState('openid email profile');
+  const [saving, setSaving]               = useState(false);
+  const [testResult, setTestResult]       = useState<'idle' | 'ok' | 'fail'>('idle');
+
+  const callbackUrl = typeof window !== 'undefined'
+    ? window.location.origin + '/auth/oidc/callback'
+    : '/auth/oidc/callback';
+
+  const formData = { enabled, provider_url: providerUrl, client_id: clientId, client_secret: clientSecret, callback_url: callbackUrl, scopes };
+
+  const handleTest = async () => {
+    setTestResult('idle');
+    try {
+      await api.post('/api/v1/admin/auth/oidc/test', formData);
+      setTestResult('ok');
+    } catch {
+      setTestResult('fail');
+      toast.error('OIDC test connection failed');
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.post('/api/v1/admin/auth/oidc', formData);
+      toast.success('OIDC configuration saved');
+    } catch {
+      toast.error('Failed to save OIDC configuration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCopyCallback = () => {
+    navigator.clipboard.writeText(callbackUrl).then(() => toast.success('Copied!'));
+  };
+
+  return (
+    <div className="rounded-xl p-5 space-y-4" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
+      {/* Header row */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>OIDC / Single Sign-On</h3>
+          <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>OpenID Connect provider integration</p>
+        </div>
+        {/* Toggle switch */}
+        <button
+          type="button"
+          onClick={() => setEnabled(v => !v)}
+          className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none"
+          style={{ background: enabled ? 'var(--primary, #f97316)' : 'rgba(148,163,184,0.3)' }}
+          aria-pressed={enabled}
+          aria-label="Enable OIDC"
+        >
+          <span
+            className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200"
+            style={{ transform: enabled ? 'translateX(16px)' : 'translateX(0)' }}
+          />
+        </button>
+      </div>
+
+      {/* Form fields — only shown when enabled */}
+      {enabled && (
+        <div className="space-y-3">
+          {/* Provider URL */}
+          <div>
+            <label className="label">Issuer URL</label>
+            <input
+              type="url"
+              className="input"
+              placeholder="https://accounts.google.com"
+              value={providerUrl}
+              onChange={e => setProviderUrl(e.target.value)}
+            />
+          </div>
+
+          {/* Client ID */}
+          <div>
+            <label className="label">Client ID</label>
+            <input
+              type="text"
+              className="input"
+              placeholder="your-client-id"
+              value={clientId}
+              onChange={e => setClientId(e.target.value)}
+            />
+          </div>
+
+          {/* Client Secret */}
+          <div>
+            <label className="label">Client Secret</label>
+            <div className="relative">
+              <input
+                type={showSecret ? 'text' : 'password'}
+                className="input pr-10"
+                placeholder="your-client-secret"
+                value={clientSecret}
+                onChange={e => setClientSecret(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => setShowSecret(v => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded transition-colors"
+                style={{ color: 'var(--text-muted)' }}
+                tabIndex={-1}
+              >
+                {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Callback URL (readonly) */}
+          <div>
+            <label className="label">Callback URL</label>
+            <div className="relative">
+              <input
+                type="text"
+                className="input pr-10 font-mono text-xs"
+                value={callbackUrl}
+                readOnly
+                style={{ color: 'var(--text-secondary)' }}
+              />
+              <button
+                type="button"
+                onClick={handleCopyCallback}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded transition-colors"
+                style={{ color: 'var(--text-muted)' }}
+                tabIndex={-1}
+              >
+                <Copy className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Scopes */}
+          <div>
+            <label className="label">Scopes</label>
+            <input
+              type="text"
+              className="input"
+              value={scopes}
+              onChange={e => setScopes(e.target.value)}
+            />
+          </div>
+
+          {/* Test result message */}
+          {testResult === 'ok' && (
+            <div className="flex items-center gap-2 text-xs text-green-400 rounded-lg px-3 py-2"
+              style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)' }}>
+              <CheckCircle className="w-3.5 h-3.5 shrink-0" /> Connection successful
+            </div>
+          )}
+          {testResult === 'fail' && (
+            <div className="flex items-center gap-2 text-xs text-red-400 rounded-lg px-3 py-2"
+              style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)' }}>
+              <X className="w-3.5 h-3.5 shrink-0" /> Connection failed
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex gap-2 pt-1">
+            <button
+              type="button"
+              onClick={handleTest}
+              className="btn-ghost flex-1 justify-center text-sm"
+            >
+              Test Connection
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="btn-primary flex-1 justify-center text-sm"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────── MFASection ── */
 
 function MFASection() {
   const { setupTOTP, verifyTOTP, user } = useAuthStore();
@@ -128,19 +342,107 @@ function MFASection() {
         </div>
 
         {/* OIDC Card */}
-        <div className="rounded-xl p-5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
-          <h3 className="text-sm font-medium mb-2" style={{ color: 'var(--text-primary)' }}>OIDC / SSO</h3>
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-            Configure single sign-on in Settings → Authentication.
-          </p>
+        <OIDCCard />
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────── AddUserModal ── */
+
+function AddUserModal({ onClose }: { onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole]         = useState('viewer');
+
+  const mutation = useMutation({
+    mutationFn: () => api.post('/api/v1/admin/users', { username, password, roles: [role] }),
+    onSuccess: () => {
+      toast.success('User created');
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      onClose();
+    },
+    onError: () => toast.error('Failed to create user'),
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="card w-full max-w-md p-6 space-y-5">
+        {/* Modal header */}
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>Add User</h2>
+          <button onClick={onClose} className="btn-ghost p-1.5">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Fields */}
+        <div className="space-y-4">
+          <div>
+            <label className="label">Username</label>
+            <input
+              type="text"
+              className="input"
+              placeholder="username"
+              value={username}
+              onChange={e => setUsername(e.target.value)}
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="label">Password</label>
+            <input
+              type="password"
+              className="input"
+              placeholder="••••••••"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="label">Role</label>
+            <select
+              className="input"
+              value={role}
+              onChange={e => setRole(e.target.value)}
+            >
+              {Object.entries(ROLE_NAMES).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label} — {ROLE_DESCRIPTIONS[value]}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-3 pt-1">
+          <button onClick={onClose} className="btn-ghost flex-1 justify-center">Cancel</button>
+          <button
+            onClick={() => mutation.mutate()}
+            disabled={!username || !password || mutation.isPending}
+            className="btn-primary flex-1 justify-center"
+          >
+            {mutation.isPending ? 'Creating…' : 'Create User'}
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
+/* ───────────────────────────────────────────────── UsersSection ── */
+
 function UsersSection() {
   const queryClient = useQueryClient();
+  const [showAddUser, setShowAddUser] = useState(false);
+
   const { data } = useQuery({
     queryKey: ['users'],
     queryFn: () => api.get('/api/v1/admin/users').then(r => r.data),
@@ -152,100 +454,99 @@ function UsersSection() {
     onSuccess: () => { toast.success('User deleted'); queryClient.invalidateQueries({ queryKey: ['users'] }); },
   });
 
-  const ROLE_STYLES: Record<string, React.CSSProperties> = {
-    admin:    { background: 'rgba(59,130,246,0.15)',  color: '#60a5fa'  },
-    viewer:   { background: 'rgba(128,128,168,0.15)', color: '#8080a8'  },
-    modder:   { background: 'rgba(168,85,247,0.15)',  color: '#c084fc'  },
-    operator: { background: 'rgba(59,130,246,0.15)',  color: '#60a5fa'  },
-  };
-
   return (
-    <div className="card p-5 space-y-5">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg flex items-center justify-center"
-            style={{ background: 'rgba(59,130,246,0.12)' }}>
-            <Users className="w-3.5 h-3.5 text-blue-400" />
-          </div>
-          <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
-            User Management
-            <span className="ml-2 text-sm font-normal" style={{ color: 'var(--text-muted)' }}>({users.length})</span>
-          </h2>
-        </div>
-        <button className="btn-blue py-1.5 px-3 text-xs">
-          <Plus className="w-3.5 h-3.5" /> Add User
-        </button>
-      </div>
+    <>
+      {showAddUser && <AddUserModal onClose={() => setShowAddUser(false)} />}
 
-      <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
-        <table className="w-full text-sm">
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
-              <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>User</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Roles</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>MFA</th>
-              <th className="px-4 py-3" />
-            </tr>
-          </thead>
-          <tbody>
-            {users.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
-                  No users found.
-                </td>
+      <div className="card p-5 space-y-5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+              style={{ background: 'rgba(59,130,246,0.12)' }}>
+              <Users className="w-3.5 h-3.5 text-blue-400" />
+            </div>
+            <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+              User Management
+              <span className="ml-2 text-sm font-normal" style={{ color: 'var(--text-muted)' }}>({users.length})</span>
+            </h2>
+          </div>
+          <button className="btn-blue py-1.5 px-3 text-xs" onClick={() => setShowAddUser(true)}>
+            <Plus className="w-3.5 h-3.5" /> Add User
+          </button>
+        </div>
+
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>User</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Roles</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>MFA</th>
+                <th className="px-4 py-3" />
               </tr>
-            ) : users.map((u: any, idx: number) => (
-              <tr key={u.id}
-                style={{
-                  borderTop: idx > 0 ? '1px solid var(--border)' : undefined,
-                }}
-                className="transition-colors"
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-card-hover)')}
-                onMouseLeave={e => (e.currentTarget.style.background = '')}
-              >
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
-                      style={{ background: 'var(--primary-subtle)', color: 'var(--primary)' }}>
-                      {u.username[0].toUpperCase()}
+            </thead>
+            <tbody>
+              {users.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+                    No users found.
+                  </td>
+                </tr>
+              ) : users.map((u: any, idx: number) => (
+                <tr key={u.id}
+                  style={{
+                    borderTop: idx > 0 ? '1px solid var(--border)' : undefined,
+                  }}
+                  className="transition-colors"
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-card-hover)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = '')}
+                >
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
+                        style={{ background: 'var(--primary-subtle)', color: 'var(--primary)' }}>
+                        {u.username[0].toUpperCase()}
+                      </div>
+                      <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{u.username}</span>
                     </div>
-                    <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{u.username}</span>
-                  </div>
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex gap-1 flex-wrap">
-                    {u.roles.map((r: string) => (
-                      <span key={r} className="badge" style={ROLE_STYLES[r] ?? { background: 'rgba(128,128,168,0.15)', color: 'var(--text-secondary)' }}>
-                        {r}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-                <td className="px-4 py-3">
-                  {u.totp_enabled
-                    ? <span className="flex items-center gap-1 text-xs text-green-400"><Shield className="w-3.5 h-3.5" /> Enabled</span>
-                    : <span className="text-xs" style={{ color: 'var(--text-muted)' }}>—</span>
-                  }
-                </td>
-                <td className="px-4 py-3 text-right">
-                  {u.username !== 'admin' && (
-                    <button
-                      onClick={() => deleteMutation.mutate(u.id)}
-                      className="text-xs px-2 py-1 rounded transition-colors"
-                      style={{ color: '#f87171' }}
-                    >
-                      Delete
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex gap-1 flex-wrap">
+                      {u.roles.map((r: string) => (
+                        <span key={r} className="badge" style={ROLE_STYLES[r] ?? { background: 'rgba(148,163,184,0.15)', color: 'var(--text-secondary)' }}>
+                          {ROLE_NAMES[r] ?? r}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {u.totp_enabled
+                      ? <span className="flex items-center gap-1 text-xs text-green-400"><Shield className="w-3.5 h-3.5" /> Enabled</span>
+                      : <span className="text-xs" style={{ color: 'var(--text-muted)' }}>—</span>
+                    }
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {u.username !== 'admin' && (
+                      <button
+                        onClick={() => deleteMutation.mutate(u.id)}
+                        className="text-xs px-2 py-1 rounded transition-colors"
+                        style={{ color: '#f87171' }}
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
+
+/* ────────────────────────────────────────────────── AuditSection ── */
 
 function AuditSection() {
   const { data } = useQuery({
@@ -312,6 +613,8 @@ function AuditSection() {
     </div>
   );
 }
+
+/* ─────────────────────────────────────────────── SecretsSection ── */
 
 function SecretsSection() {
   const [showRotate, setShowRotate] = useState(false);

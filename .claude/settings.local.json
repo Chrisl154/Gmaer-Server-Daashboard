@@ -54,7 +54,10 @@
       "Bash(chmod +x /home/admina/Gmaer-Server-Daashboard/ui/node_modules/.bin/*)",
       "Bash(npx vite:*)",
       "Bash(bash -c 'source /home/admina/.nvm/nvm.sh && cd /home/admina/Gmaer-Server-Daashboard/ui && chmod +x node_modules/.bin/* && node_modules/.bin/tsc --noEmit 2>&1 | head -80')",
-      "Bash(bash -c 'source /home/admina/.nvm/nvm.sh && cd /home/admina/Gmaer-Server-Daashboard/ui && node_modules/.bin/vite build 2>&1 | tail -20')"
+      "Bash(bash -c 'source /home/admina/.nvm/nvm.sh && cd /home/admina/Gmaer-Server-Daashboard/ui && node_modules/.bin/vite build 2>&1 | tail -20')",
+      "Bash(chmod +x node_modules/.bin/*)",
+      "Bash(source /home/admina/.nvm/nvm.sh)",
+      "Bash(bash -n install.sh)"
     ],
     "additionalDirectories": [
       "/home/admina/Gmaer-Server-Daashboard/cli/PATH=$HOME/.local/go"

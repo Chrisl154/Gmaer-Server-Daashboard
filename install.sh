@@ -68,8 +68,32 @@ detect_ip() {
 }
 
 SERVER_IP="${GDASH_HOST:-$(detect_ip)}"
-DAEMON_URL="https://${SERVER_IP}:${DAEMON_PORT}"   # internal only
-UI_API_URL="https://${SERVER_IP}"                  # nginx on 443 — what browser sees
+
+# ── Hostname prompt ───────────────────────────────────────────────────────────
+echo ""
+echo -e "  ${BOLD}Detected server IP:${NC} ${SERVER_IP}"
+if [[ -t 0 && -z "${GDASH_HOSTNAME:-}" ]]; then
+  read -r -p "  Enter a hostname for TLS (e.g. dashboard.example.com) or press Enter to use IP: " HOSTNAME_INPUT
+  echo ""
+else
+  HOSTNAME_INPUT=""
+fi
+SERVER_HOSTNAME="${GDASH_HOSTNAME:-${HOSTNAME_INPUT:-}}"
+
+# Build TLS SAN and public-facing URL
+if [[ -n "$SERVER_HOSTNAME" ]]; then
+  TLS_CN="$SERVER_HOSTNAME"
+  TLS_SAN="IP:${SERVER_IP},DNS:${SERVER_HOSTNAME},DNS:localhost,IP:127.0.0.1"
+  UI_API_URL="https://${SERVER_HOSTNAME}"
+  log "Using hostname: $SERVER_HOSTNAME (IP: $SERVER_IP)"
+else
+  TLS_CN="$SERVER_IP"
+  TLS_SAN="IP:${SERVER_IP},DNS:localhost,IP:127.0.0.1"
+  UI_API_URL="https://${SERVER_IP}"
+  log "Using IP: $SERVER_IP (no hostname)"
+fi
+
+DAEMON_URL="https://${SERVER_IP}:${DAEMON_PORT}"   # internal only (always IP)
 
 # =============================================================================
 section "Step 0: Install System Requirements"
@@ -262,12 +286,12 @@ if [[ ! -f "$TLS_DIR/server.crt" ]]; then
   openssl req -x509 -newkey rsa:2048 \
     -keyout "$TLS_DIR/server.key" -out "$TLS_DIR/server.crt" \
     -days 3650 -nodes \
-    -subj "/CN=${SERVER_IP}" \
-    -addext "subjectAltName=IP:${SERVER_IP},DNS:${SERVER_IP},DNS:localhost,IP:127.0.0.1" \
+    -subj "/CN=${TLS_CN}" \
+    -addext "subjectAltName=${TLS_SAN}" \
     2>/dev/null
-  ok "TLS cert generated (10 years, SAN: ${SERVER_IP})"
+  ok "TLS cert generated (10 years, CN=${TLS_CN}, SAN: ${TLS_SAN})"
 else
-  ok "TLS cert already exists"
+  ok "TLS cert already exists — delete $TLS_DIR/server.crt to regenerate"
 fi
 
 # =============================================================================
@@ -376,7 +400,7 @@ server {
 
 server {
     listen 443 ssl;
-    server_name _;
+    server_name ${SERVER_IP}${SERVER_HOSTNAME:+ $SERVER_HOSTNAME} _;
 
     ssl_certificate     ${TLS_DIR}/server.crt;
     ssl_certificate_key ${TLS_DIR}/server.key;
@@ -507,7 +531,7 @@ echo -e "${GREEN}${BOLD}  ╔═════════════════
 echo -e "  ║       Games Dashboard is ready!              ║"
 echo -e "  ╚══════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  ${BOLD}Dashboard URL:${NC}  https://${SERVER_IP}  (port 443 via nginx)"
+echo -e "  ${BOLD}Dashboard URL:${NC}  ${UI_API_URL}  (port 443 via nginx)"
 echo -e "  ${BOLD}Username:${NC}       admin"
 echo -e "  ${BOLD}Password:${NC}       ${ADMIN_PASS}"
 echo ""
