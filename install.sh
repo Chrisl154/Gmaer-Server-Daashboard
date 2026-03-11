@@ -393,9 +393,12 @@ server {
     }
 
     # API — proxy to daemon
+    # Daemon enforces TLS 1.3 minimum (Go tls.VersionTLS13) so nginx must
+    # connect with TLS 1.3; older versions are rejected with a handshake error.
     location /api/ {
         proxy_pass https://127.0.0.1:${DAEMON_PORT};
-        proxy_ssl_verify off;
+        proxy_ssl_verify       off;
+        proxy_ssl_protocols    TLSv1.3;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -410,8 +413,9 @@ server {
 
     # Health + metrics — proxy to daemon
     location ~ ^/(healthz|metrics)$ {
-        proxy_pass https://127.0.0.1:${DAEMON_PORT};
-        proxy_ssl_verify off;
+        proxy_pass          https://127.0.0.1:${DAEMON_PORT};
+        proxy_ssl_verify    off;
+        proxy_ssl_protocols TLSv1.3;
     }
 
     # Security headers
