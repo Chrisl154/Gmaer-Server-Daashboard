@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Server, Cpu, Database, Package,
-  Network, Shield, FileText, Settings, LogOut,
+  Network, Shield, FileText, Settings, ClipboardList, LogOut,
   ChevronLeft, ChevronRight, Activity, Gamepad2,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { path: '/mods',     label: 'Mods',      icon: Package },
   { path: '/ports',    label: 'Ports',     icon: Network },
   { path: '/security', label: 'Security',  icon: Shield },
+  { path: '/logs',     label: 'Logs',      icon: ClipboardList },
   { path: '/sbom',     label: 'SBOM / CVE',icon: FileText },
   { path: '/settings', label: 'Settings',  icon: Settings },
 ];
