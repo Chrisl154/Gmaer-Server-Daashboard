@@ -127,6 +127,9 @@ func (s *Server) registerRoutes() {
 	r.GET("/api/v1/system/init-status", s.getInitStatus)
 	r.POST("/api/v1/system/bootstrap", s.bootstrapSystem)
 
+	// Version (public — useful for health checks without credentials)
+	r.GET("/api/v1/version", s.getVersion)
+
 	// API v1
 	v1 := r.Group("/api/v1")
 	v1.Use(s.authMiddleware())
@@ -196,7 +199,6 @@ func (s *Server) registerRoutes() {
 
 	// System
 	v1.GET("/status", s.getSystemStatus)
-	v1.GET("/version", s.getVersion)
 }
 
 func (s *Server) ListenAndServeTLS() error {
