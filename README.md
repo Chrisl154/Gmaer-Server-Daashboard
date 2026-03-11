@@ -24,83 +24,63 @@
 
 ## 🚀 Quick Start
 
-### One-Liner Test & Install (Ubuntu 24.04+)
+**Minimum requirement:** Ubuntu 22.04 or 24.04 with internet access and `bash`. Everything else — Go 1.22, Node.js 20 LTS, nginx, Python packages — is installed automatically.
 
-The fastest way to validate the full stack on any fresh Linux box — installs all dependencies, builds from source, starts the daemon, and runs all tests automatically:
+### Install (Deploy & Run)
+
+Deploys the full stack and leaves it running. Prints the dashboard URL and credentials when done.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/install.sh | bash
+```
+
+After install, open `https://<your-server-ip>` in a browser. Your browser will show a self-signed certificate warning — click **Advanced → Proceed**.
+
+> **What it installs:**
+> - Daemon as a systemd service (`gdash-daemon`) on `127.0.0.1:8443`
+> - nginx reverse proxy on port 443 serving the UI and proxying `/api/*` to the daemon
+> - `gdash` CLI available system-wide at `/usr/local/bin/gdash`
+> - All files under `/opt/gdash/`
+
+---
+
+### Uninstall (Complete Removal)
+
+Removes everything — systemd service, nginx config, `/opt/gdash/`, and the `gdash` CLI symlink.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/uninstall.sh | bash
+```
+
+After uninstalling, re-run the install command above for a clean reinstall.
+
+---
+
+### Test Only (No Permanent Install)
+
+Validates the full stack end-to-end — builds, starts the daemon temporarily, runs all API and CLI tests, then tears everything down cleanly. Nothing is left running.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/test-live.sh | bash
 ```
 
-**Minimum requirement:** Ubuntu 24.04 (or any modern Linux) with internet access and `bash`. Everything else — Go 1.22, Node.js 20 LTS, Trivy CVE scanner, Python packages — is installed automatically in userspace (no root required beyond standard system packages).
-
-> Run locally if you already have the repo cloned:
-> ```bash
-> bash test-live.sh
-> ```
-
-### Interactive Install (Docker)
-
-```bash
-curl -fsSL https://github.com/Chrisl154/Gmaer-Server-Daashboard/releases/latest/download/installer.sh \
-  -o installer.sh && chmod +x installer.sh
-./installer.sh --mode docker
-```
-
-### Headless Install
-
-```bash
-./installer.sh --headless --config config.json --mode docker --accept-licenses
-```
-
-### Kubernetes (k3s)
-
-```bash
-./installer.sh --mode k8s --k8s-distribution k3s --install-helm --install-metalb
-# or via Helm:
-helm upgrade --install games-dashboard ./helm/charts/games-dashboard \
-  --namespace games-dashboard --create-namespace
-```
-
-### Dry Run
-
-```bash
-./installer.sh --mode docker --dry-run
-```
-
 ---
 
-## 📋 Installer Flags
+## 📋 What Gets Installed
 
-```
---mode docker|k8s               Deployment mode (required)
---install-dir /path             Installation directory
---headless                      Non-interactive
---config /path/config.json      Headless config file
---reuse-existing                Reuse existing installation
---offline-bundle /path          Offline bundle path
---accept-licenses               Accept all licenses
---min-hardware-profile small|medium|large
---probe-remote-validator <url>  Remote port probe endpoint
---k8s-distribution k3s|kubeadm|managed
---container-runtime docker|containerd|podman
---enable-mod-manager
---log-level debug|info|warn|error
---skip-preflight
---force
---no-reboot
---tls-cert /path/cert.pem
---tls-key /path/key.pem
---vault-endpoint <url>
---vault-token <token>
---install-helm
---install-metalb
---install-csi-nfs
---accept-defaults
---dry-run
---rollback-to <checkpoint-id>
---output-audit /path/audit.json
-```
+| Path | Description |
+|---|---|
+| `/opt/gdash/repo/` | Cloned source repository |
+| `/opt/gdash/bin/games-daemon` | Compiled daemon binary |
+| `/opt/gdash/bin/gdash` | Compiled CLI binary |
+| `/opt/gdash/ui/` | Built React UI static files |
+| `/opt/gdash/config/daemon.yaml` | Daemon configuration |
+| `/opt/gdash/tls/` | Self-signed TLS certificate (10 years) |
+| `/opt/gdash/data/` | Runtime data (servers, backups, etc.) |
+| `/opt/gdash/secrets/` | Encrypted secrets store |
+| `/etc/systemd/system/gdash-daemon.service` | Systemd unit |
+| `/etc/nginx/sites-available/gdash` | nginx site config |
+| `/usr/local/bin/gdash` | CLI symlink |
 
 ---
 
@@ -177,12 +157,12 @@ games-dashboard/
 ├── ui/               React + TypeScript web UI
 ├── cli/              gdash CLI binary
 ├── adapters/         Game adapter manifests (24 games)
-├── installer/        install.sh single-artifact installer
 ├── helm/             Helm charts + CRDs
 ├── docs/             Operator runbook, API reference, security docs
 ├── tests/            Unit, integration, E2E test suites
-├── ci/               CI helper scripts
-├── test-live.sh      One-liner end-to-end test runner
+├── install.sh        One-liner production installer
+├── uninstall.sh      One-liner complete uninstaller
+├── test-live.sh      One-liner end-to-end test runner (no permanent install)
 └── .github/          GitHub Actions workflows
 ```
 
