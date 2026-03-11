@@ -30,7 +30,18 @@
       "Bash(python3 -c \":*)",
       "Bash(done)",
       "Bash(echo \"ERROR: $f\")",
-      "Bash(ls /home/admina/Gmaer-Server-Daashboard/adapters/valheim*)"
+      "Bash(ls /home/admina/Gmaer-Server-Daashboard/adapters/valheim*)",
+      "Bash(ls *.sh)",
+      "Bash(git push:*)",
+      "Bash(~/.local/bin/curl -s -o /dev/null -w \"%{http_code}\" \"https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/test-live.sh\")",
+      "Bash(~/.local/bin/curl -s -o /dev/null -w \"%{http_code}\" \"https://api.github.com/repos/Chrisl154/Gmaer-Server-Daashboard\")",
+      "Bash(grep -r \"static\\\\|embed\\\\|ui\\\\|frontend\\\\|dist\\\\|index.html\" /home/admina/Gmaer-Server-Daashboard/daemon/cmd/daemon/ --include=*.go -l)",
+      "Bash(grep -r \"static\\\\|embed\\\\|fs.FS\\\\|StaticFS\\\\|ServeFiles\" /home/admina/Gmaer-Server-Daashboard/daemon/internal/ --include=*.go -l)",
+      "Bash(grep -rn \"static\\\\|StaticDir\\\\|ui_dir\" /home/admina/Gmaer-Server-Daashboard/daemon/ --include=*.yaml)",
+      "Bash(chmod +x /home/admina/Gmaer-Server-Daashboard/install.sh)",
+      "Bash(bash -n /home/admina/Gmaer-Server-Daashboard/install.sh)",
+      "Bash(bash -n /home/admina/Gmaer-Server-Daashboard/uninstall.sh)",
+      "Bash(chmod +x /home/admina/Gmaer-Server-Daashboard/uninstall.sh)"
     ],
     "additionalDirectories": [
       "/home/admina/Gmaer-Server-Daashboard/cli/PATH=$HOME/.local/go"
