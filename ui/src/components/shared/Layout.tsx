@@ -1,120 +1,196 @@
-import React, { useState } from 'react';
-import { Outlet, NavLink } from 'react-router-dom';
+import { useState } from 'react';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard,
-  Server,
-  HardDrive,
-  Package,
-  Network,
-  Shield,
-  FileSearch,
-  Settings,
-  LogOut,
-  ChevronLeft,
-  ChevronRight,
-  Activity,
-  Menu,
-  Layers,
+  LayoutDashboard, Server, Cpu, Database, Package,
+  Network, Shield, FileText, Settings, LogOut,
+  ChevronLeft, ChevronRight, Activity, Gamepad2,
 } from 'lucide-react';
-import { clsx } from 'clsx';
 import { useAuthStore } from '../../store/authStore';
+import { cn } from '../../utils/cn';
 
 const NAV_ITEMS = [
-  { path: '/',        icon: LayoutDashboard, label: 'Dashboard'  },
-  { path: '/servers', icon: Server,          label: 'Servers'    },
-  { path: '/nodes',   icon: Layers,          label: 'Nodes'      },
-  { path: '/backups', icon: HardDrive,       label: 'Backups'    },
-  { path: '/mods',    icon: Package,         label: 'Mods'       },
-  { path: '/ports',   icon: Network,         label: 'Ports'      },
-  { path: '/security',icon: Shield,          label: 'Security'   },
-  { path: '/sbom',    icon: FileSearch,      label: 'SBOM & CVE' },
-  { path: '/settings',icon: Settings,        label: 'Settings'   },
+  { path: '/',         label: 'Dashboard', icon: LayoutDashboard },
+  { path: '/servers',  label: 'Servers',   icon: Server },
+  { path: '/nodes',    label: 'Nodes',     icon: Cpu },
+  { path: '/backups',  label: 'Backups',   icon: Database },
+  { path: '/mods',     label: 'Mods',      icon: Package },
+  { path: '/ports',    label: 'Ports',     icon: Network },
+  { path: '/security', label: 'Security',  icon: Shield },
+  { path: '/sbom',     label: 'SBOM / CVE',icon: FileText },
+  { path: '/settings', label: 'Settings',  icon: Settings },
 ];
 
 export function Layout() {
   const [collapsed, setCollapsed] = useState(false);
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
   const { user, logout } = useAuthStore();
 
+  const handleLogout = () => { logout(); navigate('/login'); };
+
+  const isActive = (path: string) =>
+    path === '/' ? pathname === '/' : pathname.startsWith(path);
+
   return (
-    <div className="flex h-screen bg-[#0a0a0a] text-gray-100 overflow-hidden">
-      {/* Sidebar */}
+    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-page)' }}>
+
+      {/* ── Sidebar ─────────────────────────────────────────────────────── */}
       <aside
-        className={clsx(
-          'flex flex-col bg-[#101010] border-r border-[#1a1a1a] transition-all duration-200 shrink-0',
-          collapsed ? 'w-14' : 'w-56'
+        className={cn(
+          'flex flex-col h-full shrink-0 transition-all duration-300 ease-in-out relative z-20',
+          collapsed ? 'w-[64px]' : 'w-[240px]',
         )}
+        style={{
+          background: 'var(--bg-sidebar)',
+          borderRight: '1px solid var(--border)',
+          boxShadow: '4px 0 24px rgba(0,0,0,0.25)',
+        }}
       >
         {/* Logo */}
-        <div className="flex items-center gap-3 px-3 py-4 border-b border-[#1a1a1a]">
-          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
-            <Activity className="w-4 h-4 text-white" />
+        <div
+          className={cn('flex items-center h-16 px-4 shrink-0', collapsed ? 'justify-center' : 'gap-3')}
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          <div
+            className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+            style={{ background: 'linear-gradient(135deg, #f97316, #ea580c)', boxShadow: '0 0 18px rgba(249,115,22,0.45)' }}
+          >
+            <Gamepad2 size={16} className="text-white" />
           </div>
           {!collapsed && (
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-gray-100 truncate">Games Dashboard</div>
-              <div className="text-xs text-gray-500">v1.0.0</div>
+            <div className="overflow-hidden">
+              <p className="text-sm leading-tight" style={{ color: 'var(--text-primary)', fontWeight: 700 }}>
+                Games Dashboard
+              </p>
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>v1.0.0</p>
             </div>
           )}
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 py-3 space-y-0.5 px-1.5 overflow-y-auto">
-          {NAV_ITEMS.map(({ path, icon: Icon, label }) => (
-            <NavLink
-              key={path}
-              to={path}
-              end={path === '/'}
-              className={({ isActive }) =>
-                clsx(
-                  'flex items-center gap-3 px-2.5 py-2 rounded-lg text-sm transition-colors',
-                  isActive
-                    ? 'bg-blue-600/15 text-blue-400'
-                    : 'text-gray-400 hover:text-gray-100 hover:bg-[#1a1a1a]'
-                )
-              }
-            >
-              <Icon className="w-4 h-4 shrink-0" />
-              {!collapsed && <span className="truncate">{label}</span>}
-            </NavLink>
-          ))}
+        {/* Nav */}
+        <nav className="flex-1 overflow-y-auto py-3 px-2">
+          {!collapsed && <p className="label px-2 mb-2">Navigation</p>}
+          <ul className="flex flex-col gap-0.5">
+            {NAV_ITEMS.map(({ path, label, icon: Icon }) => {
+              const active = isActive(path);
+              return (
+                <li key={path}>
+                  <Link
+                    to={path}
+                    title={collapsed ? label : undefined}
+                    className={cn(
+                      'relative flex items-center rounded-lg transition-all duration-150 group',
+                      collapsed ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5',
+                      active ? 'nav-active' : '',
+                    )}
+                    style={{
+                      background: active ? 'rgba(249,115,22,0.1)' : 'transparent',
+                      color: active ? '#fb923c' : 'var(--text-secondary)',
+                      textDecoration: 'none',
+                    }}
+                    onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
+                    onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                  >
+                    <Icon size={17} style={{ color: active ? '#f97316' : undefined, flexShrink: 0 }} />
+                    {!collapsed && (
+                      <span className="text-sm font-medium truncate" style={{ color: active ? '#f0f0f8' : undefined }}>
+                        {label}
+                      </span>
+                    )}
+                    {collapsed && (
+                      <span
+                        className="absolute left-full ml-3 px-2.5 py-1 rounded-lg text-xs font-medium
+                                   whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100
+                                   transition-opacity duration-150 z-50"
+                        style={{ background: '#1e1e38', color: 'var(--text-primary)', border: '1px solid var(--border-strong)', boxShadow: '0 4px 14px rgba(0,0,0,0.5)' }}
+                      >
+                        {label}
+                      </span>
+                    )}
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
         </nav>
 
-        {/* User / Collapse */}
-        <div className="border-t border-[#1a1a1a] p-1.5 space-y-0.5">
-          {!collapsed && user && (
-            <div className="px-2.5 py-2 rounded-lg flex items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-blue-600/30 flex items-center justify-center text-xs text-blue-400 font-medium shrink-0">
-                {user.username?.[0]?.toUpperCase() ?? 'U'}
-              </div>
-              <span className="text-xs text-gray-400 truncate">{user.username}</span>
-            </div>
-          )}
+        {/* Bottom: user + collapse */}
+        <div className="shrink-0 px-2 pb-3" style={{ borderTop: '1px solid var(--border)' }}>
           <button
-            onClick={logout}
-            className="w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-sm text-gray-400 hover:text-red-400 hover:bg-red-900/10 transition-colors"
+            onClick={() => setCollapsed(c => !c)}
+            className={cn('w-full flex items-center rounded-lg py-2 mt-2 transition-all duration-150 text-sm', collapsed ? 'justify-center' : 'gap-2 px-3')}
+            style={{ color: 'var(--text-muted)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
           >
-            <LogOut className="w-4 h-4 shrink-0" />
-            {!collapsed && <span>Sign out</span>}
+            {collapsed ? <ChevronRight size={15} /> : <><ChevronLeft size={15} /><span>Collapse</span></>}
           </button>
-          <button
-            onClick={() => setCollapsed(!collapsed)}
-            className="w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-sm text-gray-500 hover:text-gray-300 hover:bg-[#1a1a1a] transition-colors"
-          >
-            {collapsed ? (
-              <ChevronRight className="w-4 h-4 shrink-0" />
-            ) : (
+
+          <div className={cn('flex items-center rounded-lg py-2 mt-1', collapsed ? 'justify-center' : 'gap-2.5 px-3')}>
+            <div
+              className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-xs font-bold"
+              style={{ background: 'linear-gradient(135deg, #3b82f6, #1d4ed8)', color: '#fff' }}
+            >
+              {user?.username?.[0]?.toUpperCase() ?? 'A'}
+            </div>
+            {!collapsed && (
               <>
-                <ChevronLeft className="w-4 h-4 shrink-0" />
-                <span>Collapse</span>
+                <div className="flex-1 overflow-hidden">
+                  <p className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{user?.username ?? 'admin'}</p>
+                  <p className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{user?.roles?.[0] ?? 'admin'}</p>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  title="Log out"
+                  className="p-1.5 rounded-md transition-all duration-150"
+                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(239,68,68,0.12)'; (e.currentTarget as HTMLElement).style.color = '#f87171'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; }}
+                >
+                  <LogOut size={14} />
+                </button>
               </>
             )}
-          </button>
+          </div>
+
+          {collapsed && (
+            <button
+              onClick={handleLogout}
+              title="Log out"
+              className="w-full flex justify-center items-center py-2 rounded-lg mt-0.5 transition-all duration-150"
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(239,68,68,0.12)'; (e.currentTarget as HTMLElement).style.color = '#f87171'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; }}
+            >
+              <LogOut size={14} />
+            </button>
+          )}
         </div>
       </aside>
 
-      {/* Main content */}
-      <main className="flex-1 overflow-auto">
-        <Outlet />
+      {/* ── Main ───────────────────────────────────────────────────────── */}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Top bar */}
+        <div
+          className="flex items-center h-16 px-6 shrink-0"
+          style={{ background: 'rgba(11,11,22,0.85)', borderBottom: '1px solid var(--border)', backdropFilter: 'blur(14px)' }}
+        >
+          <div className="flex items-center gap-2">
+            <Activity size={13} style={{ color: '#f97316' }} />
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Games Dashboard</span>
+          </div>
+          <div className="ml-auto flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Live</span>
+          </div>
+        </div>
+
+        {/* Scrollable page content */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="animate-page">
+            <Outlet />
+          </div>
+        </div>
       </main>
     </div>
   );

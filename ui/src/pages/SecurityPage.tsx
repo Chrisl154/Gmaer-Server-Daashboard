@@ -1,44 +1,31 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Shield, Key, Users, Lock, Eye, EyeOff, RefreshCw, Plus } from 'lucide-react';
+import { Shield, Key, Users, Lock, RefreshCw, Plus, CheckCircle } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../utils/api';
 import { useAuthStore } from '../store/authStore';
-import { clsx } from 'clsx';
+import { cn } from '../utils/cn';
 
 export function SecurityPage() {
-  const [activeSection, setActiveSection] = useState<'mfa'|'users'|'audit'|'secrets'>('mfa');
   const { user } = useAuthStore();
 
-  const SECTIONS = [
-    { id: 'mfa'     as const, label: 'MFA / 2FA',     icon: Shield },
-    { id: 'users'   as const, label: 'Users & RBAC',  icon: Users  },
-    { id: 'audit'   as const, label: 'Audit Log',     icon: Key    },
-    { id: 'secrets' as const, label: 'Secrets',       icon: Lock   },
-  ];
-
   return (
-    <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-100">Security</h1>
-        <p className="text-sm text-gray-400 mt-1">Authentication, RBAC, audit trail, and secrets management</p>
+    <div className="p-6 md:p-8 space-y-8 animate-page">
+      {/* Header */}
+      <div className="mb-6">
+        <h1 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>Security</h1>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+          Authentication, RBAC, audit trail, and secrets management
+        </p>
       </div>
 
-      <div className="flex gap-2 flex-wrap">
-        {SECTIONS.map(({ id, label, icon: Icon }) => (
-          <button key={id} onClick={() => setActiveSection(id)}
-            className={clsx('flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-colors',
-              activeSection === id ? 'bg-blue-600/20 text-blue-400 border border-blue-600/30' : 'bg-[#141414] border border-[#252525] text-gray-400 hover:text-gray-200')}>
-            <Icon className="w-4 h-4" />{label}
-          </button>
-        ))}
+      <div className="space-y-6">
+        <MFASection />
+        <UsersSection />
+        <AuditSection />
+        <SecretsSection />
       </div>
-
-      {activeSection === 'mfa'     && <MFASection />}
-      {activeSection === 'users'   && <UsersSection />}
-      {activeSection === 'audit'   && <AuditSection />}
-      {activeSection === 'secrets' && <SecretsSection />}
     </div>
   );
 }
@@ -68,54 +55,85 @@ function MFASection() {
   };
 
   return (
-    <div className="max-w-md space-y-4">
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <h3 className="text-sm font-medium text-gray-200">Authenticator App (TOTP)</h3>
-            <p className="text-xs text-gray-500 mt-0.5">Use Google Authenticator, Authy, or 1Password</p>
-          </div>
-          <div className={clsx('text-xs px-2 py-1 rounded-full', user?.totp_enabled ? 'bg-green-900/30 text-green-400' : 'bg-gray-800 text-gray-500')}>
-            {user?.totp_enabled ? 'Enabled' : 'Disabled'}
-          </div>
+    <div className="card p-5 space-y-5">
+      {/* Section title */}
+      <div className="flex items-center gap-2 mb-1">
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+          style={{ background: 'var(--primary-subtle)' }}>
+          <Shield className="w-3.5 h-3.5" style={{ color: 'var(--primary)' }} />
         </div>
-
-        {!setupData ? (
-          <button onClick={handleSetup} disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-lg text-sm transition-colors disabled:opacity-50">
-            <Shield className="w-4 h-4" />
-            {user?.totp_enabled ? 'Regenerate TOTP' : 'Enable TOTP'}
-          </button>
-        ) : (
-          <div className="space-y-4">
-            <div className="flex justify-center">
-              <div className="p-3 bg-white rounded-xl">
-                <QRCodeSVG value={setupData.qr_code_url} size={180} />
-              </div>
-            </div>
-            <div className="p-3 bg-[#0d0d0d] rounded-lg">
-              <p className="text-xs text-gray-400 mb-1">Manual entry key:</p>
-              <p className="font-mono text-sm text-gray-200 break-all">{setupData.secret}</p>
-            </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Verify code from app</label>
-              <div className="flex gap-2">
-                <input type="text" value={verifyCode} onChange={e => setVerifyCode(e.target.value.replace(/\D/g,'').slice(0,6))}
-                  placeholder="000000" maxLength={6}
-                  className="flex-1 bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm font-mono text-gray-100 tracking-widest text-center focus:outline-none focus:border-blue-500" />
-                <button onClick={handleVerify} disabled={verifyCode.length !== 6 || loading}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm disabled:opacity-50">
-                  Verify
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>MFA / Two-Factor Auth</h2>
       </div>
 
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4">
-        <h3 className="text-sm font-medium text-gray-200 mb-3">OIDC / SSO</h3>
-        <p className="text-xs text-gray-500">Configure single sign-on in Settings → Authentication.</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* TOTP Card */}
+        <div className="rounded-xl p-5 space-y-4" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Authenticator App (TOTP)</h3>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Google Authenticator, Authy, or 1Password</p>
+            </div>
+            <span className={cn(
+              'badge',
+              user?.totp_enabled
+                ? 'bg-green-500/15 text-green-400'
+                : 'text-gray-500'
+            )} style={!user?.totp_enabled ? { background: 'rgba(128,128,168,0.15)' } : {}}>
+              {user?.totp_enabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </div>
+
+          {!setupData ? (
+            <button
+              onClick={handleSetup}
+              disabled={loading}
+              className="btn-ghost w-full justify-center"
+            >
+              <Shield className="w-4 h-4" />
+              {user?.totp_enabled ? 'Regenerate TOTP' : 'Enable TOTP'}
+            </button>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex justify-center">
+                <div className="p-3 bg-white rounded-xl shadow-lg">
+                  <QRCodeSVG value={setupData.qr_code_url} size={160} />
+                </div>
+              </div>
+              <div className="rounded-lg p-3 space-y-1" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Manual entry key:</p>
+                <p className="font-mono text-sm break-all" style={{ color: 'var(--text-primary)' }}>{setupData.secret}</p>
+              </div>
+              <div>
+                <label className="label">Verify code from app</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={verifyCode}
+                    onChange={e => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="000000"
+                    maxLength={6}
+                    className="input font-mono tracking-widest text-center"
+                  />
+                  <button
+                    onClick={handleVerify}
+                    disabled={verifyCode.length !== 6 || loading}
+                    className="btn-primary"
+                  >
+                    Verify
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* OIDC Card */}
+        <div className="rounded-xl p-5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
+          <h3 className="text-sm font-medium mb-2" style={{ color: 'var(--text-primary)' }}>OIDC / SSO</h3>
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+            Configure single sign-on in Settings → Authentication.
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -134,46 +152,96 @@ function UsersSection() {
     onSuccess: () => { toast.success('User deleted'); queryClient.invalidateQueries({ queryKey: ['users'] }); },
   });
 
-  const ROLE_COLORS: Record<string, string> = {
-    admin:  'bg-red-900/30 text-red-400',
-    viewer: 'bg-gray-800 text-gray-400',
-    modder: 'bg-purple-900/30 text-purple-400',
-    operator: 'bg-blue-900/30 text-blue-400',
+  const ROLE_STYLES: Record<string, React.CSSProperties> = {
+    admin:    { background: 'rgba(59,130,246,0.15)',  color: '#60a5fa'  },
+    viewer:   { background: 'rgba(128,128,168,0.15)', color: '#8080a8'  },
+    modder:   { background: 'rgba(168,85,247,0.15)',  color: '#c084fc'  },
+    operator: { background: 'rgba(59,130,246,0.15)',  color: '#60a5fa'  },
   };
 
   return (
-    <div className="space-y-4">
+    <div className="card p-5 space-y-5">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-gray-200">Users ({users.length})</h3>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-lg">
-          <Plus className="w-3 h-3" /> Add User
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+            style={{ background: 'rgba(59,130,246,0.12)' }}>
+            <Users className="w-3.5 h-3.5 text-blue-400" />
+          </div>
+          <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+            User Management
+            <span className="ml-2 text-sm font-normal" style={{ color: 'var(--text-muted)' }}>({users.length})</span>
+          </h2>
+        </div>
+        <button className="btn-blue py-1.5 px-3 text-xs">
+          <Plus className="w-3.5 h-3.5" /> Add User
         </button>
       </div>
-      <div className="space-y-2">
-        {users.map((u: any) => (
-          <div key={u.id} className="bg-[#141414] border border-[#252525] rounded-xl p-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-blue-600/20 flex items-center justify-center text-sm font-medium text-blue-400">
-                {u.username[0].toUpperCase()}
-              </div>
-              <div>
-                <div className="text-sm text-gray-200">{u.username}</div>
-                <div className="flex gap-1 mt-0.5">
-                  {u.roles.map((r: string) => (
-                    <span key={r} className={clsx('text-xs px-1.5 py-0.5 rounded', ROLE_COLORS[r] ?? 'bg-gray-800 text-gray-400')}>{r}</span>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {u.totp_enabled && <Shield className="w-4 h-4 text-green-400" aria-label="MFA enabled" />}
-              {u.username !== 'admin' && (
-                <button onClick={() => deleteMutation.mutate(u.id)}
-                  className="text-xs text-red-400 hover:text-red-300 px-2 py-1">Delete</button>
-              )}
-            </div>
-          </div>
-        ))}
+
+      <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+              <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>User</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Roles</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>MFA</th>
+              <th className="px-4 py-3" />
+            </tr>
+          </thead>
+          <tbody>
+            {users.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="px-4 py-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+                  No users found.
+                </td>
+              </tr>
+            ) : users.map((u: any, idx: number) => (
+              <tr key={u.id}
+                style={{
+                  borderTop: idx > 0 ? '1px solid var(--border)' : undefined,
+                }}
+                className="transition-colors"
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-card-hover)')}
+                onMouseLeave={e => (e.currentTarget.style.background = '')}
+              >
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
+                      style={{ background: 'var(--primary-subtle)', color: 'var(--primary)' }}>
+                      {u.username[0].toUpperCase()}
+                    </div>
+                    <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{u.username}</span>
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex gap-1 flex-wrap">
+                    {u.roles.map((r: string) => (
+                      <span key={r} className="badge" style={ROLE_STYLES[r] ?? { background: 'rgba(128,128,168,0.15)', color: 'var(--text-secondary)' }}>
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  {u.totp_enabled
+                    ? <span className="flex items-center gap-1 text-xs text-green-400"><Shield className="w-3.5 h-3.5" /> Enabled</span>
+                    : <span className="text-xs" style={{ color: 'var(--text-muted)' }}>—</span>
+                  }
+                </td>
+                <td className="px-4 py-3 text-right">
+                  {u.username !== 'admin' && (
+                    <button
+                      onClick={() => deleteMutation.mutate(u.id)}
+                      className="text-xs px-2 py-1 rounded transition-colors"
+                      style={{ color: '#f87171' }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -187,21 +255,58 @@ function AuditSection() {
   const entries = data?.audit_log ?? [];
 
   return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-medium text-gray-200">Audit Log ({entries.length} entries)</h3>
-      <div className="bg-[#141414] border border-[#252525] rounded-xl overflow-hidden">
-        <div className="divide-y divide-[#1a1a1a] max-h-[500px] overflow-y-auto">
+    <div className="card p-5 space-y-5">
+      <div className="flex items-center gap-2">
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+          style={{ background: 'rgba(168,85,247,0.12)' }}>
+          <Key className="w-3.5 h-3.5 text-purple-400" />
+        </div>
+        <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Audit Log
+          <span className="ml-2 text-sm font-normal" style={{ color: 'var(--text-muted)' }}>({entries.length} entries)</span>
+        </h2>
+      </div>
+
+      <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+        <div className="max-h-[400px] overflow-y-auto">
           {entries.length === 0 ? (
-            <div className="p-6 text-center text-gray-500 text-sm">No audit events yet.</div>
-          ) : entries.map((e: any) => (
-            <div key={e.id} className="px-4 py-3 text-sm flex items-center gap-4">
-              <div className={clsx('w-1.5 h-1.5 rounded-full shrink-0', e.success ? 'bg-green-400' : 'bg-red-400')} />
-              <span className="text-gray-400 text-xs font-mono shrink-0">{new Date(e.timestamp).toLocaleString()}</span>
-              <span className="text-gray-200">{e.username}</span>
-              <span className="text-gray-500">{e.action}</span>
-              <span className="text-gray-500 text-xs">{e.resource}</span>
+            <div className="p-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+              No audit events yet.
             </div>
-          ))}
+          ) : (
+            <div className="relative pl-8">
+              {/* Timeline line */}
+              <div className="absolute left-4 top-0 bottom-0 w-px" style={{ background: 'var(--border-strong)' }} />
+
+              {entries.map((e: any, idx: number) => (
+                <div key={e.id} className="relative flex items-start gap-4 py-3 pr-4"
+                  style={{ borderBottom: idx < entries.length - 1 ? '1px solid var(--border)' : undefined }}>
+                  {/* Timeline dot */}
+                  <div className={cn(
+                    'absolute left-[13px] top-4 w-2.5 h-2.5 rounded-full ring-2 shrink-0',
+                    e.success
+                      ? 'bg-green-400 ring-green-400/20'
+                      : 'bg-red-400 ring-red-400/20'
+                  )} />
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>{e.username}</span>
+                      <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{e.action}</span>
+                      {e.resource && (
+                        <span className="badge text-xs" style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
+                          {e.resource}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs mt-0.5 font-mono" style={{ color: 'var(--text-muted)' }}>
+                      {new Date(e.timestamp).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -217,35 +322,60 @@ function SecretsSection() {
   });
 
   return (
-    <div className="max-w-md space-y-4">
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4">
-        <h3 className="text-sm font-medium text-gray-200 mb-1">Encryption at Rest</h3>
-        <p className="text-xs text-gray-500 mb-3">All secrets encrypted with AES-256-GCM. Local KMS by default; HashiCorp Vault supported.</p>
-        <div className="flex items-center gap-2 text-xs text-green-400">
-          <Shield className="w-3.5 h-3.5" /> AES-256-GCM active
+    <div className="card p-5 space-y-5">
+      <div className="flex items-center gap-2">
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+          style={{ background: 'rgba(234,179,8,0.12)' }}>
+          <Lock className="w-3.5 h-3.5 text-yellow-400" />
         </div>
+        <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>Secrets</h2>
       </div>
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4">
-        <h3 className="text-sm font-medium text-gray-200 mb-1">Key Rotation</h3>
-        <p className="text-xs text-gray-500 mb-3">Rotate the master encryption key. All secrets will be re-encrypted with the new key.</p>
-        {!showRotate ? (
-          <button onClick={() => setShowRotate(true)} className="flex items-center gap-2 px-4 py-2 bg-yellow-900/20 hover:bg-yellow-900/30 text-yellow-400 rounded-lg text-sm">
-            <RefreshCw className="w-4 h-4" /> Rotate Keys
-          </button>
-        ) : (
-          <div className="space-y-3">
-            <p className="text-xs text-red-400 bg-red-900/20 border border-red-900/30 rounded-lg px-3 py-2">
-              Warning: This will rotate all encryption keys. Ensure you have a backup before proceeding.
-            </p>
-            <div className="flex gap-2">
-              <button onClick={() => setShowRotate(false)} className="flex-1 px-3 py-2 text-sm text-gray-300 bg-[#1a1a1a] rounded-lg">Cancel</button>
-              <button onClick={() => rotateMutation.mutate()} disabled={rotateMutation.isPending}
-                className="flex-1 px-3 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded-lg disabled:opacity-50">
-                {rotateMutation.isPending ? 'Rotating...' : 'Confirm Rotate'}
-              </button>
-            </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Encryption at Rest */}
+        <div className="rounded-xl p-5 space-y-3" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Encryption at Rest</h3>
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+            All secrets encrypted with AES-256-GCM. Local KMS by default; HashiCorp Vault supported.
+          </p>
+          <div className="flex items-center gap-2 text-xs text-green-400">
+            <CheckCircle className="w-3.5 h-3.5" /> AES-256-GCM active
           </div>
-        )}
+        </div>
+
+        {/* Key Rotation */}
+        <div className="rounded-xl p-5 space-y-3" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Key Rotation</h3>
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+            Rotate the master encryption key. All secrets will be re-encrypted with the new key.
+          </p>
+          {!showRotate ? (
+            <button
+              onClick={() => setShowRotate(true)}
+              className="btn-ghost w-full justify-center text-yellow-400"
+              style={{ borderColor: 'rgba(234,179,8,0.3)' }}
+            >
+              <RefreshCw className="w-4 h-4" /> Rotate Keys
+            </button>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded-lg px-3 py-2 text-xs text-red-400"
+                style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)' }}>
+                Warning: This will rotate all encryption keys. Ensure you have a backup before proceeding.
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setShowRotate(false)} className="btn-ghost flex-1 justify-center">Cancel</button>
+                <button
+                  onClick={() => rotateMutation.mutate()}
+                  disabled={rotateMutation.isPending}
+                  className="btn-danger flex-1 justify-center"
+                >
+                  {rotateMutation.isPending ? 'Rotating...' : 'Confirm Rotate'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

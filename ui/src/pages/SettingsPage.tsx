@@ -6,7 +6,7 @@ import {
   Database, RefreshCw,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { clsx } from 'clsx';
+import { cn } from '../utils/cn';
 import { api } from '../utils/api';
 import { useAuthStore } from '../store/authStore';
 import { useSystemStatus } from '../hooks/useServers';
@@ -15,15 +15,15 @@ import type { DaemonSettings, SettingsPatch } from '../types';
 type Section = 'general' | 'users' | 'tls' | 'storage' | 'networking' | 'monitoring';
 
 const NAV: { id: Section; icon: React.FC<any>; label: string }[] = [
-  { id: 'general',    icon: Settings,  label: 'General'     },
-  { id: 'users',      icon: User,      label: 'Users & Auth'},
-  { id: 'tls',        icon: Shield,    label: 'TLS'         },
-  { id: 'storage',    icon: HardDrive, label: 'Storage'     },
-  { id: 'networking', icon: Network,   label: 'Networking'  },
-  { id: 'monitoring', icon: Activity,  label: 'Monitoring'  },
+  { id: 'general',    icon: Settings,  label: 'General'      },
+  { id: 'users',      icon: User,      label: 'Users & Auth' },
+  { id: 'tls',        icon: Shield,    label: 'TLS'          },
+  { id: 'storage',    icon: HardDrive, label: 'Storage'      },
+  { id: 'networking', icon: Network,   label: 'Networking'   },
+  { id: 'monitoring', icon: Activity,  label: 'Monitoring'   },
 ];
 
-// ── Shared hook ────────────────────────────────────────────────────────────────
+// ── Shared hook ─────────────────────────────────────────────────────────────
 
 function useSettings() {
   return useQuery<DaemonSettings>({
@@ -45,28 +45,37 @@ function usePatchSettings() {
   });
 }
 
-// ── General section ───────────────────────────────────────────────────────────
+// ── General section ──────────────────────────────────────────────────────────
 
 function GeneralSection() {
   const { data: status } = useSystemStatus();
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">General</h2>
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>General</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Daemon status and system information</p>
+      </div>
 
       {status && (
-        <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
-          <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">System Status</h3>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+        <div className="card p-5 space-y-4">
+          <h3 className="label">System Status</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {[
               ['Version', status.version],
               ['Uptime', formatUptime(status.uptime_seconds)],
               ['Status', status.healthy ? 'Healthy' : 'Degraded'],
               ['Start Time', new Date(status.start_time).toLocaleString()],
             ].map(([label, value]) => (
-              <div key={label} className="flex items-center justify-between text-sm">
-                <span className="text-gray-500">{label}</span>
-                <span className={clsx('text-gray-200', label === 'Status' && (status.healthy ? 'text-green-400' : 'text-red-400'))}>
+              <div key={label} className="flex items-center justify-between rounded-lg px-3 py-2.5"
+                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+                <span className={cn(
+                  'text-sm font-medium',
+                  label === 'Status'
+                    ? status.healthy ? 'text-green-400' : 'text-red-400'
+                    : ''
+                )} style={label !== 'Status' ? { color: 'var(--text-primary)' } : {}}>
                   {value}
                 </span>
               </div>
@@ -75,11 +84,13 @@ function GeneralSection() {
         </div>
       )}
 
-      <div className="flex items-start gap-3 p-3 bg-[#141414] border border-[#252525] rounded-xl">
+      <div className="card p-4 flex items-start gap-3">
         <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-        <p className="text-xs text-gray-400">
+        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
           Advanced configuration can be edited in{' '}
-          <code className="font-mono text-gray-300">/etc/games-dashboard/daemon.yaml</code>.
+          <code className="font-mono text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+            /etc/games-dashboard/daemon.yaml
+          </code>.
           Restart the daemon after making changes.
         </p>
       </div>
@@ -87,7 +98,7 @@ function GeneralSection() {
   );
 }
 
-// ── Users section ─────────────────────────────────────────────────────────────
+// ── Users section ────────────────────────────────────────────────────────────
 
 function UsersSection() {
   const qc = useQueryClient();
@@ -134,83 +145,107 @@ function UsersSection() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Users</h2>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-lg"
-        >
-          <Plus className="w-3 h-3" /> Add User
-        </button>
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>Users & Auth</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Manage user accounts and authentication</p>
       </div>
 
-      <div className="bg-[#141414] border border-[#252525] rounded-xl divide-y divide-[#1e1e1e]">
-        {users.length === 0 ? (
-          <div className="px-4 py-3 text-sm text-gray-500">No users found.</div>
-        ) : (
-          users.map((u: any) => (
-            <div key={u.id} className="flex items-center justify-between px-4 py-3">
-              <div className="flex items-center gap-3">
-                <div className="w-7 h-7 rounded-full bg-blue-600/20 flex items-center justify-center text-xs text-blue-400 font-medium">
-                  {u.username?.[0]?.toUpperCase()}
-                </div>
-                <div>
-                  <div className="text-sm text-gray-200">{u.username}</div>
-                  <div className="text-xs text-gray-500">
-                    {u.roles?.join(', ')}
-                    {u.totp_enabled && <span className="ml-2 text-green-400">· MFA</span>}
+      <div className="card p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="label mb-0">User Accounts</h3>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="btn-blue py-1.5 px-3 text-xs"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add User
+          </button>
+        </div>
+
+        <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
+          {users.length === 0 ? (
+            <p className="py-4 text-sm text-center" style={{ color: 'var(--text-muted)' }}>No users found.</p>
+          ) : (
+            users.map((u: any) => (
+              <div key={u.id} className="flex items-center justify-between py-3 first:pt-0 last:pb-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold"
+                    style={{ background: 'rgba(249,115,22,0.15)', color: 'var(--primary)' }}>
+                    {u.username?.[0]?.toUpperCase()}
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{u.username}</div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      {u.roles?.map((r: string) => (
+                        <span key={r} className="badge"
+                          style={{
+                            background: r === 'admin' ? 'rgba(59,130,246,0.15)' : 'rgba(128,128,168,0.15)',
+                            color: r === 'admin' ? '#60a5fa' : 'var(--text-secondary)',
+                          }}>
+                          {r}
+                        </span>
+                      ))}
+                      {u.totp_enabled && (
+                        <span className="text-xs text-green-400 flex items-center gap-1">
+                          <Shield className="w-3 h-3" /> MFA
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
+                {u.id !== currentUser?.id && (
+                  <button
+                    onClick={() => deleteMutation.mutate(u.id)}
+                    disabled={deleteMutation.isPending}
+                    className="p-1.5 rounded-lg transition-colors disabled:opacity-50"
+                    style={{ color: 'var(--text-muted)' }}
+                    onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
+                    onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
               </div>
-              {u.id !== currentUser?.id && (
-                <button
-                  onClick={() => deleteMutation.mutate(u.id)}
-                  disabled={deleteMutation.isPending}
-                  className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-900/10 rounded-lg transition-colors"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          ))
-        )}
+            ))
+          )}
+        </div>
       </div>
 
       {/* TOTP Setup */}
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
-        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Two-Factor Authentication</h3>
+      <div className="card p-5 space-y-4">
+        <h3 className="label">Two-Factor Authentication</h3>
         {currentUser?.totp_enabled ? (
           <div className="flex items-center gap-2 text-sm text-green-400">
             <Shield className="w-4 h-4" /> TOTP is enabled for your account
           </div>
         ) : totpSetup ? (
-          <div className="space-y-3">
-            <p className="text-xs text-gray-400">
+          <div className="space-y-4">
+            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
               Scan this QR code with your authenticator app, then enter the 6-digit code:
             </p>
-            <code className="block text-xs text-gray-300 bg-[#0d0d0d] rounded p-2 font-mono break-all">
+            <div className="rounded-lg p-3 font-mono text-xs break-all"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
               {totpSetup.qr_code_url}
-            </code>
-            <div className="flex items-center gap-2">
+            </div>
+            <div className="flex items-center gap-3">
               <input
                 type="text"
                 value={totpCode}
                 onChange={e => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 placeholder="000000"
                 maxLength={6}
-                className="w-32 bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm font-mono text-center text-gray-100 focus:outline-none focus:border-blue-500"
+                className="input w-32 font-mono text-center tracking-widest"
               />
               <button
                 onClick={handleVerifyTOTP}
                 disabled={totpCode.length !== 6}
-                className="px-3 py-2 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
+                className="btn-blue"
               >
-                Verify &amp; Enable
+                Verify & Enable
               </button>
               <button
                 onClick={() => { setTotpSetup(null); setTotpCode(''); }}
-                className="px-3 py-2 text-xs text-gray-400 hover:text-gray-200"
+                className="btn-ghost"
               >
                 Cancel
               </button>
@@ -220,7 +255,7 @@ function UsersSection() {
           <button
             onClick={handleSetupTOTP}
             disabled={totpLoading}
-            className="flex items-center gap-2 px-3 py-2 text-sm bg-[#1e1e1e] hover:bg-[#252525] text-gray-300 rounded-lg"
+            className="btn-ghost"
           >
             {totpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <QrCode className="w-4 h-4" />}
             Set up TOTP
@@ -258,30 +293,30 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-6 w-full max-w-sm space-y-4">
-        <h2 className="text-base font-semibold text-gray-100">Create User</h2>
+    <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ background: 'rgba(0,0,0,0.7)' }}>
+      <div className="card p-6 w-full max-w-sm space-y-4" style={{ background: 'var(--bg-elevated)' }}>
+        <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>Create User</h2>
         {[
           { label: 'Username', key: 'username', type: 'text', placeholder: 'operator1' },
           { label: 'Password', key: 'password', type: 'password', placeholder: '••••••••' },
         ].map(({ label, key, type, placeholder }) => (
           <div key={key}>
-            <label className="block text-xs text-gray-400 mb-1">{label}</label>
+            <label className="label">{label}</label>
             <input
               type={type}
               value={(form as any)[key]}
               onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))}
               placeholder={placeholder}
-              className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+              className="input"
             />
           </div>
         ))}
         <div>
-          <label className="block text-xs text-gray-400 mb-1">Role</label>
+          <label className="label">Role</label>
           <select
             value={form.roles}
             onChange={e => setForm(p => ({ ...p, roles: e.target.value }))}
-            className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+            className="input"
           >
             <option value="admin">Admin</option>
             <option value="operator">Operator</option>
@@ -289,13 +324,11 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
           </select>
         </div>
         <div className="flex gap-3 pt-2">
-          <button onClick={onClose} className="flex-1 px-4 py-2 text-sm text-gray-300 bg-[#1a1a1a] hover:bg-[#252525] rounded-lg">
-            Cancel
-          </button>
+          <button onClick={onClose} className="btn-ghost flex-1 justify-center">Cancel</button>
           <button
             onClick={handleCreate}
             disabled={loading || !form.username || !form.password}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
+            className="btn-primary flex-1 justify-center"
           >
             {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
             Create
@@ -306,36 +339,43 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
   );
 }
 
-// ── TLS section ───────────────────────────────────────────────────────────────
+// ── TLS section ──────────────────────────────────────────────────────────────
 
 function TLSSection() {
   return (
-    <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">TLS Certificates</h2>
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-2">
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>TLS Certificates</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Transport Layer Security configuration</p>
+      </div>
+      <div className="card p-5 space-y-3">
+        <h3 className="label">Certificate Paths</h3>
         {[
           { label: 'Certificate Path', value: '/etc/games-dashboard/tls/server.crt', mono: true },
           { label: 'Key Path',         value: '/etc/games-dashboard/tls/server.key', mono: true },
-          { label: 'Auto TLS',         value: 'Disabled' },
+          { label: 'Auto TLS',         value: 'Disabled', mono: false },
         ].map(({ label, value, mono }) => (
-          <div key={label} className="flex items-center justify-between text-sm">
-            <span className="text-gray-500">{label}</span>
-            <span className={clsx('text-gray-300', mono && 'font-mono text-xs')}>{value}</span>
+          <div key={label} className="flex items-center justify-between rounded-lg px-3 py-2.5"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+            <span className={cn('text-sm', mono && 'font-mono text-xs')} style={{ color: 'var(--text-primary)' }}>{value}</span>
           </div>
         ))}
       </div>
-      <div className="flex items-start gap-3 p-3 bg-[#141414] border border-[#252525] rounded-xl">
+      <div className="card p-4 flex items-start gap-3">
         <Key className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
-        <p className="text-xs text-gray-400">
+        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
           To update TLS certificates, replace the cert and key files then run{' '}
-          <code className="font-mono text-gray-300">games-daemon --tls-cert /path/cert --tls-key /path/key</code>.
+          <code className="font-mono text-xs px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+            games-daemon --tls-cert /path/cert --tls-key /path/key
+          </code>.
         </p>
       </div>
     </div>
   );
 }
 
-// ── Storage section ───────────────────────────────────────────────────────────
+// ── Storage section ──────────────────────────────────────────────────────────
 
 function StorageSection() {
   const { data: settings, isLoading } = useSettings();
@@ -375,34 +415,46 @@ function StorageSection() {
 
   return (
     <div className="space-y-5">
-      <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Storage</h2>
+      <div>
+        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>Storage</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Data directories, mounts, and backup configuration</p>
+      </div>
 
       {/* Data directory */}
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-2">
-        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider flex items-center gap-2">
+      <div className="card p-5 space-y-3">
+        <h3 className="label flex items-center gap-2">
           <Database className="w-3.5 h-3.5" /> Data Directory
         </h3>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-gray-500">Path</span>
-          <code className="font-mono text-xs text-gray-300">{s?.data_dir ?? '—'}</code>
+        <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
+          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+          <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Path</span>
+          <code className="font-mono text-xs" style={{ color: 'var(--text-primary)' }}>{s?.data_dir ?? '—'}</code>
         </div>
       </div>
 
       {/* NFS Mounts */}
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
-        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider flex items-center gap-2">
+      <div className="card p-5 space-y-3">
+        <h3 className="label flex items-center gap-2">
           <Server className="w-3.5 h-3.5" /> NFS Mounts
         </h3>
         {(s?.nfs_mounts.length ?? 0) === 0 ? (
-          <p className="text-sm text-gray-600">No NFS mounts configured.</p>
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No NFS mounts configured.</p>
         ) : (
-          <div className="divide-y divide-[#1e1e1e]">
+          <div className="space-y-2">
             {s?.nfs_mounts.map((m, i) => (
-              <div key={i} className="py-2 grid grid-cols-2 gap-x-4 text-xs">
-                <span className="text-gray-500">Server</span><code className="text-gray-300 font-mono">{m.server}</code>
-                <span className="text-gray-500">Remote path</span><code className="text-gray-300 font-mono">{m.path}</code>
-                <span className="text-gray-500">Mount point</span><code className="text-gray-300 font-mono">{m.mount_point}</code>
-                {m.options && <><span className="text-gray-500">Options</span><code className="text-gray-300 font-mono">{m.options}</code></>}
+              <div key={i} className="rounded-lg p-3 space-y-1.5"
+                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                {[
+                  ['Server', m.server],
+                  ['Remote path', m.path],
+                  ['Mount point', m.mount_point],
+                  ...(m.options ? [['Options', m.options]] : []),
+                ].map(([label, value]) => (
+                  <div key={label} className="flex items-center justify-between text-xs">
+                    <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+                    <code className="font-mono" style={{ color: 'var(--text-primary)' }}>{value}</code>
+                  </div>
+                ))}
               </div>
             ))}
           </div>
@@ -411,42 +463,43 @@ function StorageSection() {
 
       {/* S3 */}
       {s?.s3 && (
-        <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-2">
-          <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">S3 / Object Store</h3>
+        <div className="card p-5 space-y-3">
+          <h3 className="label">S3 / Object Store</h3>
           {[
             ['Endpoint', s.s3.endpoint],
             ['Bucket',   s.s3.bucket],
             ['Region',   s.s3.region],
             ['TLS',      s.s3.use_ssl ? 'Enabled' : 'Disabled'],
           ].map(([label, value]) => (
-            <div key={label} className="flex items-center justify-between text-sm">
-              <span className="text-gray-500">{label}</span>
-              <span className="text-gray-300 font-mono text-xs">{value}</span>
+            <div key={label} className="flex items-center justify-between rounded-lg px-3 py-2.5"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+              <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+              <span className="font-mono text-xs" style={{ color: 'var(--text-primary)' }}>{value}</span>
             </div>
           ))}
         </div>
       )}
 
       {/* Backup settings — editable */}
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-4">
-        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Backup</h3>
+      <div className="card p-5 space-y-4">
+        <h3 className="label">Backup Settings</h3>
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Schedule (cron)</label>
+            <label className="label">Schedule (cron)</label>
             <input
-              className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 font-mono focus:outline-none focus:border-blue-500"
+              className="input font-mono"
               value={backup.default_schedule}
               onChange={e => handleBackupChange('default_schedule', e.target.value)}
               placeholder="0 3 * * *"
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Retain (days)</label>
+            <label className="label">Retain (days)</label>
             <input
               type="number"
               min={1}
-              className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+              className="input"
               value={backup.retain_days}
               onChange={e => handleBackupChange('retain_days', parseInt(e.target.value) || 1)}
             />
@@ -454,9 +507,9 @@ function StorageSection() {
         </div>
 
         <div>
-          <label className="block text-xs text-gray-400 mb-1">Compression</label>
+          <label className="label">Compression</label>
           <select
-            className="bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+            className="input"
             value={backup.compression}
             onChange={e => handleBackupChange('compression', e.target.value)}
           >
@@ -470,7 +523,7 @@ function StorageSection() {
           <button
             onClick={handleSaveBackup}
             disabled={patch.isPending || !backupDirty}
-            className="ml-auto flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+            className="btn-primary ml-auto"
           >
             {patch.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
             Save
@@ -481,7 +534,7 @@ function StorageSection() {
   );
 }
 
-// ── Networking section ────────────────────────────────────────────────────────
+// ── Networking section ───────────────────────────────────────────────────────
 
 function NetworkingSection() {
   const { data: settings, isLoading } = useSettings();
@@ -489,33 +542,41 @@ function NetworkingSection() {
   if (isLoading) return <SectionSkeleton />;
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Networking</h2>
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>Networking</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Bind address and connection settings</p>
+      </div>
 
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-2">
+      <div className="card p-5 space-y-3">
+        <h3 className="label">Connection Settings</h3>
         {[
-          { label: 'Bind Address',     value: settings?.bind_addr ?? '—',                    mono: true  },
-          { label: 'Shutdown Timeout', value: settings ? `${settings.shutdown_timeout_s}s` : '—' },
+          { label: 'Bind Address',     value: settings?.bind_addr ?? '—',                      mono: true  },
+          { label: 'Shutdown Timeout', value: settings ? `${settings.shutdown_timeout_s}s` : '—', mono: false },
         ].map(({ label, value, mono }) => (
-          <div key={label} className="flex items-center justify-between text-sm">
-            <span className="text-gray-500">{label}</span>
-            <span className={clsx('text-gray-300', mono && 'font-mono text-xs')}>{value}</span>
+          <div key={label} className="flex items-center justify-between rounded-lg px-3 py-2.5"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+            <span className={cn('text-sm', mono && 'font-mono text-xs')} style={{ color: 'var(--text-primary)' }}>{value}</span>
           </div>
         ))}
       </div>
 
-      <div className="flex items-start gap-3 p-3 bg-[#141414] border border-[#252525] rounded-xl">
+      <div className="card p-4 flex items-start gap-3">
         <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-        <p className="text-xs text-gray-400">
+        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
           Network settings require a daemon restart to take effect. Edit{' '}
-          <code className="font-mono text-gray-300">daemon.yaml</code> to change these values.
+          <code className="font-mono text-xs px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+            daemon.yaml
+          </code>{' '}
+          to change these values.
         </p>
       </div>
     </div>
   );
 }
 
-// ── Monitoring section ────────────────────────────────────────────────────────
+// ── Monitoring section ───────────────────────────────────────────────────────
 
 function MonitoringSection() {
   const { data: settings, isLoading } = useSettings();
@@ -557,15 +618,18 @@ function MonitoringSection() {
 
   return (
     <div className="space-y-5">
-      <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Monitoring</h2>
+      <div>
+        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>Monitoring</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Logging, Prometheus metrics, and cluster health checks</p>
+      </div>
 
       {/* Logging */}
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
-        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Logging</h3>
+      <div className="card p-5 space-y-4">
+        <h3 className="label">Logging</h3>
         <div>
-          <label className="block text-xs text-gray-400 mb-1">Log Level</label>
+          <label className="label">Log Level</label>
           <select
-            className="bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+            className="input"
             value={logLevel}
             onChange={e => { setLogLevel(e.target.value); mark(); }}
           >
@@ -577,30 +641,32 @@ function MonitoringSection() {
       </div>
 
       {/* Metrics */}
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
-        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider flex items-center gap-2">
+      <div className="card p-5 space-y-4">
+        <h3 className="label flex items-center gap-2">
           <Activity className="w-3.5 h-3.5" /> Prometheus Metrics
         </h3>
         <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={() => { setMetricsEnabled(v => !v); mark(); }}
-            className={clsx(
+            className={cn(
               'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-              metricsEnabled ? 'bg-blue-600' : 'bg-[#333]'
+              metricsEnabled ? 'bg-orange-500' : 'bg-gray-700'
             )}
           >
-            <span className={clsx(
+            <span className={cn(
               'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow ring-0 transition-transform',
               metricsEnabled ? 'translate-x-4' : 'translate-x-0'
             )} />
           </button>
-          <span className="text-sm text-gray-300">{metricsEnabled ? 'Enabled' : 'Disabled'}</span>
+          <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            {metricsEnabled ? 'Enabled' : 'Disabled'}
+          </span>
         </div>
         <div>
-          <label className="block text-xs text-gray-400 mb-1">Metrics Path</label>
+          <label className="label">Metrics Path</label>
           <input
-            className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 font-mono focus:outline-none focus:border-blue-500"
+            className="input font-mono"
             value={metricsPath}
             onChange={e => { setMetricsPath(e.target.value); mark(); }}
             placeholder="/metrics"
@@ -610,27 +676,27 @@ function MonitoringSection() {
 
       {/* Cluster health check */}
       {settings?.cluster.enabled && (
-        <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
-          <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider flex items-center gap-2">
+        <div className="card p-5 space-y-4">
+          <h3 className="label flex items-center gap-2">
             <RefreshCw className="w-3.5 h-3.5" /> Cluster Health Checks
           </h3>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Check Interval (s)</label>
+              <label className="label">Check Interval (s)</label>
               <input
                 type="number"
                 min={5}
-                className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                className="input"
                 value={clusterInterval}
                 onChange={e => { setClusterInterval(parseInt(e.target.value) || 30); mark(); }}
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Node Timeout (s)</label>
+              <label className="label">Node Timeout (s)</label>
               <input
                 type="number"
                 min={10}
-                className="w-full bg-[#0d0d0d] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                className="input"
                 value={clusterTimeout}
                 onChange={e => { setClusterTimeout(parseInt(e.target.value) || 90); mark(); }}
               />
@@ -639,10 +705,14 @@ function MonitoringSection() {
         </div>
       )}
 
-      <div className="flex items-start gap-3 p-3 bg-[#141414] border border-[#252525] rounded-xl">
+      <div className="card p-4 flex items-start gap-3">
         <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-        <p className="text-xs text-gray-400">
-          Changes are saved to <code className="font-mono text-gray-300">daemon.yaml</code> and take effect on the next daemon restart.
+        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+          Changes are saved to{' '}
+          <code className="font-mono text-xs px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+            daemon.yaml
+          </code>{' '}
+          and take effect on the next daemon restart.
         </p>
       </div>
 
@@ -651,7 +721,7 @@ function MonitoringSection() {
         <button
           onClick={handleSave}
           disabled={patch.isPending || !dirty}
-          className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+          className="btn-primary"
         >
           {patch.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
           Save
@@ -661,17 +731,17 @@ function MonitoringSection() {
   );
 }
 
-// ── Skeleton ──────────────────────────────────────────────────────────────────
+// ── Skeleton ─────────────────────────────────────────────────────────────────
 
 function SectionSkeleton() {
   return (
     <div className="space-y-4 animate-pulse">
-      <div className="h-4 w-24 bg-[#252525] rounded" />
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-4 space-y-3">
+      <div className="h-7 w-32 rounded-lg" style={{ background: 'var(--bg-elevated)' }} />
+      <div className="card p-5 space-y-3">
         {[1, 2, 3].map(i => (
           <div key={i} className="flex justify-between">
-            <div className="h-3 w-28 bg-[#252525] rounded" />
-            <div className="h-3 w-36 bg-[#252525] rounded" />
+            <div className="h-4 w-28 rounded" style={{ background: 'var(--bg-elevated)' }} />
+            <div className="h-4 w-36 rounded" style={{ background: 'var(--bg-elevated)' }} />
           </div>
         ))}
       </div>
@@ -685,19 +755,24 @@ export function SettingsPage() {
   const [section, setSection] = useState<Section>('general');
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full min-h-0">
       {/* Left nav */}
-      <aside className="w-48 shrink-0 border-r border-[#1a1a1a] p-4 space-y-1">
+      <aside className="w-48 shrink-0 p-4 space-y-1" style={{ borderRight: '1px solid var(--border)' }}>
+        <p className="label px-3 mb-3">Settings</p>
         {NAV.map(({ id, icon: Icon, label }) => (
           <button
             key={id}
             onClick={() => setSection(id)}
-            className={clsx(
-              'w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors text-left',
+            className={cn(
+              'relative w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm transition-all text-left',
               section === id
-                ? 'bg-blue-600/15 text-blue-400'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-[#1a1a1a]'
+                ? 'nav-active font-medium'
+                : 'hover:opacity-100'
             )}
+            style={section === id
+              ? { background: 'var(--primary-subtle)', color: 'var(--primary)' }
+              : { color: 'var(--text-secondary)' }
+            }
           >
             <Icon className="w-4 h-4 shrink-0" />
             {label}
@@ -706,7 +781,7 @@ export function SettingsPage() {
       </aside>
 
       {/* Content */}
-      <main className="flex-1 p-6 overflow-auto">
+      <main className="flex-1 p-6 md:p-8 overflow-auto">
         {section === 'general'    && <GeneralSection />}
         {section === 'users'      && <UsersSection />}
         {section === 'tls'        && <TLSSection />}

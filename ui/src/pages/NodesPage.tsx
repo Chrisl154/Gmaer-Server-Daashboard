@@ -12,7 +12,7 @@ import {
   HardDrive,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { clsx } from 'clsx';
+import { cn } from '../utils/cn';
 import { api } from '../utils/api';
 import type { Node, NodeCapacity, RegisterNodeRequest } from '../types';
 
@@ -25,24 +25,27 @@ function pct(used: number, total: number): number {
 
 function UtilBar({ used, total, label }: { used: number; total: number; label: string }) {
   const p = pct(used, total);
-  const color = p >= 90 ? 'bg-red-500' : p >= 70 ? 'bg-yellow-500' : 'bg-blue-500';
+  const barColor = p >= 90 ? '#ef4444' : p >= 70 ? '#f59e0b' : 'var(--primary)';
   return (
-    <div className="space-y-1">
-      <div className="flex justify-between text-xs text-gray-400">
-        <span>{label}</span>
-        <span>{p}%</span>
+    <div className="space-y-1.5">
+      <div className="flex justify-between text-xs">
+        <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
+        <span style={{ color: 'var(--text-primary)' }}>{p}%</span>
       </div>
-      <div className="h-1.5 bg-[#1f1f1f] rounded-full overflow-hidden">
-        <div className={clsx('h-full rounded-full transition-all', color)} style={{ width: `${p}%` }} />
+      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${p}%`, background: barColor }}
+        />
       </div>
     </div>
   );
 }
 
-const STATUS_STYLES: Record<string, string> = {
-  online:   'bg-green-500/10 text-green-400 border border-green-500/20',
-  offline:  'bg-red-500/10  text-red-400  border border-red-500/20',
-  draining: 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20',
+const STATUS_CLASSES: Record<string, string> = {
+  online:   'status-running',
+  offline:  'status-error',
+  draining: 'status-starting',
 };
 
 // ── Add-node dialog ───────────────────────────────────────────────────────────
@@ -67,24 +70,25 @@ function AddNodeDialog({ onClose, onAdd, loading }: AddNodeDialogProps) {
     setForm(prev => ({ ...prev, capacity: { ...prev.capacity, [field]: value } }));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-[#141414] border border-[#252525] rounded-xl p-6 w-full max-w-md space-y-4">
-        <h2 className="text-lg font-semibold text-gray-100">Register Node</h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.7)' }}>
+      <div className="w-full max-w-md rounded-2xl p-6 space-y-5"
+        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
+        <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>Register Node</h2>
 
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div>
-            <label className="text-xs text-gray-400 mb-1 block">Hostname</label>
+            <label className="label">Hostname</label>
             <input
-              className="w-full bg-[#0a0a0a] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+              className="input"
               placeholder="node-2.example.com"
               value={form.hostname}
               onChange={e => set('hostname', e.target.value)}
             />
           </div>
           <div>
-            <label className="text-xs text-gray-400 mb-1 block">Agent address (host:port)</label>
+            <label className="label">Agent address (host:port)</label>
             <input
-              className="w-full bg-[#0a0a0a] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+              className="input"
               placeholder="192.168.1.20:9090"
               value={form.address}
               onChange={e => set('address', e.target.value)}
@@ -99,11 +103,11 @@ function AddNodeDialog({ onClose, onAdd, loading }: AddNodeDialogProps) {
               ] as { key: keyof NodeCapacity; label: string }[]
             ).map(({ key, label }) => (
               <div key={key}>
-                <label className="text-xs text-gray-400 mb-1 block">{label}</label>
+                <label className="label">{label}</label>
                 <input
                   type="number"
                   min={0}
-                  className="w-full bg-[#0a0a0a] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                  className="input"
                   value={form.capacity[key]}
                   onChange={e => setCap(key, parseFloat(e.target.value) || 0)}
                 />
@@ -111,9 +115,9 @@ function AddNodeDialog({ onClose, onAdd, loading }: AddNodeDialogProps) {
             ))}
           </div>
           <div>
-            <label className="text-xs text-gray-400 mb-1 block">Version (optional)</label>
+            <label className="label">Version (optional)</label>
             <input
-              className="w-full bg-[#0a0a0a] border border-[#252525] rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+              className="input"
               placeholder="1.0.0"
               value={form.version ?? ''}
               onChange={e => set('version', e.target.value)}
@@ -121,17 +125,12 @@ function AddNodeDialog({ onClose, onAdd, loading }: AddNodeDialogProps) {
           </div>
         </div>
 
-        <div className="flex gap-3 justify-end">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm text-gray-400 hover:text-gray-100 transition-colors"
-          >
-            Cancel
-          </button>
+        <div className="flex gap-3">
+          <button onClick={onClose} className="btn-ghost flex-1 justify-center">Cancel</button>
           <button
             disabled={!form.hostname || !form.address || loading}
             onClick={() => onAdd(form)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
+            className="btn-primary flex-1 justify-center"
           >
             {loading ? 'Registering…' : 'Register Node'}
           </button>
@@ -150,36 +149,43 @@ interface NodeCardProps {
 
 function NodeCard({ node, onRemove }: NodeCardProps) {
   const isOnline = node.status === 'online';
+
   return (
-    <div className="bg-[#111] border border-[#1f1f1f] rounded-xl p-5 space-y-4 hover:border-[#2a2a2a] transition-colors">
+    <div className="card p-5 space-y-4 group">
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <div className={clsx('w-8 h-8 rounded-lg flex items-center justify-center shrink-0',
-            isOnline ? 'bg-blue-600/15' : 'bg-gray-700/30')}>
-            <Server className={clsx('w-4 h-4', isOnline ? 'text-blue-400' : 'text-gray-500')} />
+          <div className={cn(
+            'w-9 h-9 rounded-xl flex items-center justify-center shrink-0',
+          )} style={{
+            background: isOnline ? 'rgba(249,115,22,0.12)' : 'rgba(128,128,168,0.1)',
+          }}>
+            <Server className="w-4 h-4" style={{ color: isOnline ? 'var(--primary)' : 'var(--text-muted)' }} />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-medium text-gray-100 truncate">{node.hostname}</p>
-            <p className="text-xs text-gray-500 truncate">{node.address}</p>
+            <p className="text-sm font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{node.hostname}</p>
+            <p className="text-xs truncate font-mono mt-0.5" style={{ color: 'var(--text-muted)' }}>{node.address}</p>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className={clsx('text-xs px-2 py-0.5 rounded-full', STATUS_STYLES[node.status])}>
+          <span className={cn('badge capitalize', STATUS_CLASSES[node.status] ?? 'status-stopped')}>
             {node.status}
           </span>
           <button
             onClick={() => onRemove(node.id)}
-            className="text-gray-600 hover:text-red-400 transition-colors"
+            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg transition-all"
+            style={{ color: 'var(--text-muted)' }}
+            onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
+            onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
             title="Remove node"
           >
-            <Trash2 className="w-4 h-4" />
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
       {/* Utilisation bars */}
-      <div className="space-y-2">
+      <div className="space-y-2.5">
         <UtilBar
           used={node.allocated.cpu_cores}
           total={node.capacity.cpu_cores}
@@ -198,18 +204,18 @@ function NodeCard({ node, onRemove }: NodeCardProps) {
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between text-xs text-gray-500 pt-1 border-t border-[#1a1a1a]">
+      <div className="flex items-center justify-between text-xs pt-1"
+        style={{ borderTop: '1px solid var(--border)', color: 'var(--text-muted)' }}>
         <span className="flex items-center gap-1">
           <Activity className="w-3 h-3" />
           {node.server_count} server{node.server_count !== 1 ? 's' : ''}
         </span>
         {node.version && <span>v{node.version}</span>}
         <span title={new Date(node.last_seen).toLocaleString()}>
-          {isOnline ? (
-            <Wifi className="w-3 h-3 text-green-500" />
-          ) : (
-            <WifiOff className="w-3 h-3 text-red-500" />
-          )}
+          {isOnline
+            ? <Wifi className="w-3 h-3 text-green-400" />
+            : <WifiOff className="w-3 h-3 text-red-400" />
+          }
         </span>
       </div>
     </div>
@@ -253,12 +259,12 @@ export function NodesPage() {
   });
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 md:p-8 animate-page space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-100">Cluster Nodes</h1>
-          <p className="text-sm text-gray-400 mt-1">
+          <h1 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>Cluster Nodes</h1>
+          <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
             {nodes.length} node{nodes.length !== 1 ? 's' : ''} —{' '}
             <span className="text-green-400">{online} online</span>
             {offline > 0 && <>, <span className="text-red-400">{offline} offline</span></>}
@@ -266,17 +272,17 @@ export function NodesPage() {
         </div>
         <button
           onClick={() => setShowAdd(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
+          className="btn-primary"
         >
-          <Plus className="w-4 h-4" /> Add Node
+          <Plus className="w-4 h-4" /> Register Node
         </button>
       </div>
 
-      {/* Summary stats */}
+      {/* Cluster summary stats */}
       {nodes.length > 0 && (() => {
-        const totCPU = nodes.reduce((s, n) => s + n.capacity.cpu_cores, 0);
+        const totCPU  = nodes.reduce((s, n) => s + n.capacity.cpu_cores, 0);
         const usedCPU = nodes.reduce((s, n) => s + n.allocated.cpu_cores, 0);
-        const totMem = nodes.reduce((s, n) => s + n.capacity.memory_gb, 0);
+        const totMem  = nodes.reduce((s, n) => s + n.capacity.memory_gb, 0);
         const usedMem = nodes.reduce((s, n) => s + n.allocated.memory_gb, 0);
         const totDisk = nodes.reduce((s, n) => s + n.capacity.disk_gb, 0);
         const usedDisk = nodes.reduce((s, n) => s + n.allocated.disk_gb, 0);
@@ -287,20 +293,24 @@ export function NodesPage() {
               { icon: MemoryStick, label: 'RAM',  used: usedMem,  total: totMem,  unit: 'GB'    },
               { icon: HardDrive,   label: 'Disk', used: usedDisk, total: totDisk, unit: 'GB'    },
             ].map(({ icon: Icon, label, used, total, unit }) => (
-              <div key={label} className="bg-[#111] border border-[#1f1f1f] rounded-xl p-4">
+              <div key={label} className="card p-5">
                 <div className="flex items-center gap-2 mb-3">
-                  <Icon className="w-4 h-4 text-blue-400" />
-                  <span className="text-sm text-gray-400">{label}</span>
+                  <Icon className="w-4 h-4" style={{ color: 'var(--primary)' }} />
+                  <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>{label}</span>
                 </div>
-                <p className="text-xl font-semibold text-gray-100">
-                  {used} <span className="text-sm font-normal text-gray-500">/ {total} {unit}</span>
+                <p className="text-2xl font-bold mb-2" style={{ color: 'var(--text-primary)' }}>
+                  {used}
+                  <span className="text-sm font-normal ml-1" style={{ color: 'var(--text-muted)' }}>/ {total} {unit}</span>
                 </p>
-                <div className="mt-2 h-1.5 bg-[#1f1f1f] rounded-full overflow-hidden">
+                <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
                   <div
-                    className={clsx('h-full rounded-full',
-                      pct(used, total) >= 90 ? 'bg-red-500' :
-                      pct(used, total) >= 70 ? 'bg-yellow-500' : 'bg-blue-500')}
-                    style={{ width: `${pct(used, total)}%` }}
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${pct(used, total)}%`,
+                      background: pct(used, total) >= 90 ? '#ef4444' :
+                                  pct(used, total) >= 70 ? '#f59e0b' :
+                                  'var(--primary)',
+                    }}
                   />
                 </div>
               </div>
@@ -313,14 +323,19 @@ export function NodesPage() {
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {[1, 2, 3].map(i => (
-            <div key={i} className="h-52 bg-[#111] border border-[#1f1f1f] rounded-xl animate-pulse" />
+            <div key={i} className="card h-52 animate-pulse" />
           ))}
         </div>
       ) : nodes.length === 0 ? (
-        <div className="text-center py-20 text-gray-500 text-sm">
-          <Server className="w-10 h-10 mx-auto mb-3 text-gray-700" />
-          <p className="font-medium text-gray-400 mb-1">No nodes registered</p>
-          <p>Add a node to distribute game servers across multiple hosts.</p>
+        <div className="card p-12 flex flex-col items-center text-center">
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4"
+            style={{ background: 'var(--bg-elevated)' }}>
+            <Server className="w-7 h-7" style={{ color: 'var(--text-muted)' }} />
+          </div>
+          <h3 className="font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>No nodes registered</h3>
+          <p className="text-sm max-w-xs" style={{ color: 'var(--text-secondary)' }}>
+            Add a node to distribute game servers across multiple hosts.
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

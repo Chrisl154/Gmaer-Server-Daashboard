@@ -41,7 +41,20 @@
       "Bash(chmod +x /home/admina/Gmaer-Server-Daashboard/install.sh)",
       "Bash(bash -n /home/admina/Gmaer-Server-Daashboard/install.sh)",
       "Bash(bash -n /home/admina/Gmaer-Server-Daashboard/uninstall.sh)",
-      "Bash(chmod +x /home/admina/Gmaer-Server-Daashboard/uninstall.sh)"
+      "Bash(chmod +x /home/admina/Gmaer-Server-Daashboard/uninstall.sh)",
+      "WebFetch(domain:www.level.io)",
+      "WebFetch(domain:level.io)",
+      "Bash(export NVM_DIR=\"$HOME/.nvm\")",
+      "Bash(source \"$NVM_DIR/nvm.sh\")",
+      "Bash(~/.nvm/versions/node/v20.20.1/bin/node node_modules/.bin/tsc --noEmit)",
+      "Bash(~/.nvm/versions/node/v20.20.1/bin/npx tsc:*)",
+      "Bash(export PATH=\"$HOME/.local/bin:$HOME/.nvm/versions/node/v20.20.1/bin:$PATH\")",
+      "Bash(npx tsc:*)",
+      "Bash(export PATH=\"$HOME/.local/bin:$HOME/.nvm/versions/node/v20.20.1/bin:/usr/bin:/bin:$PATH\")",
+      "Bash(chmod +x /home/admina/Gmaer-Server-Daashboard/ui/node_modules/.bin/*)",
+      "Bash(npx vite:*)",
+      "Bash(bash -c 'source /home/admina/.nvm/nvm.sh && cd /home/admina/Gmaer-Server-Daashboard/ui && chmod +x node_modules/.bin/* && node_modules/.bin/tsc --noEmit 2>&1 | head -80')",
+      "Bash(bash -c 'source /home/admina/.nvm/nvm.sh && cd /home/admina/Gmaer-Server-Daashboard/ui && node_modules/.bin/vite build 2>&1 | tail -20')"
     ],
     "additionalDirectories": [
       "/home/admina/Gmaer-Server-Daashboard/cli/PATH=$HOME/.local/go"
