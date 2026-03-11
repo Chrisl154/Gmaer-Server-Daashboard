@@ -23,7 +23,14 @@
       "Bash(export GDASH_BIN=/tmp/gdash-test/gdash)",
       "Bash(GDASH_DAEMON_URL=https://localhost:8443 GDASH_ADMIN_PASSWORD=AdminPass123! bash /home/admina/Gmaer-Server-Daashboard/tests/integration/run-tests.sh)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(ls /home/admina/Gmaer-Server-Daashboard/*.md)",
+      "Bash(for f:*)",
+      "Bash(do)",
+      "Bash(python3 -c \":*)",
+      "Bash(done)",
+      "Bash(echo \"ERROR: $f\")",
+      "Bash(ls /home/admina/Gmaer-Server-Daashboard/adapters/valheim*)"
     ],
     "additionalDirectories": [
       "/home/admina/Gmaer-Server-Daashboard/cli/PATH=$HOME/.local/go"
