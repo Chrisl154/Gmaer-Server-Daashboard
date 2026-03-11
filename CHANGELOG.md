@@ -10,6 +10,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`test-live.sh`** — One-liner end-to-end test runner. Installs all dependencies (Go 1.22, Node.js 20 LTS, Trivy, Python packages) in userspace, clones the repo, builds both binaries, generates TLS certs, starts the daemon, and runs the full API + CLI + unit test suite. Minimum requirement: Ubuntu 24.04 with internet access and `bash`.
+- **24 game adapters** — Expanded from 7 to 24: added 7 Days to Die, Among Us (Impostor), ARK Survival Ascended, Conan Exiles, Counter-Strike 2, DayZ, Don't Starve Together, Dota 2, Factorio, Garry's Mod, Left 4 Dead 2, Project Zomboid, Risk of Rain 2, Rust, Squad, Team Fortress 2, and Terraria — alongside the existing Eco, Enshrouded, Minecraft, Palworld, Riftbreaker, Satisfactory, and Valheim.
+
+### Fixed
+- **`GET /api/v1/version` now public** — The version endpoint was registered inside the authenticated `v1` middleware group, causing integration tests and unauthenticated health checks to receive `401 Unauthorized`. Moved to the public route section alongside `/healthz` and `/metrics`.
+- **`secrets/manager.go` `saveKey()` directory bug** — `os.MkdirAll(fmt.Sprintf("%s/..", m.cfg.KeyFile), 0700)` caused Go to create `master.key` as a directory (before resolving `..`). Fixed to use `filepath.Dir(m.cfg.KeyFile)`.
+- **UI missing entry files** — `ui/index.html`, `ui/src/main.tsx`, and `ui/src/index.css` were absent from the repository, preventing Vite from building. Standard boilerplate files added.
+
+---
+
+### Added
 
 #### Settings Page — Storage, Networking, Monitoring
 - **`GET /api/v1/admin/settings`** — New admin endpoint that returns a secrets-free snapshot of the live daemon config: bind address, shutdown timeout, data dir, log level, storage (data dir, NFS mounts list, S3 endpoint/bucket/region), backup (schedule, retention, compression), metrics (enabled, path), and cluster (enabled, intervals).
