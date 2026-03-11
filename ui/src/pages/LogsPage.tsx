@@ -279,7 +279,7 @@ export function LogsPage() {
             ) : (
               <p className="text-xs text-[rgba(148,163,184,0.8)]">Audit log is empty.</p>
             ))}
-            {auditQuery.isFetching && activeTab !== 'server' && (
+            {auditQuery.isFetching && (
               <p className="text-[10px] text-[rgba(59,130,246,0.9)]">Updating audit trail…</p>
             )}
           </div>

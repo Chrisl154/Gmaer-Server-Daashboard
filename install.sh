@@ -115,13 +115,37 @@ download() {
 log "Updating package index..."
 $SUDO apt-get update -qq >/dev/null 2>&1
 
-for pkg in git openssl python3 curl nginx lsof; do
-  if ! command -v "$pkg" &>/dev/null && ! dpkg -l "$pkg" &>/dev/null 2>&1; then
+for pkg in git openssl python3 curl nginx lsof lib32gcc-s1; do
+  if ! command -v "$pkg" &>/dev/null && ! dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
     log "Installing $pkg..."
     pkg_install "$pkg"
   fi
 done
 ok "System packages ready"
+
+# ── SteamCMD ──────────────────────────────────────────────────────────────────
+# Required for deploying game servers (Valheim, CS2, etc.) via Steam.
+if ! command -v steamcmd &>/dev/null; then
+  log "Installing SteamCMD..."
+  # Add the multiverse repo and i386 arch required by steamcmd
+  $SUDO dpkg --add-architecture i386 >/dev/null 2>&1
+  $SUDO apt-get update -qq >/dev/null 2>&1
+  # Accept Steam EULA non-interactively
+  echo steam steam/question select "I AGREE" | $SUDO debconf-set-selections 2>/dev/null || true
+  echo steam steam/license note ''           | $SUDO debconf-set-selections 2>/dev/null || true
+  DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq steamcmd >/dev/null 2>&1 || {
+    warn "apt steamcmd failed — installing manually to /usr/local/bin/steamcmd"
+    mkdir -p /tmp/steamcmd-setup
+    download "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" /tmp/steamcmd-setup/steamcmd.tar.gz
+    tar -xzf /tmp/steamcmd-setup/steamcmd.tar.gz -C /tmp/steamcmd-setup/
+    $SUDO mv /tmp/steamcmd-setup/steamcmd.sh /usr/local/bin/steamcmd
+    $SUDO chmod +x /usr/local/bin/steamcmd
+    rm -rf /tmp/steamcmd-setup
+  }
+  ok "SteamCMD installed"
+else
+  ok "SteamCMD: $(command -v steamcmd)"
+fi
 
 # ── Go ────────────────────────────────────────────────────────────────────────
 GO_BIN=""

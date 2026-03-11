@@ -689,6 +689,17 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 		installDir = "."
 	}
 
+	// Guard against attempting to start a server that has never been deployed:
+	// if the install directory does not exist the binary can't be there either.
+	if _, statErr := os.Stat(installDir); os.IsNotExist(statErr) {
+		msg := fmt.Sprintf("server not deployed — install directory %q does not exist; run Deploy first", installDir)
+		b.logger.Error("Failed to start server process — not deployed",
+			zap.String("id", id), zap.String("install_dir", installDir))
+		setState(StateError, 0)
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(msg), time.Now().Unix()))
+		return
+	}
+
 	cmd := exec.CommandContext(ctx, "sh", "-c", startCmd) //nolint:gosec // user-configured command
 	cmd.Dir = installDir
 	cmd.Env = buildProcessEnv(s, manifest)
@@ -1388,14 +1399,25 @@ func (b *Broker) GetServerLogs(ctx context.Context, id, lines string) ([]string,
 		}
 	}
 
+	// Always append the daemon-written event log stored under the data dir.
+	// This captures system messages (deploy output, start/stop errors) even
+	// when the server has never been deployed and has no install directory yet.
+	if b.cfg != nil {
+		dataDir := b.cfg.Storage.DataDir
+		if dataDir == "" {
+			dataDir = "/opt/gdash/data"
+		}
+		candidates = append(candidates, filepath.Join(dataDir, "servers", id, "logs", "gdash-events.log"))
+	}
+
 	for _, path := range candidates {
 		if result, err := tailFile(path, maxLines); err == nil && len(result) > 0 {
 			return result, nil
 		}
 	}
 
-	// Fall back to recent console channel messages.
-	return []string{"[system] No log file found. Check server install_dir configuration."}, nil
+	// Nothing found at all.
+	return []string{"[system] No log entries yet. Deploy or start the server to generate logs."}, nil
 }
 
 // tailFile reads the last n lines from a file efficiently.
@@ -1432,7 +1454,12 @@ func tailFile(path string, n int) ([]string, error) {
 		count = n
 	}
 	out := make([]string, count)
-	start := idx % n
+	// When total <= n the ring was never wrapped: the valid entries start at
+	// index 0. When total > n the oldest entry is at idx%n (the next write slot).
+	start := 0
+	if total > n {
+		start = idx % n
+	}
 	for i := 0; i < count; i++ {
 		out[i] = ring[(start+i)%n]
 	}
@@ -1524,6 +1551,7 @@ func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (st
 }
 
 func (b *Broker) sendConsoleMessage(id, msg string) {
+	// Deliver to any active WebSocket stream.
 	b.mu.RLock()
 	ch, ok := b.consoleChs[id]
 	b.mu.RUnlock()
@@ -1531,6 +1559,23 @@ func (b *Broker) sendConsoleMessage(id, msg string) {
 		select {
 		case ch <- msg:
 		default:
+		}
+	}
+
+	// Also persist system/error events to a per-server daemon log file so they
+	// appear in GET /servers/:id/logs even without an active WebSocket client.
+	if b.cfg != nil && (strings.Contains(msg, `"type":"system"`) || strings.Contains(msg, `"type":"error"`) || strings.Contains(msg, `"type":"deploy"`)) {
+		dataDir := b.cfg.Storage.DataDir
+		if dataDir == "" {
+			dataDir = "/opt/gdash/data"
+		}
+		logDir := filepath.Join(dataDir, "servers", id, "logs")
+		if mkErr := os.MkdirAll(logDir, 0o750); mkErr == nil {
+			logFile := filepath.Join(logDir, "gdash-events.log")
+			if f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640); err == nil {
+				fmt.Fprintln(f, msg)
+				f.Close()
+			}
 		}
 	}
 }
