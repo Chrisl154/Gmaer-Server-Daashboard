@@ -37,6 +37,12 @@ Deploys the full stack and leaves it running. Prints the dashboard URL and crede
 curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/install.sh | bash
 ```
 
+**Want to skip the setup wizard entirely?** Pass your password and you're done — everything else uses sensible defaults:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/install.sh | GDASH_NONINTERACTIVE=1 GDASH_ADMIN_PASS=MySecurePass123 bash
+```
+
 After install, open `https://<your-server-ip>` in a browser. Your browser will show a self-signed certificate warning — click **Advanced → Proceed**.
 
 > **What it installs:**

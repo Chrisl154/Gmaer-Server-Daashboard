@@ -1006,17 +1006,26 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 		time.Now().Unix()))
 	b.updateJob(job.ID, "running", 15, "Pulling SteamCMD Docker image (first run only)…")
 
+	// Ensure installDir is writable by the container's steam user (UID 1000).
+	if err := os.Chmod(installDir, 0o777); err != nil {
+		b.logger.Warn("Could not chmod install dir for steamcmd container", zap.Error(err))
+	}
+
+	// Remove any stale container left by a previous failed deploy so --name doesn't conflict.
+	containerName := "gdash-steamcmd-" + id
+	_ = exec.Command(dockerBin, "rm", "-f", containerName).Run() //nolint:gosec
+
 	// Build docker run arguments.
 	// - installDir is mounted at /games inside the container (game files land here)
 	// - steamHome  is mounted at /tmp/steamhome for SteamCMD's own cache/config
-	// - --user ensures files in /games are owned by the same UID/GID that runs the daemon
+	// - We do NOT pass --user: cm2network/steamcmd runs its ENTRYPOINT as its own
+	//   internal steam user and breaks if the UID is overridden.
 	dockerArgs := []string{
 		"run", "--rm",
-		"--name", "gdash-steamcmd-" + id,
+		"--name", containerName,
 		"-v", installDir + ":/games",
 		"-v", steamHome + ":/tmp/steamhome",
 		"-e", "HOME=/tmp/steamhome",
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"cm2network/steamcmd",
 		"+@ShutdownOnFailedCommand", "1",
 		"+login", "anonymous",
