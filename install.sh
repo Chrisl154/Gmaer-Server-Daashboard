@@ -227,27 +227,18 @@ collect_config_tui() {
     "30"
 
   # ── Page 4: Container runtimes ────────────────────────────────────────────
-  INSTALL_DOCKER=false
+  INSTALL_DOCKER=true   # Docker CE is required — always installed
   INSTALL_K8S=false
 
   if wt_yesno "Container Runtimes (4/5)" \
-      "Install Docker CE?\n\nRequired to run game servers using the Docker deploy method.\nDocker images are available for Valheim, Minecraft, CS2, Rust,\nand 15 other supported games.\n\n(Recommended: Yes)"; then
-    INSTALL_DOCKER=true
-  fi
-
-  if $INSTALL_DOCKER; then
-    if wt_yesno "Container Runtimes (4/5)" \
-        "Install Kubernetes (k3s — lightweight single-node K8s)?\n\nOptional. Only needed if you want to run game servers as\nKubernetes workloads or plan to scale across multiple nodes.\n\nMost users should say No here."; then
-      INSTALL_K8S=true
-    fi
+      "Install Kubernetes (k3s — lightweight single-node K8s)?\n\nOptional. Only needed if you want to run game servers as\nKubernetes workloads or plan to scale across multiple nodes.\n\nDocker CE will be installed automatically (required).\n\nMost users should say No here."; then
+    INSTALL_K8S=true
   fi
 
   # ── Page 5: Review & Confirm ──────────────────────────────────────────────
   local _hostname_line="${SERVER_HOSTNAME:-  (none — using IP only)}"
-  local _docker_line="No  (Docker deploy method will be unavailable)"
   local _k8s_line="No"
-  $INSTALL_DOCKER && _docker_line="Yes — Docker CE"
-  $INSTALL_K8S   && _k8s_line="Yes — k3s (lightweight Kubernetes)"
+  $INSTALL_K8S && _k8s_line="Yes — k3s (lightweight Kubernetes)"
   local _summary
   _summary=$(printf '%s\n' \
     "" \
@@ -265,7 +256,7 @@ collect_config_tui() {
     "  Backup cron   : ${BACKUP_SCHEDULE}" \
     "  Retain days   : ${BACKUP_RETAIN_DAYS}" \
     "" \
-    "  Docker        : ${_docker_line}" \
+    "  Docker CE     : Yes (required)" \
     "  Kubernetes    : ${_k8s_line}" \
     "")
 
@@ -311,22 +302,14 @@ collect_config_readline() {
 
   echo ""
   echo -e "  ${BOLD}-- Container Runtimes ---------------------------${NC}"
-  echo -e "  Docker enables Docker-based game servers (Valheim, Minecraft, CS2, Rust, +15 more)."
-  INSTALL_DOCKER=false
+  echo -e "  Docker CE is required and will be installed automatically."
+  INSTALL_DOCKER=true   # always
   INSTALL_K8S=false
-  local _docker_yn=""
-  IFS= read -r -p "  Install Docker CE? [Y/n]: " _docker_yn </dev/tty 2>/dev/null || true
-  case "${_docker_yn,,}" in
-    n|no) ;;
-    *) INSTALL_DOCKER=true ;;
+  local _k8s_yn=""
+  IFS= read -r -p "  Install Kubernetes / k3s? [y/N]: " _k8s_yn </dev/tty 2>/dev/null || true
+  case "${_k8s_yn,,}" in
+    y|yes) INSTALL_K8S=true ;;
   esac
-  if $INSTALL_DOCKER; then
-    local _k8s_yn=""
-    IFS= read -r -p "  Install Kubernetes / k3s? [y/N]: " _k8s_yn </dev/tty 2>/dev/null || true
-    case "${_k8s_yn,,}" in
-      y|yes) INSTALL_K8S=true ;;
-    esac
-  fi
 
   echo ""
   echo -e "  ${BOLD}-- Summary --------------------------------------${NC}"
@@ -340,7 +323,7 @@ collect_config_readline() {
   echo -e "  Admin pass    : ${ADMIN_PASS}"
   echo -e "  Backup cron   : ${BACKUP_SCHEDULE}"
   echo -e "  Retain days   : ${BACKUP_RETAIN_DAYS}"
-  echo -e "  Docker        : $($INSTALL_DOCKER && echo 'Yes' || echo 'No')"
+  echo -e "  Docker CE     : Yes (required)"
   echo -e "  Kubernetes    : $($INSTALL_K8S && echo 'Yes (k3s)' || echo 'No')"
   echo ""
   local _confirm=""
@@ -361,7 +344,7 @@ collect_config_noninteractive() {
   DATA_DIR="${GDASH_DATA_DIR:-${INSTALL_DIR}/data}"
   BACKUP_SCHEDULE="${GDASH_BACKUP_SCHEDULE:-0 3 * * *}"
   BACKUP_RETAIN_DAYS="${GDASH_BACKUP_RETAIN_DAYS:-30}"
-  INSTALL_DOCKER="${GDASH_INSTALL_DOCKER:-false}"
+  INSTALL_DOCKER="${GDASH_INSTALL_DOCKER:-true}"
   INSTALL_K8S="${GDASH_INSTALL_K8S:-false}"
 
   echo ""
@@ -480,8 +463,6 @@ https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
     ok "Docker CE installed ($(docker --version 2>/dev/null | head -1))"
     info "You may need to log out and back in for the docker group to take effect."
   fi
-else
-  info "Skipping Docker (not selected). Docker deploy method will not be available."
 fi
 
 # ── k3s (lightweight Kubernetes) ──────────────────────────────────────────────
