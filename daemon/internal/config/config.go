@@ -106,6 +106,9 @@ type ClusterConfig struct {
 	Enabled             bool          `yaml:"enabled" json:"enabled"`
 	HealthCheckInterval time.Duration `yaml:"health_check_interval" json:"health_check_interval"`
 	NodeTimeout         time.Duration `yaml:"node_timeout" json:"node_timeout"`
+	// NodeSavePath is where registered nodes are persisted across daemon restarts.
+	// Defaults to <data_dir>/nodes.json when cluster is enabled.
+	NodeSavePath string `yaml:"node_save_path" json:"node_save_path"`
 }
 
 // Write serialises cfg to a YAML file at path, creating or truncating it.

@@ -183,6 +183,7 @@ func (s *Server) registerRoutes() {
 	// Cluster nodes
 	v1.GET("/nodes", s.listNodes)
 	v1.POST("/nodes", s.registerNode)
+	v1.POST("/nodes/join-token", s.issueJoinToken) // generate a one-time worker join token
 	v1.GET("/nodes/:nodeId", s.getNode)
 	v1.DELETE("/nodes/:nodeId", s.deregisterNode)
 	v1.POST("/nodes/:nodeId/heartbeat", s.nodeHeartbeat)
@@ -412,14 +413,14 @@ func (s *Server) streamConsole(c *gin.Context) {
 		}
 	}
 	if authHeader == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authorization"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth token — log in first and include the token as Authorization: Bearer <token> or ?token= in the URL"})
 		return
 	}
-	
+
 	// Validate token
 	claims, err := s.cfg.AuthSvc.ValidateToken(c.Request.Context(), authHeader)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired or invalid — log in again to get a fresh token"})
 		return
 	}
 	
@@ -444,7 +445,7 @@ func (s *Server) streamConsole(c *gin.Context) {
 
 	stream, err := s.cfg.Broker.GetConsoleStream(ctx, id)
 	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"stream unavailable"}`))
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","msg":"Console stream not available — make sure the server has been deployed and is running"}`)) //nolint:errcheck
 		return
 	}
 

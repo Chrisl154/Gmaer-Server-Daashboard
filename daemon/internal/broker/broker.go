@@ -259,10 +259,15 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 
 	var clusterMgr *cluster.Manager
 	if cfg != nil && cfg.Cluster.Enabled {
+		nodeSavePath := cfg.Cluster.NodeSavePath
+		if nodeSavePath == "" {
+			nodeSavePath = cfg.Storage.DataDir + "/nodes.json"
+		}
 		clusterMgr = cluster.NewManager(cluster.Config{
 			Enabled:             cfg.Cluster.Enabled,
 			HealthCheckInterval: cfg.Cluster.HealthCheckInterval,
 			NodeTimeout:         cfg.Cluster.NodeTimeout,
+			NodeSavePath:        nodeSavePath,
 		}, logger)
 	}
 
@@ -955,7 +960,7 @@ func (b *Broker) doDeploy(ctx context.Context, id string, req DeployRequest, job
 	case "docker":
 		deployErr = b.deployDocker(ctx, id, req, job)
 	default:
-		deployErr = fmt.Errorf("unknown deploy method: %s", req.Method)
+		deployErr = fmt.Errorf("deploy method %q is not supported — valid options are: steamcmd, manual, docker", req.Method)
 	}
 
 	b.mu.Lock()
@@ -993,15 +998,15 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 		}
 	}
 	if appID == "" {
-		return fmt.Errorf("no Steam app ID configured for adapter %s", s.Adapter)
+		return fmt.Errorf("adapter %q has no Steam App ID — check the adapter manifest file or report this game as unsupported", s.Adapter)
 	}
 
 	installDir := s.InstallDir
 	if installDir == "" {
-		return fmt.Errorf("install_dir must be set for SteamCMD deployment")
+		return fmt.Errorf("no install directory set — open Server Settings and enter an Install Directory before deploying")
 	}
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
-		return fmt.Errorf("create install dir: %w", err)
+		return fmt.Errorf("could not create install directory %q: %w", installDir, err)
 	}
 
 	// Docker is a hard requirement — SteamCMD always runs inside a container so
@@ -1097,7 +1102,7 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("SteamCMD container exited with error: %w", err)
+		return fmt.Errorf("game download failed — check the console output above for details (common causes: Steam servers busy, disk full, or network timeout): %w", err)
 	}
 
 	// Ensure declared executable binaries have the execute bit set.
@@ -1135,10 +1140,10 @@ func (b *Broker) deployManual(ctx context.Context, id string, req DeployRequest,
 
 	installDir := s.InstallDir
 	if installDir == "" {
-		return fmt.Errorf("install_dir must be set for manual deployment")
+		return fmt.Errorf("no install directory set — open Server Settings and enter an Install Directory before deploying")
 	}
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
-		return fmt.Errorf("create install dir: %w", err)
+		return fmt.Errorf("could not create install directory %q: %w", installDir, err)
 	}
 
 	b.updateJob(job.ID, "running", 20, "Downloading archive...")
@@ -1222,7 +1227,7 @@ func (b *Broker) deployDocker(ctx context.Context, id string, req DeployRequest,
 
 	dockerPath, err := exec.LookPath("docker")
 	if err != nil {
-		return fmt.Errorf("docker not found in PATH: %w", err)
+		return fmt.Errorf("Docker is not installed or not in PATH — install Docker CE first (https://docs.docker.com/engine/install/): %w", err)
 	}
 
 	// Determine pull policy from adapter manifest (default: always pull).
@@ -1253,7 +1258,7 @@ func (b *Broker) deployDocker(ctx context.Context, id string, req DeployRequest,
 			b.updateJob(job.ID, "running", progress, line)
 		}
 		if err := pullCmd.Wait(); err != nil {
-			return fmt.Errorf("docker pull failed: %w", err)
+			return fmt.Errorf("failed to pull Docker image %q — check your internet connection and that the image name is correct: %w", image, err)
 		}
 	}
 
@@ -1659,15 +1664,15 @@ func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (st
 		return "", fmt.Errorf("server not found: %s", id)
 	}
 	if s.State != StateRunning {
-		return "", fmt.Errorf("server is not running")
+		return "", fmt.Errorf("server is not running — start the server before sending console commands")
 	}
 
 	manifest, hasManifest := b.adapters.Get(s.Adapter)
 	if !hasManifest {
-		return "", fmt.Errorf("unknown adapter %s", s.Adapter)
+		return "", fmt.Errorf("no adapter named %q is loaded — check the adapters directory", s.Adapter)
 	}
 	if !manifest.Console.RCONEnabled && manifest.Console.Type != "telnet" {
-		return "", fmt.Errorf("remote console is not enabled for adapter %s", s.Adapter)
+		return "", fmt.Errorf("console commands are not supported for %q — this game does not use RCON or telnet", s.Adapter)
 	}
 
 	addr := fmt.Sprintf("localhost:%d", manifest.Console.RCONPort)
@@ -1684,11 +1689,11 @@ func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (st
 		// Rust WebSocket-based RCON: ws://host:port/<password>
 		password, _ := s.Config["rcon_password"].(string)
 		if password == "" {
-			return "", fmt.Errorf("rcon_password not set in server config")
+			return "", fmt.Errorf("no rcon_password set — add it under Server Settings → Config before sending commands")
 		}
 		response, err = webrconpkg.Exec(addr, password, command, 10*time.Second)
 		if err != nil {
-			return "", fmt.Errorf("WebRCON error: %w", err)
+			return "", fmt.Errorf("WebRCON connection failed — is the server fully started and is the RCON password correct? (%w)", err)
 		}
 
 	case "telnet":
@@ -1699,18 +1704,18 @@ func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (st
 		}
 		response, err = telnetsvc.Exec(addr, password, command, 10*time.Second)
 		if err != nil {
-			return "", fmt.Errorf("telnet error: %w", err)
+			return "", fmt.Errorf("telnet console connection failed — check the server is running and telnet is enabled (%w)", err)
 		}
 
 	default:
 		// Source RCON protocol (Minecraft, CS2, TF2, GMod, ARK, Factorio, etc.)
 		password, _ := s.Config["rcon_password"].(string)
 		if password == "" {
-			return "", fmt.Errorf("rcon_password not set in server config")
+			return "", fmt.Errorf("no rcon_password set — add it under Server Settings → Config before sending commands")
 		}
 		response, err = rconpkg.Exec(addr, password, command, 5*time.Second)
 		if err != nil {
-			return "", fmt.Errorf("RCON error: %w", err)
+			return "", fmt.Errorf("RCON connection failed — check the server is running and the password is correct (%w)", err)
 		}
 	}
 

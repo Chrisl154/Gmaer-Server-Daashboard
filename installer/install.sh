@@ -86,7 +86,7 @@ USAGE:
   installer [OPTIONS]
 
 OPTIONS:
-  --mode docker|k8s                    Deployment mode (required)
+  --mode docker|k8s|node               Deployment mode (required)
   --install-dir /path                  Installation directory (default: /opt/games-dashboard)
   --headless                           Non-interactive mode
   --config /path/to/config.json        Headless config file
@@ -121,6 +121,9 @@ EXAMPLES:
 
   # Headless k8s install
   installer --headless --config /path/to/config.json --mode k8s
+
+  # Worker node install (daemon-only, no UI)
+  installer --mode node
 
   # Dry run
   installer --mode docker --dry-run
@@ -182,12 +185,14 @@ prompt_interactive() {
 
   if [[ -z "$MODE" ]]; then
     echo -e "\n${BOLD}Deployment Mode:${NC}"
-    echo "  1) docker  - Single-host Docker Compose"
+    echo "  1) docker  - Single-host Docker Compose (full dashboard + UI)"
     echo "  2) k8s     - Kubernetes cluster (k3s by default)"
-    read -rp "Select mode [1/2]: " mode_choice
+    echo "  3) node    - Worker node only (daemon only, no UI — joins an existing master)"
+    read -rp "Select mode [1/2/3]: " mode_choice
     case "$mode_choice" in
       1|docker) MODE="docker" ;;
       2|k8s)    MODE="k8s" ;;
+      3|node)   MODE="node" ;;
       *)        MODE="docker"; log_warn "Invalid choice, defaulting to docker" ;;
     esac
   fi
@@ -684,6 +689,101 @@ install_steamcmd() {
 # =============================================================================
 # Main Install: Docker Mode
 # =============================================================================
+# =============================================================================
+# Main Install: Node (Worker) Mode
+# Installs the daemon only — no UI, no nginx, no admin account.
+# Prints a ready-to-paste 'gdash node add' command for the master dashboard.
+# =============================================================================
+install_node_mode() {
+  log_section "Installing in Worker Node Mode"
+  log_info "This machine will be registered as a worker node in an existing Games Dashboard cluster."
+  log_info "Only the daemon will be installed — no UI or nginx."
+
+  save_checkpoint "checkpoint-1" "pre-node-install"
+
+  # Docker is still needed to run game server containers on this node.
+  install_docker
+
+  save_checkpoint "checkpoint-2" "docker-installed"
+
+  # Create a minimal directory layout.
+  if [[ "$DRY_RUN" != "true" ]]; then
+    mkdir -p "$INSTALL_DIR"/{config,data,logs,tls,adapters}
+    chmod 700 "$INSTALL_DIR"
+  else
+    log_info "[DRY RUN] Would create directories in $INSTALL_DIR"
+  fi
+
+  # Generate TLS certificate for this node's daemon API.
+  if [[ -z "$TLS_CERT" || -z "$TLS_KEY" ]]; then
+    generate_self_signed_tls
+  else
+    if [[ "$DRY_RUN" != "true" ]]; then
+      cp "$TLS_CERT" "$INSTALL_DIR/tls/server.crt"
+      cp "$TLS_KEY"  "$INSTALL_DIR/tls/server.key"
+    fi
+  fi
+
+  # Copy adapter manifests so this node can run game servers.
+  if [[ "$DRY_RUN" != "true" ]]; then
+    cp -r "$(dirname "$0")/../adapters/"* "$INSTALL_DIR/adapters/" 2>/dev/null || true
+  fi
+
+  # Generate a minimal daemon config for worker mode.
+  local node_ip
+  node_ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+  local node_port="8443"
+
+  if [[ "$DRY_RUN" != "true" ]]; then
+    cat > "$INSTALL_DIR/config/daemon.yaml" << DAEMON_EOF
+bind_addr: ":${node_port}"
+log_level: info
+
+tls:
+  cert_file: ${INSTALL_DIR}/tls/server.crt
+  key_file:  ${INSTALL_DIR}/tls/server.key
+
+storage:
+  data_dir: ${INSTALL_DIR}/data
+
+adapters:
+  dir: ${INSTALL_DIR}/adapters
+
+# Worker nodes do not enable cluster mode themselves —
+# they are registered from the master dashboard.
+cluster:
+  enabled: false
+DAEMON_EOF
+    log_info "Daemon config written to $INSTALL_DIR/config/daemon.yaml"
+  fi
+
+  save_checkpoint "checkpoint-3" "node-config-complete"
+
+  # Generate a one-time join token that the admin will use on the master.
+  local join_token
+  join_token=$(openssl rand -hex 16 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' | head -c 32 || echo "REPLACE_WITH_SECURE_TOKEN")
+
+  # Save the token alongside the config so the admin can retrieve it later.
+  if [[ "$DRY_RUN" != "true" ]]; then
+    echo "$join_token" > "$INSTALL_DIR/config/join-token.txt"
+    chmod 600 "$INSTALL_DIR/config/join-token.txt"
+  fi
+
+  log_section "Worker Node Installation Complete"
+  log_info ""
+  log_info "  Node address : https://${node_ip}:${node_port}"
+  log_info "  Join token   : ${join_token}  (also saved to ${INSTALL_DIR}/config/join-token.txt)"
+  log_info "  Token expiry : 24 hours"
+  log_info ""
+  log_info "${BOLD}${GREEN}Run the following command on your MASTER dashboard to register this node:${NC}"
+  log_info ""
+  log_info "  ${BOLD}gdash node add $(hostname -s) https://${node_ip}:${node_port} --token ${join_token}${NC}"
+  log_info ""
+  log_warn "Start the daemon manually until a systemd unit is added:"
+  log_info "  ${INSTALL_DIR}/bin/games-daemon --config ${INSTALL_DIR}/config/daemon.yaml &"
+  log_info ""
+}
+
 install_docker_mode() {
   log_section "Installing in Docker Mode"
 
@@ -1040,7 +1140,7 @@ main() {
 
   # Validate mode
   if [[ -z "$MODE" ]]; then
-    log_error "Mode not specified. Use --mode docker|k8s"
+    log_error "Mode not specified. Use --mode docker|k8s|node"
     usage
     exit 1
   fi
@@ -1062,7 +1162,8 @@ main() {
   case "$MODE" in
     docker) install_docker_mode ;;
     k8s)    install_k8s_mode ;;
-    *)      log_error "Unknown mode: $MODE"; exit 1 ;;
+    node)   install_node_mode ;;
+    *)      log_error "Unknown mode: $MODE. Valid modes: docker, k8s, node"; exit 1 ;;
   esac
 
   # Generate post-install SBOM
@@ -1080,12 +1181,18 @@ main() {
   write_install_audit
 
   log_section "Installation Complete"
-  log_info "Games Dashboard installed successfully!"
-  log_info ""
-  log_info "  Dashboard UI:  https://localhost:443"
-  log_info "  Daemon API:    https://localhost:8443"
-  log_info "  Metrics:       http://localhost:9090"
-  log_info "  Grafana:       http://localhost:3000"
+  if [[ "$MODE" == "node" ]]; then
+    log_info "Worker node installed — see the join command printed above."
+  else
+    log_info "Games Dashboard installed successfully!"
+    log_info ""
+    log_info "  Dashboard UI:  https://localhost:443"
+    log_info "  Daemon API:    https://localhost:8443"
+    log_info "  Metrics:       http://localhost:9090"
+    log_info "  Grafana:       http://localhost:3000"
+    log_info ""
+    log_info "Default credentials: admin / changeme (CHANGE IMMEDIATELY)"
+  fi
   log_info ""
   log_info "  Preflight report: $PREFLIGHT_REPORT"
   log_info "  Install audit:    $INSTALL_AUDIT"
@@ -1094,7 +1201,6 @@ main() {
   log_info "  CVE report:       $CVE_REPORT"
   log_info "  Log file:         $LOG_FILE"
   log_info ""
-  log_info "Default credentials: admin / changeme (CHANGE IMMEDIATELY)"
 }
 
 main "$@"
