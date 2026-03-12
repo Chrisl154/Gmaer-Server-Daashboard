@@ -1410,6 +1410,29 @@ func (b *Broker) GetServerLogs(ctx context.Context, id, lines string) ([]string,
 		candidates = append(candidates, filepath.Join(dataDir, "servers", id, "logs", "gdash-events.log"))
 	}
 
+	// For Docker-deployed servers, try fetching logs directly from the container
+	// first — this provides real-time output even if the event log is empty.
+	b.mu.RLock()
+	deployMethod := s.DeployMethod
+	containerID := s.ContainerID
+	b.mu.RUnlock()
+	if deployMethod == "docker" && containerID != "" {
+		if dockerPath, err := exec.LookPath("docker"); err == nil {
+			cmd := exec.CommandContext(ctx, dockerPath, "logs", "--tail", strconv.Itoa(maxLines), containerID) //nolint:gosec
+			if out, err := cmd.CombinedOutput(); err == nil && len(out) > 0 {
+				var result []string
+				for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+					if line != "" {
+						result = append(result, line)
+					}
+				}
+				if len(result) > 0 {
+					return result, nil
+				}
+			}
+		}
+	}
+
 	for _, path := range candidates {
 		if result, err := tailFile(path, maxLines); err == nil && len(result) > 0 {
 			return result, nil
@@ -1562,9 +1585,10 @@ func (b *Broker) sendConsoleMessage(id, msg string) {
 		}
 	}
 
-	// Also persist system/error events to a per-server daemon log file so they
-	// appear in GET /servers/:id/logs even without an active WebSocket client.
-	if b.cfg != nil && (strings.Contains(msg, `"type":"system"`) || strings.Contains(msg, `"type":"error"`) || strings.Contains(msg, `"type":"deploy"`)) {
+	// Persist all console output to a per-server log file so the Logs page can
+	// show it. stdout/stderr from Docker containers and native processes are
+	// written here; system/error/deploy events are always included.
+	if b.cfg != nil {
 		dataDir := b.cfg.Storage.DataDir
 		if dataDir == "" {
 			dataDir = "/opt/gdash/data"

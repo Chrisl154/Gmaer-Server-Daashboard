@@ -336,6 +336,8 @@ gdash node add worker-01 https://worker-01:8443
 
 See [CONTRIBUTING.md](docs/CONTRIBUTING.md) to get started contributing.
 
+See [ROADMAP.md](docs/ROADMAP.md) for planned features.
+
 ---
 
 ## 📝 License

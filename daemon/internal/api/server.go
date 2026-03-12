@@ -395,9 +395,16 @@ func (s *Server) getServerLogs(c *gin.Context) {
 func (s *Server) streamConsole(c *gin.Context) {
 	id := c.Param("id")
 	
-	// SECURITY FIX: Validate authentication BEFORE upgrading WebSocket
-	// Extract token from Authorization header
+	// Validate authentication BEFORE upgrading to WebSocket.
+	// Browsers cannot set custom headers on WebSocket upgrade requests, so
+	// accept the JWT from either the Authorization header (CLI) or the
+	// ?token= query parameter (browser console tab).
 	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		if t := c.Query("token"); t != "" {
+			authHeader = "Bearer " + t
+		}
+	}
 	if authHeader == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authorization"})
 		return

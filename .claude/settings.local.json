@@ -63,7 +63,8 @@
       "Bash(~/.local/bin/curl -sk -X POST https://127.0.0.1:18443/api/v1/auth/login -H \"Content-Type: application/json\" -d '{\"\"\"\"username\"\"\"\":\"\"\"\"admin\"\"\"\",\"\"\"\"password\"\"\"\":\"\"\"\"TestPass123!\"\"\"\"}')",
       "Bash(python3 -m json.tool)",
       "Bash(grep -n \"StartCommand\\\\|start_command\\\\|yaml.*start\" /home/admina/Gmaer-Server-Daashboard/daemon/internal/adapters/*.go)",
-      "Bash(bash -c 'source $HOME/.nvm/nvm.sh && node_modules/.bin/tsc --noEmit 2>&1 | head -20')"
+      "Bash(bash -c 'source $HOME/.nvm/nvm.sh && node_modules/.bin/tsc --noEmit 2>&1 | head -20')",
+      "Bash(source ~/.nvm/nvm.sh)"
     ],
     "additionalDirectories": [
       "/home/admina/Gmaer-Server-Daashboard/cli/PATH=$HOME/.local/go"
