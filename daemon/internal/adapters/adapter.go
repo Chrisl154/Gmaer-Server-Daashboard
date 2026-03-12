@@ -94,6 +94,7 @@ type SteamCMDSpec struct {
 	Validate      bool   `yaml:"validate"`
 	Beta          string `yaml:"beta"`
 	InstallDirEnv string `yaml:"install_dir_env"`
+	ExecBins      []string `yaml:"exec_bins"` // files to chmod +x after deploy, relative to install_dir
 }
 
 // DockerSpec holds Docker deployment parameters

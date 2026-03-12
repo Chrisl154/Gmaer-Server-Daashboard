@@ -89,6 +89,9 @@ steamcmd:
   validate: true
   beta: ""
   install_dir_env: "VALHEIM_DIR"
+  exec_bins:
+    - valheim_server.x86_64
+    - linux64/steamclient.so
 
 docker:
   image: lloesche/valheim-server
