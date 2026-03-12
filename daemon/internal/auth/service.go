@@ -536,6 +536,12 @@ func (s *Service) GetAuditLog(ctx context.Context) ([]AuditEntry, error) {
 	return s.auditLog, nil
 }
 
+// RecordEvent appends a system event to the audit log (called by API handlers for
+// server lifecycle, backup, and mod operations).
+func (s *Service) RecordEvent(userID, username, action, resource, ip string, success bool, details any) {
+	s.audit(userID, username, action, resource, ip, success, details)
+}
+
 func (s *Service) getUserByID(id string) (*User, bool) {
 	for _, u := range s.users {
 		if u.ID == id {

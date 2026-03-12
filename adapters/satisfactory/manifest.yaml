@@ -9,7 +9,7 @@ deploy_methods:
   - manual
 
 start_command: "./FactoryServer.sh -multihome=0.0.0.0 -BeaconPort=15000 -ServerQueryPort=15777 -Port=7777 -log -unattended"
-stop_command: "kill -SIGTERM $(cat /tmp/satisfactory.pid)"
+stop_command: "pkill -SIGTERM -f FactoryServer || true"
 restart_command: "kill -SIGTERM $(cat /tmp/satisfactory.pid) && sleep 5 && ./FactoryServer.sh"
 
 console:

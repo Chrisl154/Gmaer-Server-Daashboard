@@ -6,10 +6,11 @@ version: "1.0.0"
 
 deploy_methods:
   - manual
+  - docker
 
 start_command: "./TerrariaServer -config /data/serverconfig.txt -world /data/worlds/${WORLD_NAME:-World1}.wld -port ${SERVER_PORT:-7777} -maxplayers ${MAX_PLAYERS:-16} -password \"${SERVER_PASSWORD:-}\" -autocreate 2"
-stop_command: "kill -SIGTERM $(cat /tmp/terraria.pid)"
-restart_command: "kill -HUP $(cat /tmp/terraria.pid)"
+stop_command: "pkill -SIGTERM -f TerrariaServer || true"
+restart_command: "pkill -SIGTERM -f TerrariaServer || true"
 
 console:
   type: stdio

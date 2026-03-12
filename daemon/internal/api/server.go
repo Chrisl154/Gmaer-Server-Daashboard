@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/games-dashboard/daemon/internal/auth"
@@ -197,6 +199,10 @@ func (s *Server) registerRoutes() {
 	admin.GET("/settings", s.getSettings)
 	admin.PATCH("/settings", s.patchSettings)
 
+	// Self-update (admin-only)
+	admin.GET("/update/status", s.getUpdateStatus)
+	admin.POST("/update/apply", s.applyUpdate)
+
 	// System
 	v1.GET("/status", s.getSystemStatus)
 }
@@ -241,9 +247,11 @@ func (s *Server) createServer(c *gin.Context) {
 	}
 	server, err := s.cfg.Broker.CreateServer(c.Request.Context(), req)
 	if err != nil {
+		s.recordEvent(c, "create_server", req.ID, false, gin.H{"name": req.Name, "adapter": req.Adapter, "error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "create_server", server.ID, true, gin.H{"name": server.Name, "adapter": server.Adapter})
 	c.JSON(http.StatusCreated, server)
 }
 
@@ -275,36 +283,44 @@ func (s *Server) updateServer(c *gin.Context) {
 func (s *Server) deleteServer(c *gin.Context) {
 	id := c.Param("id")
 	if err := s.cfg.Broker.DeleteServer(c.Request.Context(), id); err != nil {
+		s.recordEvent(c, "delete_server", id, false, gin.H{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "delete_server", id, true, nil)
 	c.JSON(http.StatusNoContent, nil)
 }
 
 func (s *Server) startServer(c *gin.Context) {
 	id := c.Param("id")
 	if err := s.cfg.Broker.StartServer(c.Request.Context(), id); err != nil {
+		s.recordEvent(c, "start_server", id, false, gin.H{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "start_server", id, true, nil)
 	c.JSON(http.StatusOK, gin.H{"status": "starting", "id": id})
 }
 
 func (s *Server) stopServer(c *gin.Context) {
 	id := c.Param("id")
 	if err := s.cfg.Broker.StopServer(c.Request.Context(), id); err != nil {
+		s.recordEvent(c, "stop_server", id, false, gin.H{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "stop_server", id, true, nil)
 	c.JSON(http.StatusOK, gin.H{"status": "stopping", "id": id})
 }
 
 func (s *Server) restartServer(c *gin.Context) {
 	id := c.Param("id")
 	if err := s.cfg.Broker.RestartServer(c.Request.Context(), id); err != nil {
+		s.recordEvent(c, "restart_server", id, false, gin.H{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "restart_server", id, true, nil)
 	c.JSON(http.StatusOK, gin.H{"status": "restarting", "id": id})
 }
 
@@ -317,9 +333,11 @@ func (s *Server) deployServer(c *gin.Context) {
 	}
 	job, err := s.cfg.Broker.DeployServer(c.Request.Context(), id, req)
 	if err != nil {
+		s.recordEvent(c, "deploy_server", id, false, gin.H{"method": req.Method, "error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "deploy_server", id, true, gin.H{"method": req.Method, "job_id": job.ID})
 	c.JSON(http.StatusAccepted, job)
 }
 
@@ -383,9 +401,16 @@ func (s *Server) getServerLogs(c *gin.Context) {
 func (s *Server) streamConsole(c *gin.Context) {
 	id := c.Param("id")
 	
-	// SECURITY FIX: Validate authentication BEFORE upgrading WebSocket
-	// Extract token from Authorization header
+	// Validate authentication BEFORE upgrading to WebSocket.
+	// Browsers cannot set custom headers on WebSocket upgrade requests, so
+	// accept the JWT from either the Authorization header (CLI) or the
+	// ?token= query parameter (browser console tab).
 	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		if t := c.Query("token"); t != "" {
+			authHeader = "Bearer " + t
+		}
+	}
 	if authHeader == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authorization"})
 		return
@@ -456,9 +481,11 @@ func (s *Server) triggerBackup(c *gin.Context) {
 	}
 	job, err := s.cfg.Broker.TriggerBackup(c.Request.Context(), id, req)
 	if err != nil {
+		s.recordEvent(c, "trigger_backup", id, false, gin.H{"type": req.Type, "error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "trigger_backup", id, true, gin.H{"type": req.Type, "job_id": job.ID})
 	c.JSON(http.StatusAccepted, job)
 }
 
@@ -467,9 +494,11 @@ func (s *Server) restoreBackup(c *gin.Context) {
 	backupID := c.Param("backupId")
 	job, err := s.cfg.Broker.RestoreBackup(c.Request.Context(), id, backupID)
 	if err != nil {
+		s.recordEvent(c, "restore_backup", id, false, gin.H{"backup_id": backupID, "error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "restore_backup", id, true, gin.H{"backup_id": backupID, "job_id": job.ID})
 	c.JSON(http.StatusAccepted, job)
 }
 
@@ -531,9 +560,11 @@ func (s *Server) installMod(c *gin.Context) {
 	}
 	job, err := s.cfg.Broker.InstallMod(c.Request.Context(), id, req)
 	if err != nil {
+		s.recordEvent(c, "install_mod", id, false, gin.H{"mod_id": req.ModID, "source": req.Source, "error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "install_mod", id, true, gin.H{"mod_id": req.ModID, "source": req.Source, "job_id": job.ID})
 	c.JSON(http.StatusAccepted, job)
 }
 
@@ -541,9 +572,11 @@ func (s *Server) uninstallMod(c *gin.Context) {
 	id := c.Param("id")
 	modID := c.Param("modId")
 	if err := s.cfg.Broker.UninstallMod(c.Request.Context(), id, modID); err != nil {
+		s.recordEvent(c, "uninstall_mod", id, false, gin.H{"mod_id": modID, "error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "uninstall_mod", id, true, gin.H{"mod_id": modID})
 	c.JSON(http.StatusNoContent, nil)
 }
 
@@ -565,9 +598,11 @@ func (s *Server) rollbackMods(c *gin.Context) {
 		return
 	}
 	if err := s.cfg.Broker.RollbackMods(c.Request.Context(), id, req); err != nil {
+		s.recordEvent(c, "rollback_mods", id, false, gin.H{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "rollback_mods", id, true, nil)
 	c.JSON(http.StatusOK, gin.H{"status": "rolled back"})
 }
 
@@ -965,10 +1000,28 @@ func (s *Server) bootstrapSystem(c *gin.Context) {
 }
 
 func (s *Server) getVersion(c *gin.Context) {
+	commit := strings.TrimSpace(runGit("rev-parse", "--short", "HEAD"))
+	branch := strings.TrimSpace(runGit("rev-parse", "--abbrev-ref", "HEAD"))
+	if branch == "" {
+		branch = "main"
+	}
+	if commit == "" {
+		commit = "unknown"
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"version": "1.0.0",
 		"build":   "release",
+		"commit":  commit,
+		"branch":  branch,
 	})
+}
+
+func runGit(args ...string) string {
+	out, err := exec.Command("git", append([]string{"-C", repoDirPath}, args...)...).Output() //nolint:gosec
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // Middleware
@@ -1016,4 +1069,14 @@ func (s *Server) getUser(c *gin.Context) *auth.Claims {
 		return nil
 	}
 	return claims
+}
+
+// recordEvent is a convenience wrapper that writes a structured event to the
+// audit log using the authenticated user extracted from the gin context.
+func (s *Server) recordEvent(c *gin.Context, action, resource string, success bool, details any) {
+	claims := s.getUser(c)
+	if claims == nil {
+		return
+	}
+	s.cfg.AuthSvc.RecordEvent(claims.UserID, claims.Username, action, resource, c.ClientIP(), success, details)
 }

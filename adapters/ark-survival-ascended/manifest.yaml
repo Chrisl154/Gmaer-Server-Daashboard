@@ -6,10 +6,11 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./ArkAscendedServer.sh TheIsland_WP?listen?SessionName=\"${SERVER_NAME:-My ARK Server}\"?MaxPlayers=${MAX_PLAYERS:-70}?ServerPassword=\"${SERVER_PASSWORD:-}\"?ServerAdminPassword=\"${ADMIN_PASSWORD:-changeme}\"?Port=${SERVER_PORT:-7777}?QueryPort=${QUERY_PORT:-27015}?RCONPort=${RCON_PORT:-27020}?RCONEnabled=True -server -log"
-stop_command: "kill -SIGTERM $(cat /tmp/asa.pid)"
-restart_command: "kill -HUP $(cat /tmp/asa.pid)"
+stop_command: "pkill -SIGTERM -f ArkAscendedServer || true"
+restart_command: "pkill -SIGTERM -f ArkAscendedServer || true"
 
 console:
   type: rcon

@@ -37,10 +37,19 @@ api.interceptors.response.use(
 
 /**
  * Get WebSocket URL for authenticated connections.
- * Token is sent via Authorization header automatically through axios interceptor.
- * SECURITY: Token is no longer exposed in URL query parameters.
+ * Browsers cannot set custom headers on WebSocket upgrades, so the JWT is
+ * appended as a ?token= query parameter which streamConsole validates.
  */
 export function getWsUrl(path: string): string {
   const base = DAEMON_URL.replace(/^http/, 'ws').replace(/^https/, 'wss');
-  return `${base}${path}`;
+  let token = '';
+  try {
+    const stored = localStorage.getItem('games-dashboard-auth');
+    if (stored) {
+      const { state } = JSON.parse(stored);
+      token = state?.token ?? '';
+    }
+  } catch {}
+  const sep = path.includes('?') ? '&' : '?';
+  return `${base}${path}${token ? `${sep}token=${encodeURIComponent(token)}` : ''}`;
 }

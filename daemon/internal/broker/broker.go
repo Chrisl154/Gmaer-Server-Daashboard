@@ -283,6 +283,16 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 	}
 	modMgr := modmanager.NewManager(modDir, logger)
 
+	persistedServers := loadServersState(cfg, logger)
+
+	// Pre-populate consoleChs and metricsData for loaded servers.
+	consoleChs := make(map[string]chan string)
+	metricsData := make(map[string]*metricsRing)
+	for id := range persistedServers {
+		consoleChs[id] = make(chan string, 1000)
+		metricsData[id] = &metricsRing{}
+	}
+
 	return &Broker{
 		cfg:         cfg,
 		secrets:     secretsMgr,
@@ -294,17 +304,66 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		clusterMgr:  clusterMgr,
 		backupSvc:   bkpSvc,
 		modMgr:      modMgr,
-		servers:     make(map[string]*Server),
+		servers:     persistedServers,
 		jobs:        make(map[string]*Job),
-		consoleChs:  make(map[string]chan string),
+		consoleChs:  consoleChs,
 		processes:   make(map[string]*exec.Cmd),
-		metricsData: make(map[string]*metricsRing),
+		metricsData: metricsData,
 	}, nil
 }
 
 // ClusterManager returns the cluster manager (may be nil if cluster disabled)
 func (b *Broker) ClusterManager() *cluster.Manager {
 	return b.clusterMgr
+}
+
+// saveServersLocked persists the servers map to disk. Must be called with b.mu held (read or write).
+func (b *Broker) saveServersLocked() {
+	if b.cfg == nil {
+		return
+	}
+	path := filepath.Join(b.cfg.Storage.DataDir, "servers.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		b.logger.Warn("Failed to create data dir for server state", zap.Error(err))
+		return
+	}
+	data, err := json.Marshal(b.servers)
+	if err != nil {
+		b.logger.Warn("Failed to marshal server state", zap.Error(err))
+		return
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		b.logger.Warn("Failed to write server state", zap.Error(err))
+	}
+}
+
+// loadServersState reads the persisted servers map from disk. Transient states are reset to stopped.
+func loadServersState(cfg *config.Config, logger *zap.Logger) map[string]*Server {
+	servers := make(map[string]*Server)
+	if cfg == nil {
+		return servers
+	}
+	path := filepath.Join(cfg.Storage.DataDir, "servers.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logger.Warn("Failed to read server state file", zap.Error(err))
+		}
+		return servers
+	}
+	if err := json.Unmarshal(data, &servers); err != nil {
+		logger.Warn("Failed to parse server state file — starting fresh", zap.Error(err))
+		return make(map[string]*Server)
+	}
+	// Reset transient states so the UI doesn't show stale starting/running/stopping entries.
+	for _, s := range servers {
+		if s.State == StateStarting || s.State == StateRunning || s.State == StateStopping {
+			s.State = StateStopped
+		}
+		s.PID = 0
+	}
+	logger.Info("Loaded persisted server state", zap.Int("count", len(servers)))
+	return servers
 }
 
 // BackupService returns the backup service
@@ -531,6 +590,7 @@ func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Se
 	b.servers[req.ID] = server
 	b.consoleChs[req.ID] = make(chan string, 1000)
 	b.metricsData[req.ID] = &metricsRing{}
+	b.saveServersLocked()
 
 	b.logger.Info("Server created",
 		zap.String("id", req.ID),
@@ -571,6 +631,7 @@ func (b *Broker) UpdateServer(ctx context.Context, id string, req UpdateServerRe
 		s.BackupConfig = req.BackupConfig
 	}
 	s.UpdatedAt = time.Now()
+	b.saveServersLocked()
 	return s, nil
 }
 
@@ -591,6 +652,7 @@ func (b *Broker) DeleteServer(ctx context.Context, id string) error {
 	deployMethod := s.DeployMethod
 	containerID := s.ContainerID
 	delete(b.servers, id)
+	b.saveServersLocked()
 	if ch, ok := b.consoleChs[id]; ok {
 		close(ch)
 		delete(b.consoleChs, id)
@@ -687,6 +749,17 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 	installDir := s.InstallDir
 	if installDir == "" {
 		installDir = "."
+	}
+
+	// Guard against attempting to start a server that has never been deployed:
+	// if the install directory does not exist the binary can't be there either.
+	if _, statErr := os.Stat(installDir); os.IsNotExist(statErr) {
+		msg := fmt.Sprintf("server not deployed — install directory %q does not exist; run Deploy first", installDir)
+		b.logger.Error("Failed to start server process — not deployed",
+			zap.String("id", id), zap.String("install_dir", installDir))
+		setState(StateError, 0)
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(msg), time.Now().Unix()))
+		return
 	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", startCmd) //nolint:gosec // user-configured command
@@ -910,44 +983,92 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 		return fmt.Errorf("create install dir: %w", err)
 	}
 
-	steamcmd, err := exec.LookPath("steamcmd")
+	// Docker is a hard requirement — SteamCMD always runs inside a container so
+	// users never need to install SteamCMD or its 32-bit library dependencies.
+	dockerBin, err := exec.LookPath("docker")
 	if err != nil {
-		return fmt.Errorf("steamcmd not found in PATH: %w", err)
+		return fmt.Errorf(
+			"Docker is required to deploy game servers. " +
+				"Please install Docker (https://docs.docker.com/engine/install/) and ensure the daemon can reach the Docker socket.")
 	}
 
-	args := []string{
+	// Create a throw-away directory that the container uses as HOME so SteamCMD
+	// can write its internal .steam cache files without touching installDir.
+	// It is removed whether the deploy succeeds or fails.
+	steamHome, err := os.MkdirTemp("", "gdash-steamhome-*")
+	if err != nil {
+		return fmt.Errorf("create steamcmd temp dir: %w", err)
+	}
+	defer os.RemoveAll(steamHome) //nolint:errcheck
+
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+		jsonStr("[gdash] Starting SteamCMD via Docker (cm2network/steamcmd). First run will pull the image — this may take a minute."),
+		time.Now().Unix()))
+	b.updateJob(job.ID, "running", 15, "Pulling SteamCMD Docker image (first run only)…")
+
+	// Ensure installDir is writable by the container's steam user (UID 1000).
+	if err := os.Chmod(installDir, 0o777); err != nil {
+		b.logger.Warn("Could not chmod install dir for steamcmd container", zap.Error(err))
+	}
+
+	// Remove any stale container left by a previous failed deploy so --name doesn't conflict.
+	containerName := "gdash-steamcmd-" + id
+	_ = exec.Command(dockerBin, "rm", "-f", containerName).Run() //nolint:gosec
+
+	// Build docker run arguments.
+	// - installDir is mounted at /games inside the container (game files land here)
+	// - steamHome  is mounted at /tmp/steamhome for SteamCMD's own cache/config
+	// - We do NOT pass --user: cm2network/steamcmd runs its ENTRYPOINT as its own
+	//   internal steam user and breaks if the UID is overridden.
+	dockerArgs := []string{
+		"run", "--rm",
+		"--name", containerName,
+		"-v", installDir + ":/games",
+		"-v", steamHome + ":/tmp/steamhome",
+		"-e", "HOME=/tmp/steamhome",
+		"cm2network/steamcmd",
 		"+@ShutdownOnFailedCommand", "1",
 		"+login", "anonymous",
-		"+force_install_dir", installDir,
+		"+force_install_dir", "/games",
 		"+app_update", appID, "validate",
 	}
 	if req.SteamCMD != nil && req.SteamCMD.Beta != "" {
-		args = append(args, "-beta", req.SteamCMD.Beta)
+		dockerArgs = append(dockerArgs, "-beta", req.SteamCMD.Beta)
 		if req.SteamCMD.BetaPass != "" {
-			args = append(args, "-betapassword", req.SteamCMD.BetaPass)
+			dockerArgs = append(dockerArgs, "-betapassword", req.SteamCMD.BetaPass)
 		}
 	}
-	args = append(args, "+quit")
+	dockerArgs = append(dockerArgs, "+quit")
 
-	b.updateJob(job.ID, "running", 30, fmt.Sprintf("Running SteamCMD for app %s...", appID))
-	b.logger.Info("Executing SteamCMD",
+	b.updateJob(job.ID, "running", 30, fmt.Sprintf("Running SteamCMD (Docker) for app %s…", appID))
+	b.logger.Info("Executing SteamCMD via Docker",
 		zap.String("server", id), zap.String("app_id", appID), zap.String("dir", installDir))
 
-	cmd := exec.CommandContext(ctx, steamcmd, args...) //nolint:gosec
+	cmd := exec.CommandContext(ctx, dockerBin, dockerArgs...) //nolint:gosec
 	cmd.Dir = installDir
 
 	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start steamcmd: %w", err)
+		return fmt.Errorf("start steamcmd container: %w", err)
 	}
 
-	// Stream output to console and update progress.
+	// Forward stderr to the console in a background goroutine so the user sees
+	// Docker pull progress and any SteamCMD warnings alongside stdout.
+	go func() {
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+				jsonStr(sc.Text()), time.Now().Unix()))
+		}
+	}()
+
+	// Stream stdout to the console and nudge the progress bar forward.
 	progress := 30
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
 		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`, jsonStr(line), time.Now().Unix()))
-		// Bump progress a little each line (capped at 90).
 		if progress < 90 {
 			progress++
 		}
@@ -955,10 +1076,10 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("steamcmd exited with error: %w", err)
+		return fmt.Errorf("SteamCMD container exited with error: %w", err)
 	}
 
-	b.updateJob(job.ID, "success", 100, "SteamCMD deployment complete")
+	b.updateJob(job.ID, "success", 100, "SteamCMD (Docker) deployment complete")
 	b.logger.Info("SteamCMD deployment complete", zap.String("server", id))
 	return nil
 }
@@ -1388,14 +1509,48 @@ func (b *Broker) GetServerLogs(ctx context.Context, id, lines string) ([]string,
 		}
 	}
 
+	// Always append the daemon-written event log stored under the data dir.
+	// This captures system messages (deploy output, start/stop errors) even
+	// when the server has never been deployed and has no install directory yet.
+	if b.cfg != nil {
+		dataDir := b.cfg.Storage.DataDir
+		if dataDir == "" {
+			dataDir = "/opt/gdash/data"
+		}
+		candidates = append(candidates, filepath.Join(dataDir, "servers", id, "logs", "gdash-events.log"))
+	}
+
+	// For Docker-deployed servers, try fetching logs directly from the container
+	// first — this provides real-time output even if the event log is empty.
+	b.mu.RLock()
+	deployMethod := s.DeployMethod
+	containerID := s.ContainerID
+	b.mu.RUnlock()
+	if deployMethod == "docker" && containerID != "" {
+		if dockerPath, err := exec.LookPath("docker"); err == nil {
+			cmd := exec.CommandContext(ctx, dockerPath, "logs", "--tail", strconv.Itoa(maxLines), containerID) //nolint:gosec
+			if out, err := cmd.CombinedOutput(); err == nil && len(out) > 0 {
+				var result []string
+				for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+					if line != "" {
+						result = append(result, line)
+					}
+				}
+				if len(result) > 0 {
+					return result, nil
+				}
+			}
+		}
+	}
+
 	for _, path := range candidates {
 		if result, err := tailFile(path, maxLines); err == nil && len(result) > 0 {
 			return result, nil
 		}
 	}
 
-	// Fall back to recent console channel messages.
-	return []string{"[system] No log file found. Check server install_dir configuration."}, nil
+	// Nothing found at all.
+	return []string{"[system] No log entries yet. Deploy or start the server to generate logs."}, nil
 }
 
 // tailFile reads the last n lines from a file efficiently.
@@ -1432,7 +1587,12 @@ func tailFile(path string, n int) ([]string, error) {
 		count = n
 	}
 	out := make([]string, count)
-	start := idx % n
+	// When total <= n the ring was never wrapped: the valid entries start at
+	// index 0. When total > n the oldest entry is at idx%n (the next write slot).
+	start := 0
+	if total > n {
+		start = idx % n
+	}
 	for i := 0; i < count; i++ {
 		out[i] = ring[(start+i)%n]
 	}
@@ -1524,6 +1684,7 @@ func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (st
 }
 
 func (b *Broker) sendConsoleMessage(id, msg string) {
+	// Deliver to any active WebSocket stream.
 	b.mu.RLock()
 	ch, ok := b.consoleChs[id]
 	b.mu.RUnlock()
@@ -1531,6 +1692,24 @@ func (b *Broker) sendConsoleMessage(id, msg string) {
 		select {
 		case ch <- msg:
 		default:
+		}
+	}
+
+	// Persist all console output to a per-server log file so the Logs page can
+	// show it. stdout/stderr from Docker containers and native processes are
+	// written here; system/error/deploy events are always included.
+	if b.cfg != nil {
+		dataDir := b.cfg.Storage.DataDir
+		if dataDir == "" {
+			dataDir = "/opt/gdash/data"
+		}
+		logDir := filepath.Join(dataDir, "servers", id, "logs")
+		if mkErr := os.MkdirAll(logDir, 0o750); mkErr == nil {
+			logFile := filepath.Join(logDir, "gdash-events.log")
+			if f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640); err == nil {
+				fmt.Fprintln(f, msg)
+				f.Close()
+			}
 		}
 	}
 }

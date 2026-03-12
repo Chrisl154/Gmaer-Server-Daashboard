@@ -1,16 +1,39 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { HardDrive, Download, RefreshCw, CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
-import { clsx } from 'clsx';
+import {
+  HardDrive, Download, RefreshCw, CheckCircle, XCircle, Clock,
+  Loader2, ChevronDown, ChevronRight, Trash2, RotateCcw,
+} from 'lucide-react';
+import { cn } from '../utils/cn';
 import { api } from '../utils/api';
 import { useTriggerBackup, useRestoreBackup } from '../hooks/useServers';
 import type { Backup, Server } from '../types';
+import { ADAPTER_COLORS, ADAPTER_ICONS, ADAPTER_NAMES } from '../utils/adapters';
 
-const STATUS_ICONS: Record<string, React.ReactNode> = {
-  complete:  <CheckCircle className="w-3 h-3 text-green-400" />,
-  failed:    <XCircle className="w-3 h-3 text-red-400" />,
-  running:   <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />,
-  pending:   <Clock className="w-3 h-3 text-gray-400" />,
+const STATUS_CONFIG: Record<
+  string,
+  { icon: React.ReactNode; label: string; badgeClass: string }
+> = {
+  complete: {
+    icon: <CheckCircle className="w-3.5 h-3.5" style={{ color: '#4ade80' }} />,
+    label: 'Complete',
+    badgeClass: 'status-running',
+  },
+  failed: {
+    icon: <XCircle className="w-3.5 h-3.5" style={{ color: '#f87171' }} />,
+    label: 'Failed',
+    badgeClass: 'status-error',
+  },
+  running: {
+    icon: <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: '#60a5fa' }} />,
+    label: 'Running',
+    badgeClass: 'status-deploying',
+  },
+  pending: {
+    icon: <Clock className="w-3.5 h-3.5" style={{ color: '#94a3b8' }} />,
+    label: 'Pending',
+    badgeClass: 'status-idle',
+  },
 };
 
 function formatBytes(bytes: number): string {
@@ -42,92 +65,199 @@ function ServerBackupCard({ server }: { server: Server }) {
   const restoreMutation = useRestoreBackup(server.id);
 
   const backups = data?.backups ?? [];
+  const AdapterIcon = ADAPTER_ICONS[(server as any).adapter] ?? ADAPTER_ICONS.default;
+  const adapterColor = ADAPTER_COLORS[(server as any).adapter] ?? '#6b7280';
+  const adapterName = ADAPTER_NAMES[(server as any).adapter] ?? (server as any).adapter;
 
   return (
-    <div className="bg-[#141414] border border-[#252525] rounded-xl overflow-hidden">
-      {/* Header row */}
+    <div className="card overflow-hidden">
+      {/* Accordion Header */}
       <div
-        className="flex items-center justify-between p-4 cursor-pointer hover:bg-[#1a1a1a] transition-colors"
+        className="flex items-center justify-between p-4 cursor-pointer transition-colors"
+        style={{ userSelect: 'none' }}
         onClick={() => setExpanded(e => !e)}
+        onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-card-hover)')}
+        onMouseLeave={e => (e.currentTarget.style.background = '')}
       >
-        <div className="flex items-center gap-3">
-          <HardDrive className="w-5 h-5 text-gray-400 shrink-0" />
-          <div>
-            <div className="text-sm font-medium text-gray-100">{server.name}</div>
-            <div className="text-xs text-gray-500 capitalize">{server.adapter}</div>
+        <div className="flex items-center gap-3 min-w-0">
+          {/* Chevron */}
+          <div style={{ color: 'var(--text-muted)' }}>
+            {expanded
+              ? <ChevronDown className="w-4 h-4" />
+              : <ChevronRight className="w-4 h-4" />}
+          </div>
+
+          {/* Adapter icon */}
+          <div
+            className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+            style={{
+              background: `${adapterColor}22`,
+              border: `1px solid ${adapterColor}40`,
+            }}
+          >
+            <span style={{ color: adapterColor, display: 'flex' }}>
+              <AdapterIcon className="w-4 h-4" />
+            </span>
+          </div>
+
+          <div className="min-w-0">
+            <div className="text-sm font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
+              {server.name}
+            </div>
+            <div className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+              {adapterName}
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+
+        <div className="flex items-center gap-2 shrink-0 ml-4">
           {expanded && backups.length > 0 && (
-            <span className="text-xs text-gray-500 mr-2">
+            <span
+              className="badge"
+              style={{
+                background: 'rgba(249,115,22,0.1)',
+                color: '#fb923c',
+                border: '1px solid rgba(249,115,22,0.2)',
+              }}
+            >
               {backups.length} backup{backups.length !== 1 ? 's' : ''}
             </span>
           )}
+
           <button
-            onClick={e => { e.stopPropagation(); triggerMutation.mutate('full'); }}
-            disabled={triggerMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-lg transition-colors disabled:opacity-50"
-          >
-            {triggerMutation.isPending ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : (
-              <Download className="w-3 h-3" />
-            )}
-            Backup Now
-          </button>
-          <button
-            onClick={e => { e.stopPropagation(); refetch(); }}
-            className="p-1.5 text-gray-500 hover:text-gray-300 hover:bg-[#252525] rounded-lg transition-colors"
+            onClick={e => {
+              e.stopPropagation();
+              refetch();
+            }}
+            className="btn-ghost p-2"
+            style={{ padding: '5px' }}
+            title="Refresh"
           >
             <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={e => {
+              e.stopPropagation();
+              triggerMutation.mutate('full');
+            }}
+            disabled={triggerMutation.isPending}
+            className="btn-blue"
+            style={{ padding: '6px 12px', fontSize: 12 }}
+          >
+            {triggerMutation.isPending ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Download className="w-3.5 h-3.5" />
+            )}
+            Backup Now
           </button>
         </div>
       </div>
 
       {/* Expanded backup list */}
       {expanded && (
-        <div className="border-t border-[#1a1a1a] px-4 pb-4 pt-3">
+        <div
+          style={{ borderTop: '1px solid var(--border)' }}
+        >
           {isLoading ? (
-            <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-              <Loader2 className="w-4 h-4 animate-spin" /> Loading backups...
+            <div
+              className="flex items-center gap-3 p-5"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span className="text-sm">Loading backups...</span>
             </div>
           ) : backups.length === 0 ? (
-            <p className="text-gray-500 text-sm py-2">
-              No backups yet. Click &quot;Backup Now&quot; to create one.
-            </p>
+            <div className="p-6 text-center">
+              <div
+                className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-3"
+                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+              >
+                <HardDrive className="w-6 h-6" style={{ color: 'var(--text-muted)' }} />
+              </div>
+              <p className="text-sm font-medium mb-1" style={{ color: 'var(--text-primary)' }}>
+                No backups yet
+              </p>
+              <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                Click &ldquo;Backup Now&rdquo; to create the first backup for this server.
+              </p>
+            </div>
           ) : (
-            <div className="space-y-2">
-              {backups.map(b => (
-                <div
-                  key={b.id}
-                  className="flex items-center justify-between bg-[#0d0d0d] border border-[#1e1e1e] rounded-lg px-3 py-2.5"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    {STATUS_ICONS[b.status] ?? <Clock className="w-3 h-3 text-gray-400" />}
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono text-gray-300 truncate">{b.id.slice(0, 8)}</span>
-                        <span className={clsx(
-                          'text-xs px-1.5 py-0.5 rounded capitalize',
-                          b.type === 'full' ? 'bg-blue-500/10 text-blue-400' : 'bg-gray-500/10 text-gray-400'
-                        )}>
-                          {b.type}
-                        </span>
-                      </div>
-                      <div className="text-xs text-gray-500 mt-0.5">
-                        {formatDate(b.created_at)} · {formatBytes(b.size_bytes)}
-                      </div>
+            <div className="p-4 space-y-2">
+              {/* Table header */}
+              <div
+                className="grid text-xs font-semibold uppercase tracking-widest px-3 py-2 rounded-lg mb-1"
+                style={{
+                  color: 'var(--text-muted)',
+                  background: 'var(--bg-elevated)',
+                  gridTemplateColumns: '1fr 80px 80px 90px 100px',
+                }}
+              >
+                <span>Backup ID</span>
+                <span>Type</span>
+                <span>Size</span>
+                <span>Date</span>
+                <span className="text-right">Actions</span>
+              </div>
+
+              {backups.map(b => {
+                const status = STATUS_CONFIG[b.status] ?? STATUS_CONFIG.pending;
+                return (
+                  <div
+                    key={b.id}
+                    className="grid items-center px-3 py-2.5 rounded-xl transition-colors"
+                    style={{
+                      gridTemplateColumns: '1fr 80px 80px 90px 100px',
+                      background: 'var(--bg-elevated)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    {/* ID + status */}
+                    <div className="flex items-center gap-2 min-w-0">
+                      {status.icon}
+                      <span
+                        className="text-xs font-mono truncate"
+                        style={{ color: 'var(--text-primary)' }}
+                      >
+                        {b.id.slice(0, 12)}…
+                      </span>
+                    </div>
+
+                    {/* Type */}
+                    <span
+                      className={cn('badge w-fit', b.type === 'full' ? 'status-deploying' : 'status-idle')}
+                      style={{ fontSize: 10 }}
+                    >
+                      {b.type}
+                    </span>
+
+                    {/* Size */}
+                    <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                      {formatBytes(b.size_bytes)}
+                    </span>
+
+                    {/* Date */}
+                    <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                      {formatDate(b.created_at)}
+                    </span>
+
+                    {/* Actions */}
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() => restoreMutation.mutate(b.id)}
+                        disabled={restoreMutation.isPending || b.status !== 'complete'}
+                        className="btn-ghost p-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{ padding: '4px 8px', fontSize: 11, gap: 4 }}
+                        title="Restore this backup"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        Restore
+                      </button>
                     </div>
                   </div>
-                  <button
-                    onClick={() => restoreMutation.mutate(b.id)}
-                    disabled={restoreMutation.isPending || b.status !== 'complete'}
-                    className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-40 disabled:cursor-not-allowed shrink-0 ml-4"
-                  >
-                    Restore
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -145,32 +275,67 @@ export function BackupsPage() {
   const servers = data?.servers ?? [];
 
   return (
-    <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-100">Backups</h1>
-        <p className="text-sm text-gray-400 mt-1">
+    <div className="p-6 md:p-8 animate-page">
+      {/* Page Header */}
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
+          Backups
+        </h1>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
           Manage scheduled and on-demand backups. Click a server to view its backup history.
         </p>
       </div>
 
       {isLoading ? (
-        <div className="space-y-3">
+        <div className="space-y-3 max-w-3xl">
           {[1, 2, 3].map(i => (
-            <div key={i} className="h-16 bg-[#141414] border border-[#252525] rounded-xl animate-pulse" />
+            <div
+              key={i}
+              className="card"
+              style={{ height: 68, opacity: 0.5, animation: 'pulse 1.5s ease-in-out infinite' }}
+            />
           ))}
         </div>
       ) : servers.length === 0 ? (
-        <div className="flex flex-col items-center py-16 text-center">
-          <div className="w-14 h-14 bg-[#1a1a1a] rounded-2xl flex items-center justify-center mb-4">
-            <HardDrive className="w-7 h-7 text-gray-500" />
+        <div className="flex flex-col items-center py-20 text-center">
+          <div
+            className="w-20 h-20 rounded-2xl flex items-center justify-center mb-5"
+            style={{
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <HardDrive className="w-10 h-10" style={{ color: 'var(--text-muted)' }} />
           </div>
-          <h3 className="text-gray-200 font-medium mb-2">No servers yet</h3>
-          <p className="text-gray-500 text-sm max-w-xs">
+          <h3 className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+            No servers found
+          </h3>
+          <p className="text-sm max-w-xs" style={{ color: 'var(--text-secondary)' }}>
             Add a server first to start managing backups.
           </p>
         </div>
       ) : (
         <div className="space-y-3 max-w-3xl">
+          {/* Section header */}
+          <div
+            className="flex items-center gap-3 pb-4 mb-2"
+            style={{ borderBottom: '1px solid var(--border)' }}
+          >
+            <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Server Backups
+            </h2>
+            <span
+              className="badge"
+              style={{
+                background: 'rgba(249,115,22,0.1)',
+                color: '#fb923c',
+                border: '1px solid rgba(249,115,22,0.2)',
+              }}
+            >
+              {servers.length} server{servers.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+
           {servers.map(s => (
             <ServerBackupCard key={s.id} server={s} />
           ))}

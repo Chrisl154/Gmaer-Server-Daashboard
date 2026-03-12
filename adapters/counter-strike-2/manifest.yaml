@@ -6,10 +6,11 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./game/bin/linuxsteamrt64/cs2 -dedicated -console -usercon -port 27015 +map de_dust2 +game_type 0 +game_mode 1 +sv_setsteamaccount ${GSLT}"
-stop_command: "kill -SIGTERM $(cat /tmp/cs2.pid)"
-restart_command: "kill -HUP $(cat /tmp/cs2.pid)"
+stop_command: "pkill -SIGTERM -f linuxsteamrt64/cs2 || true"
+restart_command: "pkill -SIGTERM -f linuxsteamrt64/cs2 || true"
 
 console:
   type: rcon

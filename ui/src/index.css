@@ -1,3 +1,174 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ── CSS Variables ─────────────────────────────────────────────────────────── */
+:root {
+  --primary:        #f97316;
+  --primary-hover:  #ea580c;
+  --primary-subtle: rgba(249, 115, 22, 0.1);
+  --primary-border: rgba(249, 115, 22, 0.3);
+  --blue-from:      #3b82f6;
+  --blue-to:        #1d4ed8;
+
+  --bg-page:        #0b0b16;
+  --bg-sidebar:     #0e0e1d;
+  --bg-card:        #151525;
+  --bg-card-hover:  #1a1a2e;
+  --bg-elevated:    #1e1e38;
+  --bg-input:       #0f0f20;
+  --border:         rgba(255, 255, 255, 0.06);
+  --border-strong:  rgba(255, 255, 255, 0.11);
+  --text-primary:   #f0f0f8;
+  --text-secondary: #8080a8;
+  --text-muted:     #50507a;
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar             { width: 5px; height: 5px; }
+::-webkit-scrollbar-track       { background: transparent; }
+::-webkit-scrollbar-thumb       { background: rgba(255,255,255,0.08); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+
+/* ── Reusable component layer ──────────────────────────────────────────────── */
+@layer components {
+  /* Card */
+  .card {
+    @apply rounded-[14px] border transition-all duration-200;
+    background: var(--bg-card);
+    border-color: var(--border);
+  }
+  .card:hover { background: var(--bg-card-hover); }
+
+  /* Inputs */
+  .input {
+    @apply w-full rounded-lg px-3 py-[9px] text-sm outline-none transition-all duration-150;
+    background: var(--bg-input);
+    border: 1px solid var(--border-strong);
+    color: var(--text-primary);
+  }
+  .input::placeholder { color: var(--text-muted); }
+  .input:focus {
+    border-color: rgba(249,115,22,0.5);
+    box-shadow: 0 0 0 3px rgba(249,115,22,0.1);
+  }
+
+  /* Buttons */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white
+           transition-all duration-150 cursor-pointer select-none;
+    background: linear-gradient(135deg, #f97316, #ea580c);
+    box-shadow: 0 2px 8px rgba(249,115,22,0.3);
+    border: none;
+  }
+  .btn-primary:hover:not(:disabled) {
+    opacity: 0.9;
+    box-shadow: 0 4px 16px rgba(249,115,22,0.4);
+    transform: translateY(-1px);
+  }
+  .btn-primary:active:not(:disabled) { transform: translateY(0); }
+  .btn-primary:disabled { @apply opacity-50 cursor-not-allowed; }
+
+  .btn-blue {
+    @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white
+           transition-all duration-150 cursor-pointer select-none;
+    background: linear-gradient(90deg, #3b82f6, #1d4ed8);
+    box-shadow: 0 2px 8px rgba(59,130,246,0.3);
+    border: none;
+  }
+  .btn-blue:hover:not(:disabled) {
+    opacity: 0.9;
+    box-shadow: 0 4px 16px rgba(59,130,246,0.4);
+    transform: translateY(-1px);
+  }
+  .btn-blue:disabled { @apply opacity-50 cursor-not-allowed; }
+
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium
+           transition-all duration-150 cursor-pointer select-none;
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    color: var(--text-secondary);
+  }
+  .btn-ghost:hover { background: rgba(255,255,255,0.05); color: var(--text-primary); }
+
+  .btn-danger {
+    @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white
+           transition-all duration-150 cursor-pointer select-none;
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+    border: none;
+    box-shadow: 0 2px 8px rgba(239,68,68,0.25);
+  }
+  .btn-danger:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+  .btn-danger:disabled { @apply opacity-50 cursor-not-allowed; }
+
+  /* Badge / pill */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium;
+  }
+
+  /* Section label */
+  .label {
+    @apply block text-[11px] font-semibold uppercase tracking-widest mb-1.5;
+    color: var(--text-muted);
+  }
+
+  /* Gradient text helpers */
+  .text-gradient-orange {
+    background: linear-gradient(135deg, #fb923c, #ea580c);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .text-gradient-blue {
+    background: linear-gradient(90deg, #60a5fa, #3b82f6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+}
+
+/* ── Status colours ────────────────────────────────────────────────────────── */
+.status-running   { background: rgba(34,197,94,0.12);  color: #4ade80; }
+.status-stopped   { background: rgba(100,116,139,0.15); color: #94a3b8; }
+.status-starting  { background: rgba(249,115,22,0.12); color: #fb923c; }
+.status-stopping  { background: rgba(239,68,68,0.12);  color: #f87171; }
+.status-error     { background: rgba(239,68,68,0.15);  color: #f87171; }
+.status-deploying { background: rgba(59,130,246,0.12); color: #60a5fa; }
+.status-idle      { background: rgba(148,163,184,0.1); color: #94a3b8; }
+
+/* ── Page entry animation ──────────────────────────────────────────────────── */
+.animate-page { animation: pageIn 0.28s ease-out both; }
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Sidebar nav active bar ────────────────────────────────────────────────── */
+.nav-active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 50%;
+  transform: translateY(-50%);
+  width: 3px; height: 60%;
+  background: linear-gradient(180deg, #fb923c, #ea580c);
+  border-radius: 0 3px 3px 0;
+}

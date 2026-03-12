@@ -9,7 +9,7 @@ deploy_methods:
   - custom
 
 start_command: "./riftbreaker-server --port 27015"
-stop_command: "kill -SIGTERM $(cat /tmp/riftbreaker.pid)"
+stop_command: "pkill -SIGTERM -f riftbreaker-server || true"
 restart_command: "kill -SIGTERM $(cat /tmp/riftbreaker.pid) && sleep 3 && ./riftbreaker-server --port 27015"
 
 console:

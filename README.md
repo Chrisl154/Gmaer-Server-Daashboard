@@ -1,7 +1,7 @@
 # Games Dashboard
 
 [![CI](https://github.com/Chrisl154/Gmaer-Server-Daashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/Chrisl154/Gmaer-Server-Daashboard/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 
 **Production-grade, open-source Gaming Server Dashboard** for automated provisioning, deployment, management, backup, networking, security, and observability of game servers — supporting Docker single-host and Kubernetes cluster deployments.
 
@@ -9,129 +9,165 @@
 
 | Category | Capabilities |
 |---|---|
-| **Servers** | 24 supported games (Valheim, Minecraft, Rust, CS2, ARK, Palworld, and more) |
-| **Deploy** | SteamCMD, manual archive, Docker, Kubernetes operator |
+| **Servers** | 24 supported games — visual poster-card grid with per-game color themes; hover for start/stop/restart/delete |
+| **Add Server** | 2-step wizard: visual game picker filtered by deploy method → config form |
+| **Deploy** | SteamCMD, manual archive, Docker (19 games), Kubernetes operator |
+| **Logs** | 4-tab Logs page: live server console tail, lifecycle Events, Security/auth events, full Audit Trail |
 | **Console** | Live WebSocket console streaming per server |
 | **Backups** | Scheduled/manual, NFS + S3, incremental, integrity-verified restore |
 | **Mods** | Steam Workshop, CurseForge, Thunderstore, Git, local; sandboxed test harness; RBAC |
 | **Security** | TLS everywhere, AES-256 secrets at rest, TOTP 2FA, OIDC/SAML/OAuth2 |
+| **Audit** | Signed audit trail for all operations; filterable by lifecycle events vs. auth events |
 | **CVE/SBOM** | CycloneDX SBOM, Trivy/Grype scanning, OSV/NVD queries, evidence model |
 | **Networking** | Port mapping UI, reachability probe, UPnP/NAT, firewall automation |
 | **Observability** | Prometheus metrics, Grafana dashboards, structured JSON logs |
 | **Scale** | Docker Compose (single-host) or Kubernetes/k3s via Helm + CRD operator |
+| **Self-Update** | One-click update from the UI (Settings → Updates) or `gdash update`; choose `main` (stable) or `dev` branch |
 
 ---
 
 ## 🚀 Quick Start
 
-### One-Liner Test & Install (Ubuntu 24.04+)
+**Minimum requirement:** Ubuntu 22.04 or 24.04 with internet access and `bash`. Everything else — Go 1.22, Node.js 20 LTS, nginx, SteamCMD, Java, Python packages — is installed automatically.
 
-The fastest way to validate the full stack on any fresh Linux box — installs all dependencies, builds from source, starts the daemon, and runs all tests automatically:
+### Install (Deploy & Run)
+
+Deploys the full stack and leaves it running. Prints the dashboard URL and credentials when done.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/install.sh | bash
+```
+
+**Want to skip the setup wizard entirely?** Pass your password and you're done — everything else uses sensible defaults:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/install.sh | GDASH_NONINTERACTIVE=1 GDASH_ADMIN_PASS=MySecurePass123 bash
+```
+
+After install, open `https://<your-server-ip>` in a browser. Your browser will show a self-signed certificate warning — click **Advanced → Proceed**.
+
+> **What it installs:**
+> - Daemon as a systemd service (`gdash-daemon`) on `127.0.0.1:8443`
+> - nginx reverse proxy on port 443 serving the UI and proxying `/api/*` to the daemon
+> - `gdash` CLI available system-wide at `/usr/local/bin/gdash`
+> - All files under `/opt/gdash/`
+> - **Docker CE** (required — used for SteamCMD installs and Docker-native game servers)
+> - Java 21 LTS (required for Minecraft and JVM-based servers)
+> - k3s Kubernetes if selected during setup
+
+#### Interactive Setup Wizard
+
+When run in a terminal the installer launches a full TUI wizard with five screens:
+
+1. **Network & Paths** — install directory, server IP, optional hostname, daemon port, HTTPS port
+2. **Admin Account** — username and password (auto-generates a secure password you can keep or replace)
+3. **Storage & Backup** — data directory, backup cron schedule, retention days
+4. **Container Runtimes** — Docker CE (required; installed automatically) and optional k3s
+5. **Review & Confirm** — summary of all settings before anything is written to disk
+
+> **Tip:** Requires `whiptail` for the full TUI (pre-installed on Ubuntu). Falls back to plain readline prompts if unavailable.
+
+#### Non-Interactive / CI Install
+
+Skip the wizard entirely using environment variables:
+
+```bash
+GDASH_NONINTERACTIVE=1 \
+GDASH_ADMIN_PASS=MySecurePass123 \
+GDASH_INSTALL_DOCKER=true \
+  bash install.sh
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `GDASH_NONINTERACTIVE` | — | Set to `1` to skip all prompts |
+| `GDASH_INSTALL_DIR` | `/opt/gdash` | Root install directory |
+| `GDASH_HOST` | auto-detected | Server IP for TLS and URLs |
+| `GDASH_HOSTNAME` | — | Optional FQDN for TLS SAN |
+| `GDASH_DAEMON_PORT` | `8443` | Internal daemon port |
+| `GDASH_UI_PORT` | `443` | Public HTTPS port |
+| `GDASH_ADMIN_USER` | `admin` | Admin username |
+| `GDASH_ADMIN_PASS` | auto-generated | Admin password |
+| `GDASH_DATA_DIR` | `{INSTALL_DIR}/data` | Runtime data directory |
+| `GDASH_BACKUP_SCHEDULE` | `0 3 * * *` | Default backup cron schedule |
+| `GDASH_BACKUP_RETAIN_DAYS` | `30` | Days to keep old backups |
+| `GDASH_INSTALL_DOCKER` | `true` | Install Docker CE (required; set `false` only if Docker is already installed) |
+| `GDASH_INSTALL_K8S` | `false` | Install k3s Kubernetes (`true`/`false`) |
+
+---
+
+### Uninstall (Complete Removal)
+
+Removes everything — systemd service, nginx config, `/opt/gdash/`, and the `gdash` CLI symlink.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/uninstall.sh | bash
+```
+
+After uninstalling, re-run the install command above for a clean reinstall.
+
+---
+
+### Test Only (No Permanent Install)
+
+Validates the full stack end-to-end — builds, starts the daemon temporarily, runs all API and CLI tests, then tears everything down cleanly. Nothing is left running.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/test-live.sh | bash
 ```
 
-**Minimum requirement:** Ubuntu 24.04 (or any modern Linux) with internet access and `bash`. Everything else — Go 1.22, Node.js 20 LTS, Trivy CVE scanner, Python packages — is installed automatically in userspace (no root required beyond standard system packages).
-
-> Run locally if you already have the repo cloned:
-> ```bash
-> bash test-live.sh
-> ```
-
-### Interactive Install (Docker)
-
-```bash
-curl -fsSL https://github.com/Chrisl154/Gmaer-Server-Daashboard/releases/latest/download/installer.sh \
-  -o installer.sh && chmod +x installer.sh
-./installer.sh --mode docker
-```
-
-### Headless Install
-
-```bash
-./installer.sh --headless --config config.json --mode docker --accept-licenses
-```
-
-### Kubernetes (k3s)
-
-```bash
-./installer.sh --mode k8s --k8s-distribution k3s --install-helm --install-metalb
-# or via Helm:
-helm upgrade --install games-dashboard ./helm/charts/games-dashboard \
-  --namespace games-dashboard --create-namespace
-```
-
-### Dry Run
-
-```bash
-./installer.sh --mode docker --dry-run
-```
-
 ---
 
-## 📋 Installer Flags
+## 📋 What Gets Installed
 
-```
---mode docker|k8s               Deployment mode (required)
---install-dir /path             Installation directory
---headless                      Non-interactive
---config /path/config.json      Headless config file
---reuse-existing                Reuse existing installation
---offline-bundle /path          Offline bundle path
---accept-licenses               Accept all licenses
---min-hardware-profile small|medium|large
---probe-remote-validator <url>  Remote port probe endpoint
---k8s-distribution k3s|kubeadm|managed
---container-runtime docker|containerd|podman
---enable-mod-manager
---log-level debug|info|warn|error
---skip-preflight
---force
---no-reboot
---tls-cert /path/cert.pem
---tls-key /path/key.pem
---vault-endpoint <url>
---vault-token <token>
---install-helm
---install-metalb
---install-csi-nfs
---accept-defaults
---dry-run
---rollback-to <checkpoint-id>
---output-audit /path/audit.json
-```
+| Path | Description |
+|---|---|
+| `/opt/gdash/repo/` | Cloned source repository |
+| `/opt/gdash/bin/games-daemon` | Compiled daemon binary |
+| `/opt/gdash/bin/gdash` | Compiled CLI binary |
+| `/opt/gdash/ui/` | Built React UI static files |
+| `/opt/gdash/config/daemon.yaml` | Daemon configuration |
+| `/opt/gdash/tls/` | Self-signed TLS certificate (10 years) |
+| `/opt/gdash/data/` | Runtime data (servers, backups, etc.) |
+| `/opt/gdash/secrets/` | Encrypted secrets store |
+| `/etc/systemd/system/gdash-daemon.service` | Systemd unit |
+| `/etc/nginx/sites-available/gdash` | nginx site config |
+| `/usr/local/bin/gdash` | CLI symlink |
 
 ---
 
 ## 🎮 Supported Games & Adapters (24)
 
-| Game | Steam App ID | Deploy Methods | Console | Mods |
+Deploy methods: **S** = SteamCMD · **M** = Manual · **D** = Docker · **C** = Custom
+
+| Game | Steam App ID | Deploy | Console | Mods |
 |---|---|---|---|---|
-| 7 Days to Die | 294420 | SteamCMD | Telnet | Yes |
-| Among Us (Impostor) | 945360 | Manual/Custom | stdio | Yes |
-| ARK Survival Ascended | 2430930 | SteamCMD | RCON | Yes |
-| Conan Exiles | 443030 | SteamCMD | RCON | Yes |
-| Counter-Strike 2 | 730 | SteamCMD | RCON | Yes |
-| DayZ | 223350 | SteamCMD | stdio | Yes |
-| Don't Starve Together | 343050 | SteamCMD | stdio | Yes |
-| Dota 2 | 570 | SteamCMD | RCON | Yes |
-| Eco | 382310 | SteamCMD/Manual | WebSocket | Yes |
-| Enshrouded | 2278520 | SteamCMD/Manual | stdio | — |
-| Factorio | 427520 | Manual/SteamCMD | RCON | Yes |
-| Garry's Mod | 4020 | SteamCMD | RCON | Yes |
-| Left 4 Dead 2 | 222860 | SteamCMD | RCON | Yes |
-| Minecraft Java | — | Manual/Custom | RCON | Yes |
-| Palworld | 2394010 | SteamCMD/Manual | RCON | — |
-| Project Zomboid | 380870 | SteamCMD | stdio | Yes |
-| Risk of Rain 2 | 1180760 | SteamCMD | stdio | Yes |
-| Rust | 252490 | SteamCMD | WebRCON | Yes |
-| Satisfactory | 1690800 | SteamCMD/Manual | stdio | Yes |
-| Squad | 403240 | SteamCMD | RCON | Yes |
-| Team Fortress 2 | 232250 | SteamCMD | RCON | Yes |
-| Terraria | — | Manual | stdio | Yes |
-| The Riftbreaker | — | Manual/Custom | stdio | Yes |
-| Valheim | 896660 | SteamCMD/Manual | stdio | Yes (Thunderstore) |
+| 7 Days to Die | 294420 | S, D | Telnet | Yes |
+| Among Us (Impostor) | 945360 | M, C, D | stdio | Yes |
+| ARK Survival Ascended | 2430930 | S, D | RCON | Yes |
+| Conan Exiles | 443030 | S, D | RCON | Yes |
+| Counter-Strike 2 | 730 | S, D | RCON | Yes |
+| DayZ | 223350 | S, D | stdio | Yes |
+| Don't Starve Together | 343050 | S, D | stdio | Yes |
+| Dota 2 | 570 | S, D | RCON | Yes |
+| Eco | 382310 | S, M | WebSocket | Yes |
+| Enshrouded | 2278520 | S, M | stdio | — |
+| Factorio | 427520 | M, S, D | RCON | Yes |
+| Garry's Mod | 4020 | S, D | RCON | Yes |
+| Left 4 Dead 2 | 222860 | S, D | RCON | Yes |
+| Minecraft Java | — | M, C, D | RCON | Yes |
+| Palworld | 2394010 | S, M | RCON | — |
+| Project Zomboid | 380870 | S, D | stdio | Yes |
+| Risk of Rain 2 | 1180760 | S, D | stdio | Yes |
+| Rust | 252490 | S, D | WebRCON | Yes |
+| Satisfactory | 1690800 | S, M | stdio | Yes |
+| Squad | 403240 | S, D | RCON | Yes |
+| Team Fortress 2 | 232250 | S, D | RCON | Yes |
+| Terraria | — | M, D | stdio | Yes |
+| The Riftbreaker | — | M, C | stdio | Yes |
+| Valheim | 896660 | S, M, D | stdio | Yes (Thunderstore) |
+
+> **Docker:** 19 of 24 games have pre-configured Docker images. Install Docker CE during setup (or set `GDASH_INSTALL_DOCKER=true`) to enable the Docker deploy method.
 
 ---
 
@@ -177,12 +213,12 @@ games-dashboard/
 ├── ui/               React + TypeScript web UI
 ├── cli/              gdash CLI binary
 ├── adapters/         Game adapter manifests (24 games)
-├── installer/        install.sh single-artifact installer
 ├── helm/             Helm charts + CRDs
 ├── docs/             Operator runbook, API reference, security docs
 ├── tests/            Unit, integration, E2E test suites
-├── ci/               CI helper scripts
-├── test-live.sh      One-liner end-to-end test runner
+├── install.sh        One-liner production installer
+├── uninstall.sh      One-liner complete uninstaller
+├── test-live.sh      One-liner end-to-end test runner (no permanent install)
 └── .github/          GitHub Actions workflows
 ```
 
@@ -303,12 +339,60 @@ gdash sbom cve-report
 # Nodes (cluster mode)
 gdash node list
 gdash node add worker-01 https://worker-01:8443
+
+# Updates
+gdash update                    # update to latest stable (main)
+gdash update --branch dev       # switch to dev / pre-release
+gdash update --check            # check for updates without applying
+gdash version                   # show local + daemon version, branch, commit
 ```
 
 See [CONTRIBUTING.md](docs/CONTRIBUTING.md) to get started contributing.
+
+See [ROADMAP.md](docs/ROADMAP.md) for planned features.
+
+---
+
+---
+
+## 🗺 Roadmap
+
+What's coming next — loosely ordered by impact. See [ROADMAP.md](docs/ROADMAP.md) for the full list with details.
+
+### Shipped
+| Feature | Description |
+|---|---|
+| **SteamCMD via Docker** | All SteamCMD installs now run in an isolated Docker container — no host SteamCMD required |
+| **Persistent server state** | JSON-backed state that survives daemon restarts; transient states (starting/running/stopping) reset to stopped on reload |
+| **Per-server logs tab** | Logs tab on each server detail page streams lifecycle output before and after the server process starts |
+| **Subsystem log filtering** | Global Logs page Events tab filters by subsystem prefix (server, backup, mod, auth, etc.) |
+| **Self-update** | Settings → Updates tab + `gdash update`; git pull, rebuild daemon + UI, restart — choose `main` or `dev` branch |
+
+### Near-term
+| Feature | Description |
+|---|---|
+| **Automatic crash recovery** | Auto-restart on unexpected exit, configurable retries + back-off |
+| **Plain-English errors** | Human-readable error messages instead of raw Go stack traces |
+| **Node-install mode** | `--mode=node` installer flag for pure worker nodes |
+
+### Medium-term
+| Feature | Description |
+|---|---|
+| In-UI config file editor | Edit `server.properties`, launch scripts, etc. without SSH |
+| In-UI file browser | Browse, upload, download, and delete files in the install directory |
+| "Share with Friends" panel | Public IP + port + game join string in one click |
+| Player count & player list | Live query via Source/Minecraft protocol every 60 s |
+| Discord / webhook alerts | Crash, restart, backup, disk-full notifications |
+| Game server auto-update | Daily SteamCMD / Docker pull update with automatic pre-update backup |
+| Onboarding wizard | First-login 3-step modal: pick game → name server → deploy |
+
+### Long-term / Stretch
+Mobile PWA · Community adapter marketplace · Multi-region WireGuard cluster · Integrated DDNS · In-app guided diagnostics · 2FA enrollment UI
 
 ---
 
 ## 📝 License
 
-[MIT](LICENSE)
+This project is **proprietary source-available** software. You may run it for personal use and read the source code, but you may **not** distribute it, sell it, or use it as the basis for a competing product without explicit written permission from the author.
+
+See [LICENSE](LICENSE) for the full terms. To request permission for any use not covered: [open an issue](https://github.com/Chrisl154/Gmaer-Server-Daashboard/issues).
