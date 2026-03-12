@@ -44,6 +44,8 @@ DRY_RUN=false
 ROLLBACK_TO=""
 OUTPUT_AUDIT=""
 CURRENT_CHECKPOINT=0
+SKIP_UFW=false
+UFW_EXTRA_SSH_SUBNETS="" # space-separated CIDRs to add to the SSH allow list
 
 # Hardware profiles
 HW_SMALL_CORES=4
@@ -113,6 +115,8 @@ OPTIONS:
   --dry-run                            Print planned changes without applying
   --rollback-to <checkpoint-id>        Roll back to a checkpoint
   --output-audit /path/to/audit.json   Output audit file path
+  --skip-ufw                           Skip UFW firewall setup entirely
+  --ufw-extra-ssh-subnets "10.0.0.0/8 192.168.0.0/16"  Extra CIDRs to allow SSH from
   --help                               Show this help
 
 EXAMPLES:
@@ -167,6 +171,8 @@ parse_args() {
       --dry-run)                  DRY_RUN=true; shift ;;
       --rollback-to)              ROLLBACK_TO="$2"; shift 2 ;;
       --output-audit)             OUTPUT_AUDIT="$2"; shift 2 ;;
+      --skip-ufw)                 SKIP_UFW=true; shift ;;
+      --ufw-extra-ssh-subnets)    UFW_EXTRA_SSH_SUBNETS="$2"; shift 2 ;;
       --help|-h)                  usage; exit 0 ;;
       *)                          log_error "Unknown option: $1"; usage; exit 1 ;;
     esac
@@ -569,6 +575,116 @@ rollback() {
 }
 
 # =============================================================================
+# Firewall (UFW)
+# =============================================================================
+configure_ufw() {
+  if [[ "$SKIP_UFW" == "true" ]]; then
+    log_info "Skipping UFW configuration (--skip-ufw)"
+    return
+  fi
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log_info "[DRY RUN] Would configure UFW firewall"
+    return
+  fi
+
+  log_section "Configuring UFW Firewall"
+
+  if ! command -v ufw &>/dev/null; then
+    log_warn "ufw not found — installing..."
+    apt-get install -y ufw 2>/dev/null || yum install -y ufw 2>/dev/null || {
+      log_warn "Could not install ufw — skipping firewall configuration"
+      return
+    }
+  fi
+
+  # Detect every local subnet this host is actually attached to so we can
+  # scope the SSH allow rule tightly. We read all non-loopback IPv4 addresses,
+  # compute their /prefix from the interface's subnet mask, and produce CIDRs.
+  local ssh_subnets=()
+  while IFS= read -r line; do
+    # ip -o -f inet addr show format: "2: eth0    inet 192.168.1.5/24 ..."
+    if [[ "$line" =~ inet[[:space:]]([0-9.]+)/([0-9]+) ]]; then
+      local addr="${BASH_REMATCH[1]}"
+      local prefix="${BASH_REMATCH[2]}"
+      # Calculate network address (addr AND mask)
+      IFS='.' read -r a b c d <<< "$addr"
+      local bits=$prefix
+      local mask=0
+      for (( i=0; i<bits; i++ )); do
+        mask=$(( mask | (1 << (31 - i)) ))
+      done
+      local na=$(( a & ((mask >> 24) & 255) ))
+      local nb=$(( b & ((mask >> 16) & 255) ))
+      local nc=$(( c & ((mask >>  8) & 255) ))
+      local nd=$(( d &  (mask        & 255) ))
+      ssh_subnets+=("${na}.${nb}.${nc}.${nd}/${prefix}")
+    fi
+  done < <(ip -o -f inet addr show 2>/dev/null | grep -v ' lo ')
+
+  # Add any extra subnets the operator passed via --ufw-extra-ssh-subnets.
+  if [[ -n "$UFW_EXTRA_SSH_SUBNETS" ]]; then
+    read -ra extra <<< "$UFW_EXTRA_SSH_SUBNETS"
+    ssh_subnets+=("${extra[@]}")
+  fi
+
+  # Remove duplicate subnets.
+  local unique_subnets=()
+  declare -A _seen
+  for s in "${ssh_subnets[@]}"; do
+    if [[ -z "${_seen[$s]+x}" ]]; then
+      unique_subnets+=("$s")
+      _seen[$s]=1
+    fi
+  done
+
+  log_info "Configuring UFW (SSH allowed from: ${unique_subnets[*]:-any})"
+
+  # Start from a clean default-deny posture.
+  ufw --force reset
+  ufw default deny incoming
+  ufw default allow outgoing
+
+  # Allow SSH only from detected local subnets (or from anywhere if none found).
+  if [[ ${#unique_subnets[@]} -eq 0 ]]; then
+    log_warn "No local subnets detected — allowing SSH from anywhere (consider --ufw-extra-ssh-subnets)"
+    ufw allow 22/tcp comment 'SSH'
+  else
+    for subnet in "${unique_subnets[@]}"; do
+      ufw allow from "$subnet" to any port 22 proto tcp comment "SSH from $subnet"
+      log_info "  SSH allowed from: $subnet"
+    done
+  fi
+
+  # Dashboard daemon API (TLS)
+  ufw allow 8443/tcp  comment 'Games Dashboard daemon API'
+
+  # Dashboard UI (nginx / reverse proxy)
+  if [[ "$MODE" != "node" ]]; then
+    ufw allow 80/tcp   comment 'Games Dashboard UI (HTTP redirect)'
+    ufw allow 443/tcp  comment 'Games Dashboard UI (HTTPS)'
+  fi
+
+  # Metrics endpoint (localhost only — not opened externally)
+  # ufw allow from 127.0.0.1 to any port 9090 proto tcp comment 'Metrics (local)'
+
+  # Enable UFW (non-interactively).
+  ufw --force enable
+  ufw status verbose
+
+  log_info "UFW configured and enabled ✓"
+  log_info ""
+  log_info "To customise firewall rules after install:"
+  log_info "  sudo ufw allow from <subnet> to any port 22    # add an SSH source"
+  log_info "  sudo ufw allow <port>/tcp                      # open a game server port"
+  log_info "  sudo ufw delete allow <port>/tcp               # close a port"
+  log_info "  sudo ufw status verbose                        # view current rules"
+  log_info "  sudo ufw disable                               # disable UFW entirely"
+  log_info ""
+  log_info "Game server ports must be opened manually (or via the dashboard) per server."
+}
+
+# =============================================================================
 # Dependency Installation
 # =============================================================================
 install_docker() {
@@ -759,6 +875,9 @@ DAEMON_EOF
 
   save_checkpoint "checkpoint-3" "node-config-complete"
 
+  # Configure UFW — node mode opens 8443 only (no UI ports).
+  configure_ufw
+
   # Generate a one-time join token that the admin will use on the master.
   local join_token
   join_token=$(openssl rand -hex 16 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' | head -c 32 || echo "REPLACE_WITH_SECURE_TOKEN")
@@ -825,6 +944,9 @@ install_docker_mode() {
 
   save_checkpoint "checkpoint-4" "compose-generated"
 
+  # Configure UFW firewall before starting services.
+  configure_ufw
+
   if [[ "$DRY_RUN" != "true" ]]; then
     log_info "Starting services with Docker Compose..."
     cd "$INSTALL_DIR"
@@ -887,6 +1009,9 @@ install_k8s_mode() {
       log_info "[DRY RUN] Would install NFS CSI driver"
     fi
   fi
+
+  # Configure UFW on the k8s host node.
+  configure_ufw
 
   save_checkpoint "checkpoint-3" "k8s-complete"
 }
