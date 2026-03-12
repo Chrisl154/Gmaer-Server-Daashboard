@@ -22,6 +22,7 @@
 | **Networking** | Port mapping UI, reachability probe, UPnP/NAT, firewall automation |
 | **Observability** | Prometheus metrics, Grafana dashboards, structured JSON logs |
 | **Scale** | Docker Compose (single-host) or Kubernetes/k3s via Helm + CRD operator |
+| **Self-Update** | One-click update from the UI (Settings → Updates) or `gdash update`; choose `main` (stable) or `dev` branch |
 
 ---
 
@@ -338,6 +339,12 @@ gdash sbom cve-report
 # Nodes (cluster mode)
 gdash node list
 gdash node add worker-01 https://worker-01:8443
+
+# Updates
+gdash update                    # update to latest stable (main)
+gdash update --branch dev       # switch to dev / pre-release
+gdash update --check            # check for updates without applying
+gdash version                   # show local + daemon version, branch, commit
 ```
 
 See [CONTRIBUTING.md](docs/CONTRIBUTING.md) to get started contributing.
@@ -359,12 +366,12 @@ What's coming next — loosely ordered by impact. See [ROADMAP.md](docs/ROADMAP.
 | **Persistent server state** | JSON-backed state that survives daemon restarts; transient states (starting/running/stopping) reset to stopped on reload |
 | **Per-server logs tab** | Logs tab on each server detail page streams lifecycle output before and after the server process starts |
 | **Subsystem log filtering** | Global Logs page Events tab filters by subsystem prefix (server, backup, mod, auth, etc.) |
+| **Self-update** | Settings → Updates tab + `gdash update`; git pull, rebuild daemon + UI, restart — choose `main` or `dev` branch |
 
 ### Near-term
 | Feature | Description |
 |---|---|
 | **Automatic crash recovery** | Auto-restart on unexpected exit, configurable retries + back-off |
-| **Self-update mechanism** | "Check for Updates" + "Apply Update" buttons — no SSH required |
 | **Plain-English errors** | Human-readable error messages instead of raw Go stack traces |
 | **Node-install mode** | `--mode=node` installer flag for pure worker nodes |
 

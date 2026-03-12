@@ -35,12 +35,8 @@ If a game server process exits unexpectedly, the broker should auto-restart it.
 - After max retries mark state `error` and send a notification
 - Show restart count and last-crash time on the server card
 
-### Self-update mechanism
-Users should never need to re-run `curl | bash` to get fixes.
-
-- "Check for Updates" button in the Settings page calls `GET /api/v1/version` and compares against the latest GitHub release tag
-- "Apply Update" button downloads the new daemon/UI/CLI binaries, swaps them, and restarts the `gdash-daemon` systemd service — zero SSH required
-- Non-interactive: `gdash update` CLI command does the same thing
+### ~~Self-update mechanism~~ ✅ SHIPPED
+Settings → Updates tab + `gdash update` CLI command. Fetches latest from git, rebuilds daemon + CLI + UI, restarts the systemd service. Branch selector: `main` (stable) or `dev` (pre-release). The update script runs detached so the daemon restart doesn't kill it mid-flight. Sudoers entry installed automatically so no password prompt is required.
 
 ### Plain-English error messages
 Raw Go error strings are meaningless to non-technical users.
