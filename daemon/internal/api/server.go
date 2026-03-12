@@ -15,6 +15,7 @@ import (
 	"github.com/games-dashboard/daemon/internal/auth"
 	"github.com/games-dashboard/daemon/internal/broker"
 	daemonconfig "github.com/games-dashboard/daemon/internal/config"
+	"github.com/games-dashboard/daemon/internal/firewall"
 	"github.com/games-dashboard/daemon/internal/health"
 	"github.com/games-dashboard/daemon/internal/metrics"
 	"github.com/gin-gonic/gin"
@@ -36,6 +37,7 @@ type Config struct {
 	Broker         *broker.Broker
 	HealthSvc      *health.Service
 	MetricsSvc     *metrics.Service
+	FirewallSvc    *firewall.Service
 	// DaemonCfg is the live daemon configuration used by the settings API.
 	DaemonCfg  *daemonconfig.Config
 	// ConfigPath is the path to daemon.yaml; when set, PATCH /settings writes back to disk.
@@ -203,6 +205,12 @@ func (s *Server) registerRoutes() {
 	// Self-update (admin-only)
 	admin.GET("/update/status", s.getUpdateStatus)
 	admin.POST("/update/apply", s.applyUpdate)
+
+	// Firewall (UFW)
+	v1.GET("/firewall", s.getFirewallStatus)
+	v1.POST("/firewall/rules", s.addFirewallRule)
+	v1.DELETE("/firewall/rules/:num", s.deleteFirewallRule)
+	v1.POST("/firewall/enabled", s.setFirewallEnabled)
 
 	// System
 	v1.GET("/status", s.getSystemStatus)
