@@ -14,6 +14,7 @@ func newTestBroker(t *testing.T) *Broker {
 	t.Helper()
 	logger, _ := zap.NewDevelopment()
 	cfg := config.Config{}
+	cfg.Storage.DataDir = t.TempDir() // isolated per-test state; no cross-test pollution
 	b, err := NewBroker(&cfg, nil, logger, metrics.NewService())
 	if err != nil {
 		t.Fatalf("failed to create broker: %v", err)

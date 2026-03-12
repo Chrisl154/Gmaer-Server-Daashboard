@@ -767,21 +767,44 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 		return
 	}
 
-	// Pre-flight: if the start command begins with a relative path (./foo),
-	// verify the binary exists and is executable before handing off to sh.
-	// This produces a clear error instead of the cryptic "not found" that sh
-	// emits when the file is missing or its ELF interpreter is absent.
-	if firstToken := strings.Fields(startCmd)[0]; strings.HasPrefix(firstToken, "./") {
-		binPath := filepath.Join(installDir, firstToken[2:])
+	// Pre-flight: re-apply exec_bins chmod from the adapter manifest.
+	// This heals servers that were deployed before the exec_bins fix was in place.
+	if hasManifest && len(manifest.SteamCMD.ExecBins) > 0 {
+		for _, rel := range manifest.SteamCMD.ExecBins {
+			target := filepath.Join(installDir, rel)
+			if fi, err := os.Stat(target); err == nil && fi.Mode()&0o111 == 0 {
+				b.logger.Warn("exec_bin missing execute bit at start time, applying chmod +x",
+					zap.String("id", id), zap.String("file", target))
+				_ = os.Chmod(target, fi.Mode()|0o111)
+			}
+		}
+	}
+
+	// Pre-flight: scan the full start command for the first ./binary token.
+	// Start commands are often compound shell expressions such as:
+	//   export LD_LIBRARY_PATH=./linux64:...; ./valheim_server.x86_64 -args
+	// Checking only index-0 would land on "export", not the actual binary.
+	// Scanning all whitespace tokens (skipping variable assignments) finds it.
+	var dotSlashBin string
+	for _, tok := range strings.Fields(startCmd) {
+		if strings.Contains(tok, "=") {
+			continue // skip LD_LIBRARY_PATH=./linux64:... style tokens
+		}
+		if strings.HasPrefix(tok, "./") {
+			dotSlashBin = tok
+			break
+		}
+	}
+	if dotSlashBin != "" {
+		binPath := filepath.Join(installDir, dotSlashBin[2:])
 		if fi, statErr := os.Stat(binPath); os.IsNotExist(statErr) {
-			msg := fmt.Sprintf("binary %q not found in install directory %q — re-run Deploy to install the server files", firstToken, installDir)
+			msg := fmt.Sprintf("binary %q not found in install directory %q — re-run Deploy to install the server files", dotSlashBin, installDir)
 			b.logger.Error("Pre-start check failed: binary missing",
 				zap.String("id", id), zap.String("binary", binPath))
 			setState(StateError, 0)
 			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(msg), time.Now().Unix()))
 			return
 		} else if statErr == nil && fi.Mode()&0o111 == 0 {
-			// File exists but has no execute bit — attempt to fix it on the fly.
 			b.logger.Warn("Binary missing execute bit, applying chmod +x",
 				zap.String("id", id), zap.String("binary", binPath))
 			_ = os.Chmod(binPath, fi.Mode()|0o111)
