@@ -19,7 +19,7 @@
 | **Security** | TLS everywhere, AES-256 secrets at rest, TOTP 2FA, OIDC/SAML/OAuth2 |
 | **Audit** | Signed audit trail for all operations; filterable by lifecycle events vs. auth events |
 | **CVE/SBOM** | CycloneDX SBOM, Trivy/Grype scanning, OSV/NVD queries, evidence model |
-| **Networking** | Port mapping UI, reachability probe, UPnP/NAT, firewall automation |
+| **Networking** | Port mapping UI, reachability probe, UPnP/NAT, UFW firewall management (add/delete rules, enable/disable, live status) |
 | **Observability** | Prometheus metrics, Grafana dashboards, structured JSON logs |
 | **Scale** | Docker Compose (single-host) or Kubernetes/k3s via Helm + CRD operator |
 | **Self-Update** | One-click update from the UI (Settings → Updates) or `gdash update`; choose `main` (stable) or `dev` branch |
@@ -44,6 +44,14 @@ curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/m
 curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/install.sh | GDASH_NONINTERACTIVE=1 GDASH_ADMIN_PASS=MySecurePass123 bash
 ```
 
+**Adding a worker node to a cluster?** Install in node-only mode — daemon only, no UI or nginx:
+
+```bash
+bash install.sh --mode=node
+```
+
+The installer will print a `gdash node add` command to run on the master machine to register the worker.
+
 After install, open `https://<your-server-ip>` in a browser. Your browser will show a self-signed certificate warning — click **Advanced → Proceed**.
 
 > **What it installs:**
@@ -54,6 +62,15 @@ After install, open `https://<your-server-ip>` in a browser. Your browser will s
 > - **Docker CE** (required — used for SteamCMD installs and Docker-native game servers)
 > - Java 21 LTS (required for Minecraft and JVM-based servers)
 > - k3s Kubernetes if selected during setup
+
+#### Installer Modes
+
+| Mode | Command | Description |
+|---|---|---|
+| **Full stack** (default) | `bash install.sh` | Daemon + UI + nginx + all dependencies |
+| **Docker Compose** | `bash install.sh --mode=docker` | Run everything inside Docker containers |
+| **Kubernetes** | `bash install.sh --mode=k8s` | Deploy via Helm + k3s |
+| **Node only** | `bash install.sh --mode=node` | Daemon only (no UI/nginx) — for worker nodes in a cluster |
 
 #### Interactive Setup Wizard
 
@@ -93,6 +110,9 @@ GDASH_INSTALL_DOCKER=true \
 | `GDASH_BACKUP_RETAIN_DAYS` | `30` | Days to keep old backups |
 | `GDASH_INSTALL_DOCKER` | `true` | Install Docker CE (required; set `false` only if Docker is already installed) |
 | `GDASH_INSTALL_K8S` | `false` | Install k3s Kubernetes (`true`/`false`) |
+| `GDASH_MODE` | `docker` | Install mode: `docker`, `k8s`, or `node` |
+| `GDASH_SKIP_UFW` | `false` | Set `true` to skip UFW firewall configuration |
+| `GDASH_UFW_EXTRA_SSH_SUBNETS` | — | Comma-separated extra CIDRs to allow SSH from (e.g. `10.0.0.0/8,172.16.0.0/12`) |
 
 ---
 
@@ -232,8 +252,50 @@ games-dashboard/
 - RBAC: `admin`, `operator`, `modder`, `viewer` roles
 - Signed audit trail for all operations
 - Signed release artifacts via cosign / Sigstore
+- UFW firewall auto-configured by installer; SSH restricted to local subnets only
 
 See [SECURITY.md](docs/SECURITY.md) for the threat model and vulnerability disclosure.
+
+---
+
+## 🔥 Firewall Management
+
+The installer automatically configures UFW on the host machine:
+
+- **Incoming traffic is denied by default**
+- **SSH (port 22)** is allowed only from the subnets the machine is attached to (auto-detected at install time). This keeps SSH off the public internet by default.
+- **Daemon API (port 8443)** is open for the dashboard
+- **HTTP/HTTPS (80/443)** are opened only in `docker` and `k8s` install modes
+
+After install, firewall rules can be managed directly from the **Ports** page in the dashboard — no SSH required:
+
+| Action | How |
+|---|---|
+| View all UFW rules | Ports page → Firewall Rules panel |
+| Add a rule (open a port) | Enter port, protocol (TCP/UDP), optional source CIDR, and a label |
+| Delete a rule | Click the trash icon on any row |
+| Enable / disable UFW | Toggle at the top of the Firewall Rules panel |
+
+The panel polls the daemon every 15 seconds and stays live. IPv6 mirror rules are hidden by default (they're managed automatically alongside their IPv4 counterpart).
+
+> **Note:** The `ufw` binary must be installed on the host. If UFW is not present, the panel shows an "unavailable" state instead of erroring.
+
+### Cluster Node Join Tokens
+
+When cluster mode is enabled, new worker nodes must present a **join token** to register. Tokens are single-use and expire after 24 hours.
+
+```bash
+# On the master — generate a join token
+gdash node token
+
+# Output:
+#   Token: a3f9...
+#   Expires: 24h
+#   Run on the new node:
+#     gdash node add <hostname> https://<address>:8443 --token a3f9...
+```
+
+Tokens survive daemon restarts and are stored in `{data_dir}/nodes.json` alongside registered node state.
 
 ---
 
@@ -338,7 +400,8 @@ gdash sbom cve-report
 
 # Nodes (cluster mode)
 gdash node list
-gdash node add worker-01 https://worker-01:8443
+gdash node add worker-01 https://worker-01:8443 --token <join-token>
+gdash node token          # generate a single-use join token (24h expiry)
 
 # Updates
 gdash update                    # update to latest stable (main)
@@ -367,18 +430,22 @@ What's coming next — loosely ordered by impact. See [ROADMAP.md](docs/ROADMAP.
 | **Per-server logs tab** | Logs tab on each server detail page streams lifecycle output before and after the server process starts |
 | **Subsystem log filtering** | Global Logs page Events tab filters by subsystem prefix (server, backup, mod, auth, etc.) |
 | **Self-update** | Settings → Updates tab + `gdash update`; git pull, rebuild daemon + UI, restart — choose `main` or `dev` branch |
+| **Plain-English errors** | All daemon/API/cluster error messages rewritten to be human-readable and actionable (no raw Go traces) |
+| **Node-install mode** | `--mode=node` installer flag deploys daemon-only on a worker machine and outputs the `gdash node add` registration command |
+| **UFW firewall management** | Installer auto-configures UFW (deny-by-default, SSH restricted to local subnets); full rule CRUD in the Ports page GUI |
+| **GUI firewall rule editor** | Ports page → Firewall Rules panel: view rules, add (port/proto/CIDR/comment), delete, enable/disable UFW — no SSH needed |
+| **Cluster join tokens** | Single-use 24 h tokens required to register worker nodes; persisted across daemon restarts; `gdash node token` to generate |
+| **Valheim binary fix** | Post-deploy `exec_bins` chmod step + pre-start binary verification — fixes "not found" on SteamCMD-installed game binaries |
 
 ### Near-term
 | Feature | Description |
 |---|---|
 | **Automatic crash recovery** | Auto-restart on unexpected exit, configurable retries + back-off |
-| **Plain-English errors** | Human-readable error messages instead of raw Go stack traces |
-| **Node-install mode** | `--mode=node` installer flag for pure worker nodes |
+| **In-UI config file editor** | Edit `server.properties`, launch scripts, etc. without SSH |
 
 ### Medium-term
 | Feature | Description |
 |---|---|
-| In-UI config file editor | Edit `server.properties`, launch scripts, etc. without SSH |
 | In-UI file browser | Browse, upload, download, and delete files in the install directory |
 | "Share with Friends" panel | Public IP + port + game join string in one click |
 | Player count & player list | Live query via Source/Minecraft protocol every 60 s |
