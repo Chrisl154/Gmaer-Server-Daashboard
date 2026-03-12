@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./dontstarve_dedicated_server_nullrenderer_x64 -cluster ${CLUSTER_NAME:-MyDSTServer} -shard ${SHARD:-Master}"
 stop_command: "pkill -SIGTERM -f dontstarve_dedicated || true"

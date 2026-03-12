@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./srcds_run -game dota -console -usercon +sv_lan 0 +host_workshop_map 0 -port 27015"
 stop_command: "pkill -SIGTERM -f 'srcds_run.*dota' || true"

@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./srcds_run -game garrysmod -console -usercon -port 27015 +map gm_flatgrass +maxplayers 16 +gamemode sandbox"
 stop_command: "pkill -SIGTERM -f 'srcds_run.*garrysmod' || true"

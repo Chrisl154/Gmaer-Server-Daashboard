@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./srcds_run -game left4dead2 -console -usercon -port 27015 +map c1m1_hotel +maxplayers 4"
 stop_command: "pkill -SIGTERM -f 'srcds_run.*left4dead2' || true"

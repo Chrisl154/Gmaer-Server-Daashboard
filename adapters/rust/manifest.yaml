@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./RustDedicated -batchmode -nographics +server.port ${SERVER_PORT:-28015} +server.queryport ${QUERY_PORT:-28016} +server.level \"Procedural Map\" +server.seed ${WORLD_SEED:-12345} +server.worldsize ${WORLD_SIZE:-3000} +server.maxplayers ${MAX_PLAYERS:-100} +server.hostname \"${SERVER_NAME:-My Rust Server}\" +server.description \"${SERVER_DESCRIPTION}\" +server.url \"\" +server.headerimage \"\" +rcon.port ${RCON_PORT:-28016} +rcon.password \"${RCON_PASSWORD:-changeme}\" +rcon.web 1"
 stop_command: "pkill -SIGTERM -f RustDedicated || true"

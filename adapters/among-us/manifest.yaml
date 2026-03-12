@@ -7,6 +7,7 @@ version: "1.0.0"
 deploy_methods:
   - manual
   - custom
+  - docker
 
 start_command: "./Impostor.Server"
 stop_command: "pkill -SIGTERM -f Impostor.Server || true"

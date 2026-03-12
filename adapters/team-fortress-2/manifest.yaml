@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./srcds_run -game tf -console -usercon -port 27015 -tv_port 27020 +map cp_badlands +maxplayers 24 -autoupdate"
 stop_command: "pkill -SIGTERM -f 'srcds.*tf' || true"

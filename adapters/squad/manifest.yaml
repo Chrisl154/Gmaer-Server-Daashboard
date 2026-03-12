@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./SquadGameServer.sh Port=${SERVER_PORT:-7787} QueryPort=${QUERY_PORT:-27165} FIXEDMAXPLAYERS=${MAX_PLAYERS:-80} RANDOM=NONE -log"
 stop_command: "pkill -SIGTERM -f SquadGameServer || true"

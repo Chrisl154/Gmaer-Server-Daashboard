@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./start-server.sh -servername ${SERVER_NAME:-MyPZServer} -adminpassword ${ADMIN_PASSWORD:-changeme} -port ${SERVER_PORT:-16261} -udpport ${UDP_PORT:-16262}"
 stop_command: "pkill -SIGTERM -f ProjectZomboid || true"

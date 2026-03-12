@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Games Dashboard — Production Installer
+# Games Dashboard — Production Installer (TUI)
 # Deploys the daemon + UI and leaves everything running.
 #
 # Usage (Ubuntu 22.04/24.04):
@@ -9,20 +9,20 @@
 #   Or locally:
 #   bash install.sh
 #
+# Non-interactive (CI/scripted):
+#   GDASH_NONINTERACTIVE=1 bash install.sh
+#
 # After install, open https://<your-server-ip> in a browser.
 # Default login: admin / (shown at end of install)
 # =============================================================================
 set -euo pipefail
 
-REPO_URL="https://github.com/Chrisl154/Gmaer-Server-Daashboard.git"
-INSTALL_DIR="/opt/gdash"
-DAEMON_PORT="8443"
-UI_PORT="443"
+# ── Tool versions ─────────────────────────────────────────────────────────────
 GO_VERSION="1.22.4"
-# UI talks to nginx (443), nginx proxies /api/* to daemon internally.
-# Do NOT point UI directly at daemon port — it binds to 127.0.0.1 only.
 GO_ARCH="linux-amd64"
 NODE_VERSION="20"
+
+# ── Runtime paths ─────────────────────────────────────────────────────────────
 LOCAL_BIN="$HOME/.local/bin"
 LOCAL_GO="$HOME/.local/go"
 NVM_DIR="$HOME/.nvm"
@@ -34,6 +34,7 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 log()     { echo -e "${CYAN}[$(date '+%H:%M:%S')]${NC} $*"; }
 ok()      { echo -e "  ${GREEN}✓${NC} $*"; }
 fail()    { echo -e "  ${RED}✗ ERROR:${NC} $*"; exit 1; }
+warn()    { echo -e "  ${YELLOW}⚠${NC}  $*"; }
 info()    { echo -e "  ${YELLOW}ℹ${NC}  $*"; }
 section() { echo -e "\n${BOLD}══ $* ══${NC}"; }
 
@@ -55,7 +56,6 @@ fi
 
 # ── Detect server IP ──────────────────────────────────────────────────────────
 detect_ip() {
-  # Try multiple methods, prefer non-loopback
   local ip=""
   ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}') || true
   if [[ -z "$ip" ]]; then
@@ -67,20 +67,312 @@ detect_ip() {
   echo "$ip"
 }
 
-SERVER_IP="${GDASH_HOST:-$(detect_ip)}"
+DETECTED_IP=$(detect_ip)
 
-# ── Hostname prompt ───────────────────────────────────────────────────────────
-echo ""
-echo -e "  ${BOLD}Detected server IP:${NC} ${SERVER_IP}"
-if [[ -t 0 && -z "${GDASH_HOSTNAME:-}" ]]; then
-  read -r -p "  Enter a hostname for TLS (e.g. dashboard.example.com) or press Enter to use IP: " HOSTNAME_INPUT
-  echo ""
-else
-  HOSTNAME_INPUT=""
+# ── Generate a secure default admin password ──────────────────────────────────
+gen_password() {
+  python3 -c "
+import secrets, string
+chars = string.ascii_letters + string.digits + '!@#%^&*'
+print(''.join(secrets.choice(chars) for _ in range(16)))
+" 2>/dev/null || openssl rand -base64 12 | tr -d '/+='
+}
+
+# =============================================================================
+# TUI configuration — whiptail-based, with readline fallback
+# =============================================================================
+
+# Check whether we can show a TUI (terminal attached, whiptail available)
+USE_TUI=false
+if [[ -z "${GDASH_NONINTERACTIVE:-}" ]] && [[ -t 0 ]] && [[ -t 2 ]] && command -v whiptail &>/dev/null; then
+  USE_TUI=true
+elif [[ -z "${GDASH_NONINTERACTIVE:-}" ]] && [[ -t 0 ]] && [[ -t 2 ]] && command -v dialog &>/dev/null; then
+  # use dialog as whiptail-compatible replacement
+  whiptail() { dialog "$@"; }
+  USE_TUI=true
 fi
-SERVER_HOSTNAME="${GDASH_HOSTNAME:-${HOSTNAME_INPUT:-}}"
 
-# Build TLS SAN and public-facing URL
+# ─── Whiptail helpers ─────────────────────────────────────────────────────────
+# wt_input VAR_NAME TITLE PROMPT DEFAULT
+wt_input() {
+  local _var="$1" _title="$2" _prompt="$3" _default="$4"
+  local _result
+  _result=$(whiptail --title "$_title" \
+    --inputbox "$_prompt" 10 70 "$_default" 3>&1 1>&2 2>&3) || true
+  # If user hit Cancel, keep the default
+  printf -v "$_var" '%s' "${_result:-$_default}"
+}
+
+# wt_password VAR_NAME TITLE PROMPT
+wt_password() {
+  local _var="$1" _title="$2" _prompt="$3"
+  local _result _confirm
+  while true; do
+    _result=$(whiptail --title "$_title" \
+      --passwordbox "$_prompt" 10 60 "" 3>&1 1>&2 2>&3) || true
+    [[ -z "$_result" ]] && break  # empty = keep auto-generated
+    _confirm=$(whiptail --title "$_title" \
+      --passwordbox "Confirm password:" 10 60 "" 3>&1 1>&2 2>&3) || true
+    if [[ "$_result" == "$_confirm" ]]; then
+      break
+    fi
+    whiptail --title "$_title" --msgbox "Passwords do not match. Please try again." 8 50
+  done
+  printf -v "$_var" '%s' "${_result}"
+}
+
+# wt_yesno TITLE PROMPT  →  returns 0 for yes, 1 for no
+wt_yesno() {
+  whiptail --title "$1" --yesno "$2" 10 60 3>&1 1>&2 2>&3
+}
+
+# ─── Readline fallback helpers ────────────────────────────────────────────────
+rl_input() {
+  local _var="$1" _prompt="$2" _default="$3"
+  local _result
+  read -r -p "  $_prompt [${_default}]: " _result
+  printf -v "$_var" '%s' "${_result:-$_default}"
+}
+
+rl_password() {
+  local _var="$1" _prompt="$2"
+  local _result _confirm
+  while true; do
+    read -r -s -p "  $_prompt (leave blank to auto-generate): " _result; echo
+    [[ -z "$_result" ]] && break
+    read -r -s -p "  Confirm password: " _confirm; echo
+    if [[ "$_result" == "$_confirm" ]]; then
+      break
+    fi
+    echo "  Passwords do not match. Please try again."
+  done
+  printf -v "$_var" '%s' "${_result}"
+}
+
+# =============================================================================
+# Main configuration collection
+# =============================================================================
+
+collect_config_tui() {
+  local _auto_pass
+  _auto_pass=$(gen_password)
+
+  # ── Welcome ────────────────────────────────────────────────────────────────
+  whiptail --title "Games Dashboard Installer" \
+    --msgbox "\nWelcome to the Games Dashboard installer!\n\nThe next screens will let you configure all settings.\nPress Enter / OK to accept a default, or type a new value.\n\nTip: run with GDASH_NONINTERACTIVE=1 to skip this wizard." \
+    16 68
+
+  # ── Page 1: Network ────────────────────────────────────────────────────────
+  wt_input INSTALL_DIR \
+    "Network & Paths (1/4)" \
+    "Install directory (daemon, UI, certs, data will all live here):" \
+    "/opt/gdash"
+
+  wt_input SERVER_IP \
+    "Network & Paths (1/4)" \
+    "Server IP address (used for TLS SAN and API URL):" \
+    "$DETECTED_IP"
+
+  wt_input SERVER_HOSTNAME \
+    "Network & Paths (1/4)" \
+    "Optional hostname / FQDN for TLS (e.g. dashboard.example.com)\nLeave blank to use the IP address only:" \
+    ""
+
+  wt_input DAEMON_PORT \
+    "Network & Paths (1/4)" \
+    "Daemon port (daemon listens here; nginx proxies to it internally):" \
+    "8443"
+
+  wt_input UI_PORT \
+    "Network & Paths (1/4)" \
+    "HTTPS port that nginx will serve the dashboard on:" \
+    "443"
+
+  # ── Page 2: Admin credentials ──────────────────────────────────────────────
+  wt_input ADMIN_USER \
+    "Admin Account (2/4)" \
+    "Admin username:" \
+    "admin"
+
+  # Show the auto-generated password; let user replace it or leave blank to keep it
+  whiptail --title "Admin Account (2/4)" \
+    --msgbox "An auto-generated password has been prepared:\n\n  $_auto_pass\n\nOn the next screen you may type your own password,\nor leave it blank to use the one shown above." \
+    12 62
+
+  local _custom_pass=""
+  wt_password _custom_pass "Admin Account (2/4)" "New admin password (blank = keep auto-generated):"
+  ADMIN_PASS="${_custom_pass:-$_auto_pass}"
+
+  # ── Page 3: Storage & Backup ───────────────────────────────────────────────
+  local _default_data="${INSTALL_DIR:-/opt/gdash}/data"
+  wt_input DATA_DIR \
+    "Storage & Backup (3/5)" \
+    "Data directory (server files, world saves, logs):" \
+    "$_default_data"
+
+  wt_input BACKUP_SCHEDULE \
+    "Storage & Backup (3/5)" \
+    "Default backup schedule (cron syntax):" \
+    "0 3 * * *"
+
+  wt_input BACKUP_RETAIN_DAYS \
+    "Storage & Backup (3/5)" \
+    "Backup retention (days before old backups are deleted):" \
+    "30"
+
+  # ── Page 4: Container runtimes ────────────────────────────────────────────
+  INSTALL_DOCKER=false
+  INSTALL_K8S=false
+
+  if wt_yesno "Container Runtimes (4/5)" \
+      "Install Docker CE?\n\nRequired to run game servers using the Docker deploy method.\nDocker images are available for Valheim, Minecraft, CS2, Rust,\nand 15 other supported games.\n\n(Recommended: Yes)"; then
+    INSTALL_DOCKER=true
+  fi
+
+  if $INSTALL_DOCKER; then
+    if wt_yesno "Container Runtimes (4/5)" \
+        "Install Kubernetes (k3s — lightweight single-node K8s)?\n\nOptional. Only needed if you want to run game servers as\nKubernetes workloads or plan to scale across multiple nodes.\n\nMost users should say No here."; then
+      INSTALL_K8S=true
+    fi
+  fi
+
+  # ── Page 5: Review & Confirm ──────────────────────────────────────────────
+  local _hostname_line="${SERVER_HOSTNAME:-  (none — using IP only)}"
+  local _docker_line="No  (Docker deploy method will be unavailable)"
+  local _k8s_line="No"
+  $INSTALL_DOCKER && _docker_line="Yes — Docker CE"
+  $INSTALL_K8S   && _k8s_line="Yes — k3s (lightweight Kubernetes)"
+  local _summary
+  _summary=$(printf '%s\n' \
+    "" \
+    "  Install dir   : ${INSTALL_DIR}" \
+    "  Data dir      : ${DATA_DIR}" \
+    "" \
+    "  Server IP     : ${SERVER_IP}" \
+    "  Hostname      : ${_hostname_line}" \
+    "  Daemon port   : ${DAEMON_PORT}  (internal, nginx proxies to it)" \
+    "  HTTPS port    : ${UI_PORT}" \
+    "" \
+    "  Admin user    : ${ADMIN_USER}" \
+    "  Admin pass    : ${ADMIN_PASS}" \
+    "" \
+    "  Backup cron   : ${BACKUP_SCHEDULE}" \
+    "  Retain days   : ${BACKUP_RETAIN_DAYS}" \
+    "" \
+    "  Docker        : ${_docker_line}" \
+    "  Kubernetes    : ${_k8s_line}" \
+    "")
+
+  if ! whiptail --title "Review & Confirm (5/5)" \
+      --yesno "$_summary\n\nProceed with installation?" \
+      32 74; then
+    echo ""
+    fail "Installation cancelled by user."
+  fi
+}
+
+collect_config_readline() {
+  local _auto_pass
+  _auto_pass=$(gen_password)
+
+  echo ""
+  echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo -e "  Games Dashboard — Configuration"
+  echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "  Press Enter to accept each default shown in [brackets]."
+  echo ""
+
+  echo -e "  ${BOLD}── Network & Paths ──────────────────────────────${NC}"
+  rl_input INSTALL_DIR   "Install directory"    "/opt/gdash"
+  rl_input SERVER_IP     "Server IP address"    "$DETECTED_IP"
+  rl_input SERVER_HOSTNAME "Hostname / FQDN (blank = use IP only)" ""
+  rl_input DAEMON_PORT   "Daemon port"          "8443"
+  rl_input UI_PORT       "HTTPS (nginx) port"   "443"
+
+  echo ""
+  echo -e "  ${BOLD}── Admin Account ────────────────────────────────${NC}"
+  rl_input ADMIN_USER "Admin username" "admin"
+  echo -e "  Auto-generated password: ${BOLD}${_auto_pass}${NC}"
+  rl_password _custom_pass "Admin password"
+  ADMIN_PASS="${_custom_pass:-$_auto_pass}"
+
+  echo ""
+  echo -e "  ${BOLD}── Storage & Backup ─────────────────────────────${NC}"
+  local _default_data="${INSTALL_DIR}/data"
+  rl_input DATA_DIR          "Data directory"          "$_default_data"
+  rl_input BACKUP_SCHEDULE   "Backup cron schedule"    "0 3 * * *"
+  rl_input BACKUP_RETAIN_DAYS "Backup retention (days)" "30"
+
+  echo ""
+  echo -e "  ${BOLD}── Container Runtimes ───────────────────────────${NC}"
+  echo -e "  Docker enables Docker-based game servers (Valheim, Minecraft, CS2, Rust, +15 more)."
+  INSTALL_DOCKER=false
+  INSTALL_K8S=false
+  read -r -p "  Install Docker CE? [Y/n]: " _docker_yn
+  case "${_docker_yn,,}" in
+    n|no) ;;
+    *) INSTALL_DOCKER=true ;;
+  esac
+  if $INSTALL_DOCKER; then
+    read -r -p "  Install Kubernetes / k3s? [y/N]: " _k8s_yn
+    case "${_k8s_yn,,}" in
+      y|yes) INSTALL_K8S=true ;;
+    esac
+  fi
+
+  echo ""
+  echo -e "  ${BOLD}── Summary ──────────────────────────────────────${NC}"
+  echo -e "  Install dir   : ${INSTALL_DIR}"
+  echo -e "  Data dir      : ${DATA_DIR}"
+  echo -e "  Server IP     : ${SERVER_IP}"
+  echo -e "  Hostname      : ${SERVER_HOSTNAME:-(none — using IP only)}"
+  echo -e "  Daemon port   : ${DAEMON_PORT}"
+  echo -e "  HTTPS port    : ${UI_PORT}"
+  echo -e "  Admin user    : ${ADMIN_USER}"
+  echo -e "  Admin pass    : ${ADMIN_PASS}"
+  echo -e "  Backup cron   : ${BACKUP_SCHEDULE}"
+  echo -e "  Retain days   : ${BACKUP_RETAIN_DAYS}"
+  echo -e "  Docker        : $($INSTALL_DOCKER && echo 'Yes' || echo 'No')"
+  echo -e "  Kubernetes    : $($INSTALL_K8S && echo 'Yes (k3s)' || echo 'No')"
+  echo ""
+  read -r -p "  Proceed with installation? [Y/n]: " _confirm
+  case "${_confirm,,}" in
+    n|no) fail "Installation cancelled by user." ;;
+  esac
+}
+
+collect_config_noninteractive() {
+  INSTALL_DIR="${GDASH_INSTALL_DIR:-/opt/gdash}"
+  SERVER_IP="${GDASH_HOST:-$DETECTED_IP}"
+  SERVER_HOSTNAME="${GDASH_HOSTNAME:-}"
+  DAEMON_PORT="${GDASH_DAEMON_PORT:-8443}"
+  UI_PORT="${GDASH_UI_PORT:-443}"
+  ADMIN_USER="${GDASH_ADMIN_USER:-admin}"
+  ADMIN_PASS="${GDASH_ADMIN_PASS:-$(gen_password)}"
+  DATA_DIR="${GDASH_DATA_DIR:-${INSTALL_DIR}/data}"
+  BACKUP_SCHEDULE="${GDASH_BACKUP_SCHEDULE:-0 3 * * *}"
+  BACKUP_RETAIN_DAYS="${GDASH_BACKUP_RETAIN_DAYS:-30}"
+  INSTALL_DOCKER="${GDASH_INSTALL_DOCKER:-false}"
+  INSTALL_K8S="${GDASH_INSTALL_K8S:-false}"
+
+  echo ""
+  echo -e "${BOLD}  Non-interactive mode — using defaults / environment overrides${NC}"
+  echo -e "  Set GDASH_INSTALL_DIR, GDASH_HOST, GDASH_HOSTNAME, GDASH_ADMIN_PASS, etc. to customise."
+  echo ""
+}
+
+# ── Run config collection ─────────────────────────────────────────────────────
+if [[ -n "${GDASH_NONINTERACTIVE:-}" ]]; then
+  collect_config_noninteractive
+elif $USE_TUI; then
+  collect_config_tui
+else
+  collect_config_readline
+fi
+
+# ── Derived values ─────────────────────────────────────────────────────────────
+REPO_URL="https://github.com/Chrisl154/Gmaer-Server-Daashboard.git"
+
 if [[ -n "$SERVER_HOSTNAME" ]]; then
   TLS_CN="$SERVER_HOSTNAME"
   TLS_SAN="IP:${SERVER_IP},DNS:${SERVER_HOSTNAME},DNS:localhost,IP:127.0.0.1"
@@ -93,7 +385,7 @@ else
   log "Using IP: $SERVER_IP (no hostname)"
 fi
 
-DAEMON_URL="https://${SERVER_IP}:${DAEMON_PORT}"   # internal only (always IP)
+DAEMON_URL="https://${SERVER_IP}:${DAEMON_PORT}"  # internal only
 
 # =============================================================================
 section "Step 0: Install System Requirements"
@@ -124,13 +416,10 @@ done
 ok "System packages ready"
 
 # ── SteamCMD ──────────────────────────────────────────────────────────────────
-# Required for deploying game servers (Valheim, CS2, etc.) via Steam.
 if ! command -v steamcmd &>/dev/null; then
   log "Installing SteamCMD..."
-  # Add the multiverse repo and i386 arch required by steamcmd
   $SUDO dpkg --add-architecture i386 >/dev/null 2>&1
   $SUDO apt-get update -qq >/dev/null 2>&1
-  # Accept Steam EULA non-interactively
   echo steam steam/question select "I AGREE" | $SUDO debconf-set-selections 2>/dev/null || true
   echo steam steam/license note ''           | $SUDO debconf-set-selections 2>/dev/null || true
   DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq steamcmd >/dev/null 2>&1 || {
@@ -145,6 +434,53 @@ if ! command -v steamcmd &>/dev/null; then
   ok "SteamCMD installed"
 else
   ok "SteamCMD: $(command -v steamcmd)"
+fi
+
+# ── Docker CE ─────────────────────────────────────────────────────────────────
+if [[ "${INSTALL_DOCKER}" == "true" ]]; then
+  if command -v docker &>/dev/null; then
+    ok "Docker: $(docker --version 2>/dev/null | head -1)"
+  else
+    log "Installing Docker CE..."
+    # Official Docker install script (handles all Ubuntu/Debian variants)
+    download "https://get.docker.com" /tmp/get-docker.sh
+    $SUDO sh /tmp/get-docker.sh >/dev/null 2>&1 || {
+      # Fallback: manual apt-based install
+      pkg_install apt-transport-https ca-certificates gnupg lsb-release
+      download "https://download.docker.com/linux/ubuntu/gpg" /tmp/docker.gpg
+      $SUDO mkdir -p /etc/apt/keyrings
+      cat /tmp/docker.gpg | $SUDO gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+        | $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null
+      $SUDO apt-get update -qq >/dev/null 2>&1
+      pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    }
+    rm -f /tmp/get-docker.sh /tmp/docker.gpg
+    $SUDO systemctl enable docker >/dev/null 2>&1
+    $SUDO systemctl start docker >/dev/null 2>&1
+    # Add current user to docker group so the daemon can run containers
+    $SUDO usermod -aG docker "$USER" 2>/dev/null || true
+    ok "Docker CE installed ($(docker --version 2>/dev/null | head -1))"
+    info "You may need to log out and back in for the docker group to take effect."
+  fi
+else
+  info "Skipping Docker (not selected). Docker deploy method will not be available."
+fi
+
+# ── k3s (lightweight Kubernetes) ──────────────────────────────────────────────
+if [[ "${INSTALL_K8S}" == "true" ]]; then
+  if command -v k3s &>/dev/null; then
+    ok "k3s: $(k3s --version 2>/dev/null | head -1)"
+  else
+    log "Installing k3s (lightweight Kubernetes)..."
+    download "https://get.k3s.io" /tmp/k3s-install.sh
+    INSTALL_K3S_EXEC="server --disable traefik" sh /tmp/k3s-install.sh >/dev/null 2>&1 || \
+      warn "k3s install encountered an error — check logs with: journalctl -u k3s"
+    rm -f /tmp/k3s-install.sh
+    command -v k3s &>/dev/null && ok "k3s installed: $(k3s --version 2>/dev/null | head -1)" \
+      || warn "k3s not found after install"
+  fi
 fi
 
 # ── Java (required for Minecraft and other JVM-based game servers) ────────────
@@ -333,7 +669,6 @@ section "Step 5: Daemon Configuration"
 # =============================================================================
 
 CFG_DIR="$INSTALL_DIR/config"
-DATA_DIR="$INSTALL_DIR/data"
 SECRETS_DIR="$INSTALL_DIR/secrets"
 mkdir -p "$CFG_DIR" "$DATA_DIR" "$SECRETS_DIR"
 
@@ -364,8 +699,8 @@ storage:
 adapters:
   dir: "${REPO_DIR}/adapters"
 backup:
-  default_schedule: "0 3 * * *"
-  retain_days: 30
+  default_schedule: "${BACKUP_SCHEDULE}"
+  retain_days: ${BACKUP_RETAIN_DAYS}
   compression: "gzip"
 metrics:
   enabled: true
@@ -428,12 +763,11 @@ $SUDO tee /etc/nginx/sites-available/gdash > /dev/null <<NGINX
 server {
     listen 80;
     server_name _;
-    # Redirect HTTP to HTTPS
     return 301 https://\$host\$request_uri;
 }
 
 server {
-    listen 443 ssl;
+    listen ${UI_PORT} ssl;
     server_name ${SERVER_IP}${SERVER_HOSTNAME:+ $SERVER_HOSTNAME} _;
 
     ssl_certificate     ${TLS_DIR}/server.crt;
@@ -441,18 +775,13 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    # UI static files
     root ${INSTALL_DIR}/ui;
     index index.html;
 
-    # SPA fallback — all non-asset routes serve index.html
     location / {
         try_files \$uri \$uri/ /index.html;
     }
 
-    # API — proxy to daemon
-    # Daemon enforces TLS 1.3 minimum (Go tls.VersionTLS13) so nginx must
-    # connect with TLS 1.3; older versions are rejected with a handshake error.
     location /api/ {
         proxy_pass https://127.0.0.1:${DAEMON_PORT};
         proxy_ssl_verify       off;
@@ -463,31 +792,26 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 120s;
 
-        # WebSocket upgrade
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
     }
 
-    # Health + metrics — proxy to daemon
     location ~ ^/(healthz|metrics)$ {
         proxy_pass          https://127.0.0.1:${DAEMON_PORT};
         proxy_ssl_verify    off;
         proxy_ssl_protocols TLSv1.3;
     }
 
-    # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 }
 NGINX
 
-# Enable site, disable default
 $SUDO ln -sf /etc/nginx/sites-available/gdash /etc/nginx/sites-enabled/gdash
 $SUDO rm -f /etc/nginx/sites-enabled/default
 
-# Test and reload nginx
 if $SUDO nginx -t 2>/dev/null; then
   $SUDO systemctl enable nginx 2>/dev/null
   $SUDO systemctl restart nginx
@@ -501,7 +825,6 @@ fi
 section "Step 8: Bootstrap Admin Account"
 # =============================================================================
 
-# Wait for daemon to be fully ready
 log "Waiting for daemon API..."
 READY=false
 for i in $(seq 1 15); do
@@ -516,17 +839,10 @@ urllib.request.urlopen('https://127.0.0.1:${DAEMON_PORT}/healthz', context=ctx, 
 done
 [[ "$READY" == "true" ]] || fail "Daemon did not become ready in time."
 
-# Generate secure admin password
-ADMIN_PASS=$(python3 -c "
-import secrets, string
-chars = string.ascii_letters + string.digits + '!@#%^&*'
-print(''.join(secrets.choice(chars) for _ in range(16)))
-")
-
 BOOT_RESP=$(python3 - <<PYEOF
 import urllib.request, urllib.error, ssl, json
 ctx = ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
-data = json.dumps({"username": "admin", "password": "${ADMIN_PASS}"}).encode()
+data = json.dumps({"username": "${ADMIN_USER}", "password": "${ADMIN_PASS}"}).encode()
 req = urllib.request.Request(
     "https://127.0.0.1:${DAEMON_PORT}/api/v1/system/bootstrap",
     data=data, method="POST"
@@ -541,19 +857,18 @@ PYEOF
 )
 
 if echo "$BOOT_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'id' in d" 2>/dev/null; then
-  ok "Admin account created"
+  ok "Admin account created (username: ${ADMIN_USER})"
 else
-  # May already be bootstrapped (re-install)
   info "Bootstrap response: $BOOT_RESP"
   info "(If 'already initialized', the existing credentials remain valid)"
 fi
 
 # Allow UFW if present
 if command -v ufw &>/dev/null; then
-  $SUDO ufw allow 80/tcp  >/dev/null 2>&1 || true
-  $SUDO ufw allow 443/tcp >/dev/null 2>&1 || true
+  $SUDO ufw allow 80/tcp          >/dev/null 2>&1 || true
+  $SUDO ufw allow "${UI_PORT}/tcp" >/dev/null 2>&1 || true
   $SUDO ufw allow "${DAEMON_PORT}/tcp" >/dev/null 2>&1 || true
-  ok "Firewall rules added (80, 443, ${DAEMON_PORT})"
+  ok "Firewall rules added (80, ${UI_PORT}, ${DAEMON_PORT})"
 fi
 
 # =============================================================================
@@ -565,8 +880,8 @@ echo -e "${GREEN}${BOLD}  ╔═════════════════
 echo -e "  ║       Games Dashboard is ready!              ║"
 echo -e "  ╚══════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  ${BOLD}Dashboard URL:${NC}  ${UI_API_URL}  (port 443 via nginx)"
-echo -e "  ${BOLD}Username:${NC}       admin"
+echo -e "  ${BOLD}Dashboard URL:${NC}  ${UI_API_URL}  (port ${UI_PORT} via nginx)"
+echo -e "  ${BOLD}Username:${NC}       ${ADMIN_USER}"
 echo -e "  ${BOLD}Password:${NC}       ${ADMIN_PASS}"
 echo ""
 echo -e "  ${YELLOW}⚠  TLS note:${NC} The certificate is self-signed."

@@ -7,6 +7,7 @@ version: "1.0.0"
 deploy_methods:
   - manual
   - steamcmd
+  - docker
 
 start_command: "./factorio --start-server /data/saves/${SAVE_NAME:-world.zip} --server-settings /data/server-settings.json --port ${SERVER_PORT:-34197} --rcon-port ${RCON_PORT:-27015} --rcon-password ${RCON_PASSWORD:-changeme}"
 stop_command: "pkill -SIGTERM -f factorio || true"

@@ -55,6 +55,34 @@ export const ADAPTER_NAMES: Record<string, string> = {
   'conan-exiles':        'Conan Exiles',
 };
 
+// Which deploy methods each adapter supports (mirrors manifest.yaml deploy_methods)
+export const ADAPTER_DEPLOY_METHODS: Record<string, string[]> = {
+  'valheim':               ['steamcmd', 'manual', 'docker'],
+  'minecraft':             ['manual', 'docker'],
+  'satisfactory':          ['steamcmd', 'manual'],
+  'palworld':              ['steamcmd', 'manual'],
+  'eco':                   ['steamcmd', 'manual'],
+  'enshrouded':            ['steamcmd', 'manual'],
+  'riftbreaker':           ['manual'],
+  'among-us':              ['manual', 'docker'],
+  'dota2':                 ['steamcmd', 'docker'],
+  'counter-strike-2':      ['steamcmd', 'docker'],
+  'dayz':                  ['steamcmd', 'docker'],
+  'terraria':              ['manual', 'docker'],
+  'rust':                  ['steamcmd', 'docker'],
+  'team-fortress-2':       ['steamcmd', 'docker'],
+  'garrys-mod':            ['steamcmd', 'docker'],
+  'ark-survival-ascended': ['steamcmd', 'docker'],
+  'dont-starve-together':  ['steamcmd', 'docker'],
+  'project-zomboid':       ['steamcmd', 'docker'],
+  '7-days-to-die':         ['steamcmd', 'docker'],
+  'left-4-dead-2':         ['steamcmd', 'docker'],
+  'factorio':              ['manual', 'steamcmd', 'docker'],
+  'risk-of-rain-2':        ['steamcmd', 'docker'],
+  'squad':                 ['steamcmd', 'docker'],
+  'conan-exiles':          ['steamcmd', 'docker'],
+};
+
 export const ADAPTER_COLORS: Record<string, string> = {
   valheim:               '#4a90d9',
   minecraft:             '#5c8a3c',

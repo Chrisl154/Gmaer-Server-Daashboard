@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "./ConanSandboxServer.sh -log -MaxPlayers=${MAX_PLAYERS:-40} Port=${SERVER_PORT:-7777} QueryPort=${QUERY_PORT:-27015} RCONPort=${RCON_PORT:-25575} RCONEnabled=true RCONPassword=\"${RCON_PASSWORD:-changeme}\""
 stop_command: "pkill -SIGTERM -f ConanSandbox || true"

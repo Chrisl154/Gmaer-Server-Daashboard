@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "wine ./RiskOfRain2.exe -batchmode -nographics -port ${SERVER_PORT:-27015} +queryport ${QUERY_PORT:-27016} -dedicatedServer"
 stop_command: "pkill -SIGTERM -f RiskOfRain2.exe || true"

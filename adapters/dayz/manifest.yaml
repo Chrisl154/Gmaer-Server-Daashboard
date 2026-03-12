@@ -6,6 +6,7 @@ version: "1.0.0"
 
 deploy_methods:
   - steamcmd
+  - docker
 
 start_command: "export LD_LIBRARY_PATH={install_dir}/linux64:$LD_LIBRARY_PATH; mkdir -p {install_dir}/data/profiles {install_dir}/data/battleye; ./DayZServer -config={install_dir}/serverDZ.cfg -port=2302 -profiles={install_dir}/data/profiles -BEpath={install_dir}/data/battleye -dologs -adminlog -netlog -freezecheck"
 stop_command: "pkill -SIGTERM -f DayZServer || true"

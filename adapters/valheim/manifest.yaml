@@ -7,6 +7,7 @@ version: "1.0.0"
 deploy_methods:
   - steamcmd
   - manual
+  - docker
 
 start_command: "export templdpath=$LD_LIBRARY_PATH; export LD_LIBRARY_PATH=./linux64:$LD_LIBRARY_PATH; export SteamAppId=892970; ./valheim_server.x86_64 -name \"{name}\" -port 2456 -world \"Dedicated\" -password \"changeme\" -savedir {install_dir}/data/worlds -public 1"
 stop_command: "pkill -SIGTERM -f valheim_server.x86_64 || true"
