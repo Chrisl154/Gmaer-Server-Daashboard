@@ -84,9 +84,14 @@ print(''.join(secrets.choice(chars) for _ in range(16)))
 
 # Check whether we can show a TUI (terminal attached, whiptail available)
 USE_TUI=false
-if [[ -z "${GDASH_NONINTERACTIVE:-}" ]] && [[ -t 0 ]] && [[ -t 2 ]] && command -v whiptail &>/dev/null; then
+# Check if we have a real terminal to interact with.
+# When piped (curl | bash) stdin is the pipe, but /dev/tty still connects to the user's keyboard.
+HAVE_TTY=false
+[[ -r /dev/tty ]] && HAVE_TTY=true
+
+if [[ -z "${GDASH_NONINTERACTIVE:-}" ]] && $HAVE_TTY && command -v whiptail &>/dev/null; then
   USE_TUI=true
-elif [[ -z "${GDASH_NONINTERACTIVE:-}" ]] && [[ -t 0 ]] && [[ -t 2 ]] && command -v dialog &>/dev/null; then
+elif [[ -z "${GDASH_NONINTERACTIVE:-}" ]] && $HAVE_TTY && command -v dialog &>/dev/null; then
   # use dialog as whiptail-compatible replacement
   whiptail() { dialog "$@"; }
   USE_TUI=true
@@ -127,23 +132,24 @@ wt_yesno() {
 }
 
 # ─── Readline fallback helpers ────────────────────────────────────────────────
+# All reads use /dev/tty so they work even when stdin is a pipe (curl | bash).
 rl_input() {
   local _var="$1" _prompt="$2" _default="$3"
-  local _result
-  read -r -p "  $_prompt [${_default}]: " _result
+  local _result=""
+  IFS= read -r -p "  $_prompt [${_default}]: " _result </dev/tty 2>/dev/null || true
   printf -v "$_var" '%s' "${_result:-$_default}"
 }
 
 rl_password() {
   local _var="$1" _prompt="$2"
-  local _result _confirm
+  local _result="" _confirm=""
   while true; do
-    read -r -s -p "  $_prompt (leave blank to auto-generate): " _result; echo
+    IFS= read -r -s -p "  $_prompt (blank = auto-generate): " _result </dev/tty 2>/dev/null || true
+    echo
     [[ -z "$_result" ]] && break
-    read -r -s -p "  Confirm password: " _confirm; echo
-    if [[ "$_result" == "$_confirm" ]]; then
-      break
-    fi
+    IFS= read -r -s -p "  Confirm password: " _confirm </dev/tty 2>/dev/null || true
+    echo
+    [[ "$_result" == "$_confirm" ]] && break
     echo "  Passwords do not match. Please try again."
   done
   printf -v "$_var" '%s' "${_result}"
@@ -276,13 +282,13 @@ collect_config_readline() {
   _auto_pass=$(gen_password)
 
   echo ""
-  echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo -e "  Games Dashboard — Configuration"
-  echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${BOLD}=================================================="
+  echo -e "  Games Dashboard -- Configuration"
+  echo -e "==================================================${NC}"
   echo -e "  Press Enter to accept each default shown in [brackets]."
   echo ""
 
-  echo -e "  ${BOLD}── Network & Paths ──────────────────────────────${NC}"
+  echo -e "  ${BOLD}-- Network & Paths ------------------------------${NC}"
   rl_input INSTALL_DIR   "Install directory"    "/opt/gdash"
   rl_input SERVER_IP     "Server IP address"    "$DETECTED_IP"
   rl_input SERVER_HOSTNAME "Hostname / FQDN (blank = use IP only)" ""
@@ -290,42 +296,44 @@ collect_config_readline() {
   rl_input UI_PORT       "HTTPS (nginx) port"   "443"
 
   echo ""
-  echo -e "  ${BOLD}── Admin Account ────────────────────────────────${NC}"
+  echo -e "  ${BOLD}-- Admin Account --------------------------------${NC}"
   rl_input ADMIN_USER "Admin username" "admin"
   echo -e "  Auto-generated password: ${BOLD}${_auto_pass}${NC}"
   rl_password _custom_pass "Admin password"
   ADMIN_PASS="${_custom_pass:-$_auto_pass}"
 
   echo ""
-  echo -e "  ${BOLD}── Storage & Backup ─────────────────────────────${NC}"
+  echo -e "  ${BOLD}-- Storage & Backup -----------------------------${NC}"
   local _default_data="${INSTALL_DIR}/data"
   rl_input DATA_DIR          "Data directory"          "$_default_data"
   rl_input BACKUP_SCHEDULE   "Backup cron schedule"    "0 3 * * *"
   rl_input BACKUP_RETAIN_DAYS "Backup retention (days)" "30"
 
   echo ""
-  echo -e "  ${BOLD}── Container Runtimes ───────────────────────────${NC}"
+  echo -e "  ${BOLD}-- Container Runtimes ---------------------------${NC}"
   echo -e "  Docker enables Docker-based game servers (Valheim, Minecraft, CS2, Rust, +15 more)."
   INSTALL_DOCKER=false
   INSTALL_K8S=false
-  read -r -p "  Install Docker CE? [Y/n]: " _docker_yn
+  local _docker_yn=""
+  IFS= read -r -p "  Install Docker CE? [Y/n]: " _docker_yn </dev/tty 2>/dev/null || true
   case "${_docker_yn,,}" in
     n|no) ;;
     *) INSTALL_DOCKER=true ;;
   esac
   if $INSTALL_DOCKER; then
-    read -r -p "  Install Kubernetes / k3s? [y/N]: " _k8s_yn
+    local _k8s_yn=""
+    IFS= read -r -p "  Install Kubernetes / k3s? [y/N]: " _k8s_yn </dev/tty 2>/dev/null || true
     case "${_k8s_yn,,}" in
       y|yes) INSTALL_K8S=true ;;
     esac
   fi
 
   echo ""
-  echo -e "  ${BOLD}── Summary ──────────────────────────────────────${NC}"
+  echo -e "  ${BOLD}-- Summary --------------------------------------${NC}"
   echo -e "  Install dir   : ${INSTALL_DIR}"
   echo -e "  Data dir      : ${DATA_DIR}"
   echo -e "  Server IP     : ${SERVER_IP}"
-  echo -e "  Hostname      : ${SERVER_HOSTNAME:-(none — using IP only)}"
+  echo -e "  Hostname      : ${SERVER_HOSTNAME:-(none - using IP only)}"
   echo -e "  Daemon port   : ${DAEMON_PORT}"
   echo -e "  HTTPS port    : ${UI_PORT}"
   echo -e "  Admin user    : ${ADMIN_USER}"
@@ -335,7 +343,8 @@ collect_config_readline() {
   echo -e "  Docker        : $($INSTALL_DOCKER && echo 'Yes' || echo 'No')"
   echo -e "  Kubernetes    : $($INSTALL_K8S && echo 'Yes (k3s)' || echo 'No')"
   echo ""
-  read -r -p "  Proceed with installation? [Y/n]: " _confirm
+  local _confirm=""
+  IFS= read -r -p "  Proceed with installation? [Y/n]: " _confirm </dev/tty 2>/dev/null || true
   case "${_confirm,,}" in
     n|no) fail "Installation cancelled by user." ;;
   esac
@@ -366,8 +375,15 @@ if [[ -n "${GDASH_NONINTERACTIVE:-}" ]]; then
   collect_config_noninteractive
 elif $USE_TUI; then
   collect_config_tui
-else
+elif $HAVE_TTY; then
   collect_config_readline
+else
+  # No terminal available (e.g. curl | bash without a controlling tty).
+  # Fall back to non-interactive defaults and let the user know.
+  warn "No interactive terminal detected. Using defaults."
+  warn "Re-run directly in a terminal for the interactive setup wizard, or set"
+  warn "GDASH_NONINTERACTIVE=1 and GDASH_* env vars to customise (see README)."
+  collect_config_noninteractive
 fi
 
 # ── Derived values ─────────────────────────────────────────────────────────────
