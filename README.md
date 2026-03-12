@@ -1,7 +1,7 @@
 # Games Dashboard
 
 [![CI](https://github.com/Chrisl154/Gmaer-Server-Daashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/Chrisl154/Gmaer-Server-Daashboard/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 
 **Production-grade, open-source Gaming Server Dashboard** for automated provisioning, deployment, management, backup, networking, security, and observability of game servers — supporting Docker single-host and Kubernetes cluster deployments.
 
@@ -340,6 +340,39 @@ See [ROADMAP.md](docs/ROADMAP.md) for planned features.
 
 ---
 
+---
+
+## 🗺 Roadmap
+
+What's coming next — loosely ordered by impact. See [ROADMAP.md](docs/ROADMAP.md) for the full list with details.
+
+### Near-term
+| Feature | Description |
+|---|---|
+| **Persistent server state** | SQLite-backed state that survives daemon restarts |
+| **Automatic crash recovery** | Auto-restart on unexpected exit, configurable retries + back-off |
+| **Self-update mechanism** | "Check for Updates" + "Apply Update" buttons — no SSH required |
+| **Plain-English errors** | Human-readable error messages instead of raw Go stack traces |
+| **Node-install mode** | `--mode=node` installer flag for pure worker nodes |
+
+### Medium-term
+| Feature | Description |
+|---|---|
+| In-UI config file editor | Edit `server.properties`, launch scripts, etc. without SSH |
+| In-UI file browser | Browse, upload, download, and delete files in the install directory |
+| "Share with Friends" panel | Public IP + port + game join string in one click |
+| Player count & player list | Live query via Source/Minecraft protocol every 60 s |
+| Discord / webhook alerts | Crash, restart, backup, disk-full notifications |
+| Game server auto-update | Daily SteamCMD / Docker pull update with automatic pre-update backup |
+| Onboarding wizard | First-login 3-step modal: pick game → name server → deploy |
+
+### Long-term / Stretch
+Mobile PWA · Community adapter marketplace · Multi-region WireGuard cluster · Integrated DDNS · In-app guided diagnostics · 2FA enrollment UI
+
+---
+
 ## 📝 License
 
-[MIT](LICENSE)
+This project is **proprietary source-available** software. You may run it for personal use and read the source code, but you may **not** distribute it, sell it, or use it as the basis for a competing product without explicit written permission from the author.
+
+See [LICENSE](LICENSE) for the full terms. To request permission for any use not covered: [open an issue](https://github.com/Chrisl154/Gmaer-Server-Daashboard/issues).

@@ -921,44 +921,83 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 		return fmt.Errorf("create install dir: %w", err)
 	}
 
-	steamcmd, err := exec.LookPath("steamcmd")
+	// Docker is a hard requirement — SteamCMD always runs inside a container so
+	// users never need to install SteamCMD or its 32-bit library dependencies.
+	dockerBin, err := exec.LookPath("docker")
 	if err != nil {
-		return fmt.Errorf("steamcmd not found in PATH: %w", err)
+		return fmt.Errorf(
+			"Docker is required to deploy game servers. " +
+				"Please install Docker (https://docs.docker.com/engine/install/) and ensure the daemon can reach the Docker socket.")
 	}
 
-	args := []string{
+	// Create a throw-away directory that the container uses as HOME so SteamCMD
+	// can write its internal .steam cache files without touching installDir.
+	// It is removed whether the deploy succeeds or fails.
+	steamHome, err := os.MkdirTemp("", "gdash-steamhome-*")
+	if err != nil {
+		return fmt.Errorf("create steamcmd temp dir: %w", err)
+	}
+	defer os.RemoveAll(steamHome) //nolint:errcheck
+
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+		jsonStr("[gdash] Starting SteamCMD via Docker (cm2network/steamcmd). First run will pull the image — this may take a minute."),
+		time.Now().Unix()))
+	b.updateJob(job.ID, "running", 15, "Pulling SteamCMD Docker image (first run only)…")
+
+	// Build docker run arguments.
+	// - installDir is mounted at /games inside the container (game files land here)
+	// - steamHome  is mounted at /tmp/steamhome for SteamCMD's own cache/config
+	// - --user ensures files in /games are owned by the same UID/GID that runs the daemon
+	dockerArgs := []string{
+		"run", "--rm",
+		"--name", "gdash-steamcmd-" + id,
+		"-v", installDir + ":/games",
+		"-v", steamHome + ":/tmp/steamhome",
+		"-e", "HOME=/tmp/steamhome",
+		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		"cm2network/steamcmd",
 		"+@ShutdownOnFailedCommand", "1",
 		"+login", "anonymous",
-		"+force_install_dir", installDir,
+		"+force_install_dir", "/games",
 		"+app_update", appID, "validate",
 	}
 	if req.SteamCMD != nil && req.SteamCMD.Beta != "" {
-		args = append(args, "-beta", req.SteamCMD.Beta)
+		dockerArgs = append(dockerArgs, "-beta", req.SteamCMD.Beta)
 		if req.SteamCMD.BetaPass != "" {
-			args = append(args, "-betapassword", req.SteamCMD.BetaPass)
+			dockerArgs = append(dockerArgs, "-betapassword", req.SteamCMD.BetaPass)
 		}
 	}
-	args = append(args, "+quit")
+	dockerArgs = append(dockerArgs, "+quit")
 
-	b.updateJob(job.ID, "running", 30, fmt.Sprintf("Running SteamCMD for app %s...", appID))
-	b.logger.Info("Executing SteamCMD",
+	b.updateJob(job.ID, "running", 30, fmt.Sprintf("Running SteamCMD (Docker) for app %s…", appID))
+	b.logger.Info("Executing SteamCMD via Docker",
 		zap.String("server", id), zap.String("app_id", appID), zap.String("dir", installDir))
 
-	cmd := exec.CommandContext(ctx, steamcmd, args...) //nolint:gosec
+	cmd := exec.CommandContext(ctx, dockerBin, dockerArgs...) //nolint:gosec
 	cmd.Dir = installDir
 
 	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start steamcmd: %w", err)
+		return fmt.Errorf("start steamcmd container: %w", err)
 	}
 
-	// Stream output to console and update progress.
+	// Forward stderr to the console in a background goroutine so the user sees
+	// Docker pull progress and any SteamCMD warnings alongside stdout.
+	go func() {
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+				jsonStr(sc.Text()), time.Now().Unix()))
+		}
+	}()
+
+	// Stream stdout to the console and nudge the progress bar forward.
 	progress := 30
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
 		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`, jsonStr(line), time.Now().Unix()))
-		// Bump progress a little each line (capped at 90).
 		if progress < 90 {
 			progress++
 		}
@@ -966,10 +1005,10 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("steamcmd exited with error: %w", err)
+		return fmt.Errorf("SteamCMD container exited with error: %w", err)
 	}
 
-	b.updateJob(job.ID, "success", 100, "SteamCMD deployment complete")
+	b.updateJob(job.ID, "success", 100, "SteamCMD (Docker) deployment complete")
 	b.logger.Info("SteamCMD deployment complete", zap.String("server", id))
 	return nil
 }

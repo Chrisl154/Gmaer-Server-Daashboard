@@ -6,6 +6,13 @@ Items within each section are loosely ordered by impact. All dates are targets, 
 
 ---
 
+## Shipped
+
+### SteamCMD via Docker (zero host dependencies)
+Docker is a hard requirement for the dashboard. SteamCMD deployments run transparently inside `cm2network/steamcmd` — users never need to install SteamCMD, its 32-bit libraries, or any Steam tooling on the host. The container is pulled automatically on first deploy, game files land in the configured install directory owned by the daemon's user, and the container is removed when the download finishes.
+
+---
+
 ## Near-term
 
 ### Node-install mode (worker-only installer)
