@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/games-dashboard/daemon/internal/auth"
@@ -196,6 +198,10 @@ func (s *Server) registerRoutes() {
 	admin.POST("/secrets/rotate", s.rotateSecrets)
 	admin.GET("/settings", s.getSettings)
 	admin.PATCH("/settings", s.patchSettings)
+
+	// Self-update (admin-only)
+	admin.GET("/update/status", s.getUpdateStatus)
+	admin.POST("/update/apply", s.applyUpdate)
 
 	// System
 	v1.GET("/status", s.getSystemStatus)
@@ -994,10 +1000,28 @@ func (s *Server) bootstrapSystem(c *gin.Context) {
 }
 
 func (s *Server) getVersion(c *gin.Context) {
+	commit := strings.TrimSpace(runGit("rev-parse", "--short", "HEAD"))
+	branch := strings.TrimSpace(runGit("rev-parse", "--abbrev-ref", "HEAD"))
+	if branch == "" {
+		branch = "main"
+	}
+	if commit == "" {
+		commit = "unknown"
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"version": "1.0.0",
 		"build":   "release",
+		"commit":  commit,
+		"branch":  branch,
 	})
+}
+
+func runGit(args ...string) string {
+	out, err := exec.Command("git", append([]string{"-C", repoDirPath}, args...)...).Output() //nolint:gosec
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // Middleware

@@ -122,7 +122,7 @@ func main() {
 	configCmd.AddCommand(configShowCmd(), configSetCmd(), configGetCmd())
 
 	root.AddCommand(serverCmd, backupCmd, modCmd, portCmd, sbomCmd, authCmd, nodeCmd, configCmd,
-		healthCmd(), versionCmd())
+		healthCmd(), versionCmd(), updateCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -895,11 +895,95 @@ func versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Show version",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("gdash version 1.0.0")
-			fmt.Printf("Daemon: %s\n", cfg.DaemonURL)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := apiGet("/api/v1/version")
+			if err != nil {
+				fmt.Printf("gdash version 1.0.0 (daemon unreachable: %v)\n", err)
+				return nil
+			}
+			if m, ok := resp.(map[string]any); ok {
+				fmt.Printf("gdash  version 1.0.0\n")
+				fmt.Printf("daemon version %v  branch=%v  commit=%v\n",
+					m["version"], m["branch"], m["commit"])
+			}
+			return nil
 		},
 	}
+}
+
+func updateCmd() *cobra.Command {
+	var branch string
+	var checkOnly bool
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Update the dashboard to the latest version",
+		Long: `Pull the latest code and rebuild. The daemon restarts automatically.
+
+Branch options:
+  main  — stable releases (default)
+  dev   — development / pre-release builds`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if branch != "main" && branch != "dev" {
+				return fmt.Errorf("--branch must be 'main' or 'dev'")
+			}
+
+			// Always check status first
+			statusResp, err := apiGet("/api/v1/admin/update/status")
+			if err != nil {
+				return fmt.Errorf("could not reach daemon: %w", err)
+			}
+			m, ok := statusResp.(map[string]any)
+			if !ok {
+				return fmt.Errorf("unexpected response from daemon")
+			}
+
+			currentBranch, _ := m["current_branch"].(string)
+			currentCommit, _ := m["current_commit"].(string)
+			commitsBehind := 0
+			if v, ok := m["commits_behind"].(float64); ok {
+				commitsBehind = int(v)
+			}
+			updateAvailable, _ := m["update_available"].(bool)
+			latestMsg, _ := m["latest_message"].(string)
+
+			fmt.Printf("Current:  branch=%-6s  commit=%s\n", currentBranch, currentCommit)
+			if errMsg, ok := m["error"].(string); ok && errMsg != "" {
+				fmt.Printf("Warning: %s\n", errMsg)
+			} else if updateAvailable {
+				fmt.Printf("Update:   %d commit(s) behind origin/%s\n", commitsBehind, currentBranch)
+				if latestMsg != "" {
+					fmt.Printf("Latest:   %s\n", latestMsg)
+				}
+			} else {
+				fmt.Printf("Status:   up to date\n")
+			}
+
+			if checkOnly {
+				return nil
+			}
+
+			if !updateAvailable && branch == currentBranch {
+				fmt.Println("Nothing to update.")
+				return nil
+			}
+
+			fmt.Printf("\nApplying update (branch: %s)...\n", branch)
+			applyResp, err := apiPost("/api/v1/admin/update/apply", map[string]any{"branch": branch})
+			if err != nil {
+				return fmt.Errorf("update failed: %w", err)
+			}
+			if am, ok := applyResp.(map[string]any); ok {
+				if msg, ok := am["msg"].(string); ok {
+					fmt.Println(msg)
+				}
+			}
+			fmt.Println("The dashboard will restart — reconnect in ~60 seconds.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&branch, "branch", "b", "main", "Branch to update to: main|dev")
+	cmd.Flags().BoolVar(&checkOnly, "check", false, "Only check for updates, do not apply")
+	return cmd
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────

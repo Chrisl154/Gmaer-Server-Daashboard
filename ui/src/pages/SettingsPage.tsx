@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Settings, Shield, Server, HardDrive, Network, Activity,
   Plus, Trash2, User, QrCode, Info, Loader2, Key, Save,
-  Database, RefreshCw,
+  Database, RefreshCw, Download, GitBranch, CheckCircle2, AlertCircle,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { cn } from '../utils/cn';
@@ -12,7 +12,7 @@ import { useAuthStore } from '../store/authStore';
 import { useSystemStatus } from '../hooks/useServers';
 import type { DaemonSettings, SettingsPatch } from '../types';
 
-type Section = 'general' | 'users' | 'tls' | 'storage' | 'networking' | 'monitoring';
+type Section = 'general' | 'users' | 'tls' | 'storage' | 'networking' | 'monitoring' | 'updates';
 
 const NAV: { id: Section; icon: React.FC<any>; label: string }[] = [
   { id: 'general',    icon: Settings,  label: 'General'      },
@@ -21,6 +21,7 @@ const NAV: { id: Section; icon: React.FC<any>; label: string }[] = [
   { id: 'storage',    icon: HardDrive, label: 'Storage'      },
   { id: 'networking', icon: Network,   label: 'Networking'   },
   { id: 'monitoring', icon: Activity,  label: 'Monitoring'   },
+  { id: 'updates',    icon: Download,  label: 'Updates'      },
 ];
 
 // ── Shared hook ─────────────────────────────────────────────────────────────
@@ -731,6 +732,172 @@ function MonitoringSection() {
   );
 }
 
+// ── Updates section ──────────────────────────────────────────────────────────
+
+interface UpdateStatus {
+  current_branch: string;
+  current_commit: string;
+  commits_behind: number;
+  update_available: boolean;
+  latest_message: string;
+  error?: string;
+}
+
+function UpdatesSection() {
+  const qc = useQueryClient();
+  const [branch, setBranch] = useState<'main' | 'dev'>('main');
+  const [applyMsg, setApplyMsg] = useState('');
+
+  const { data: status, isLoading, isFetching, refetch } = useQuery<UpdateStatus>({
+    queryKey: ['update-status'],
+    queryFn: () => api.get('/api/v1/admin/update/status').then(r => r.data),
+    staleTime: 60_000,
+  });
+
+  const apply = useMutation({
+    mutationFn: () => api.post('/api/v1/admin/update/apply', { branch }).then(r => r.data),
+    onSuccess: (data: any) => {
+      setApplyMsg(data?.msg ?? 'Update started.');
+      toast.success('Update launched — dashboard restarting…');
+      qc.invalidateQueries({ queryKey: ['update-status'] });
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error ?? 'Update failed'),
+  });
+
+  // Sync branch picker to current remote branch on first load
+  React.useEffect(() => {
+    if (status?.current_branch === 'dev') setBranch('dev');
+  }, [status?.current_branch]);
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>Updates</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+          Pull the latest code, rebuild, and restart automatically.
+        </p>
+      </div>
+
+      {/* Current version card */}
+      <div className="card p-5 space-y-4">
+        <h3 className="label flex items-center gap-2"><GitBranch className="w-3.5 h-3.5" /> Current Version</h3>
+        {isLoading ? (
+          <div className="animate-pulse space-y-2">
+            <div className="h-4 w-48 rounded" style={{ background: 'var(--bg-elevated)' }} />
+            <div className="h-4 w-32 rounded" style={{ background: 'var(--bg-elevated)' }} />
+          </div>
+        ) : status?.error ? (
+          <div className="flex items-start gap-2 text-yellow-400 text-sm">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{status.error}</span>
+          </div>
+        ) : (
+          <div className="space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span style={{ color: 'var(--text-secondary)' }}>Branch</span>
+              <code className="font-mono text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+                {status?.current_branch}
+              </code>
+            </div>
+            <div className="flex justify-between">
+              <span style={{ color: 'var(--text-secondary)' }}>Commit</span>
+              <code className="font-mono text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+                {status?.current_commit}
+              </code>
+            </div>
+            <div className="flex justify-between items-center">
+              <span style={{ color: 'var(--text-secondary)' }}>Status</span>
+              {status?.update_available ? (
+                <span className="text-yellow-400 flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  {status.commits_behind} commit{status.commits_behind !== 1 ? 's' : ''} behind
+                </span>
+              ) : (
+                <span className="text-green-400 flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Up to date
+                </span>
+              )}
+            </div>
+            {status?.update_available && status?.latest_message && (
+              <div className="pt-1 flex justify-between">
+                <span style={{ color: 'var(--text-secondary)' }}>Latest</span>
+                <span className="text-xs max-w-[60%] text-right" style={{ color: 'var(--text-primary)' }}>
+                  {status.latest_message}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <button
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="btn-secondary flex items-center gap-2 text-sm"
+        >
+          <RefreshCw className={cn('w-3.5 h-3.5', isFetching && 'animate-spin')} />
+          Check for Updates
+        </button>
+      </div>
+
+      {/* Branch selector + apply */}
+      <div className="card p-5 space-y-4">
+        <h3 className="label flex items-center gap-2"><Download className="w-3.5 h-3.5" /> Apply Update</h3>
+
+        <div className="space-y-2">
+          <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>Target branch</p>
+          <div className="flex gap-3">
+            {(['main', 'dev'] as const).map(b => (
+              <label key={b} className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="branch"
+                  value={b}
+                  checked={branch === b}
+                  onChange={() => setBranch(b)}
+                  className="accent-orange-500"
+                />
+                <span className="text-sm font-mono" style={{ color: 'var(--text-primary)' }}>{b}</span>
+                {b === 'main' && (
+                  <span className="text-xs px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400">stable</span>
+                )}
+                {b === 'dev' && (
+                  <span className="text-xs px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">pre-release</span>
+                )}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {applyMsg ? (
+          <div className="flex items-start gap-2 text-green-400 text-sm">
+            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{applyMsg}</span>
+          </div>
+        ) : (
+          <div className="flex items-start gap-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
+            <Info className="w-4 h-4 shrink-0 mt-0.5 text-blue-400" />
+            <span>
+              The update will pull the latest code, rebuild the daemon and UI, then restart the service.
+              Expect ~60 seconds of downtime.
+            </span>
+          </div>
+        )}
+
+        <button
+          onClick={() => apply.mutate()}
+          disabled={apply.isPending || !!applyMsg}
+          className="btn-primary flex items-center gap-2"
+        >
+          {apply.isPending
+            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            : <Download className="w-3.5 h-3.5" />}
+          {apply.isPending ? 'Launching update…' : `Update to ${branch}`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Skeleton ─────────────────────────────────────────────────────────────────
 
 function SectionSkeleton() {
@@ -788,6 +955,7 @@ export function SettingsPage() {
         {section === 'storage'    && <StorageSection />}
         {section === 'networking' && <NetworkingSection />}
         {section === 'monitoring' && <MonitoringSection />}
+        {section === 'updates'    && <UpdatesSection />}
       </main>
     </div>
   );

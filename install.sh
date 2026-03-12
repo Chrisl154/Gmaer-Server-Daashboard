@@ -860,6 +860,104 @@ else
   info "(If 'already initialized', the existing credentials remain valid)"
 fi
 
+# =============================================================================
+section "Step 9: Self-Update Script"
+# =============================================================================
+
+# Write the update script that the dashboard and gdash CLI invoke.
+# It pulls the latest code, rebuilds the daemon + UI, and restarts the service.
+cat > "${BIN_DIR}/gdash-update.sh" <<'UPDATESCRIPT'
+#!/bin/bash
+# gdash-update.sh — called by the Games Dashboard self-update feature.
+# Usage: gdash-update.sh [branch]   (default: main)
+set -euo pipefail
+
+BRANCH="${1:-main}"
+if [[ "$BRANCH" != "main" && "$BRANCH" != "dev" ]]; then
+  echo "ERROR: branch must be 'main' or 'dev'" >&2
+  exit 1
+fi
+
+INSTALL_DIR="/opt/gdash"
+REPO_DIR="$INSTALL_DIR/repo"
+BIN_DIR="$INSTALL_DIR/bin"
+UI_SRC="$REPO_DIR/ui"
+UI_DST="$INSTALL_DIR/ui"
+LOG="/var/log/gdash-update.log"
+
+exec >> "$LOG" 2>&1
+echo ""
+echo "=== $(date '+%Y-%m-%d %H:%M:%S') === gdash self-update to branch: $BRANCH ==="
+
+# ── Find Go ──────────────────────────────────────────────────────────────────
+GO_BIN=""
+for candidate in \
+    "/usr/local/go/bin/go" \
+    "$HOME/.local/go/bin/go" \
+    "$(command -v go 2>/dev/null || true)"; do
+  [[ -x "$candidate" ]] && GO_BIN="$candidate" && break
+done
+if [[ -z "$GO_BIN" ]]; then
+  echo "ERROR: go binary not found. Install Go 1.22+ and retry." >&2
+  exit 1
+fi
+echo "Using Go: $GO_BIN ($($GO_BIN version))"
+
+# ── Find Node / npm ──────────────────────────────────────────────────────────
+export NVM_DIR="$HOME/.nvm"
+[[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
+if ! command -v node &>/dev/null; then
+  echo "ERROR: node not found. Install Node 20 LTS and retry." >&2
+  exit 1
+fi
+echo "Using Node: $(node --version)"
+
+# ── Pull latest code ─────────────────────────────────────────────────────────
+echo "Updating repository (branch: $BRANCH)..."
+git -C "$REPO_DIR" fetch origin
+git -C "$REPO_DIR" checkout "$BRANCH"
+git -C "$REPO_DIR" pull --ff-only origin "$BRANCH"
+echo "Repository updated to: $(git -C "$REPO_DIR" rev-parse --short HEAD)"
+
+# ── Rebuild daemon ───────────────────────────────────────────────────────────
+echo "Building daemon..."
+$GO_BIN build -o "${BIN_DIR}/games-daemon.new" "${REPO_DIR}/daemon/cmd/daemon"
+mv "${BIN_DIR}/games-daemon.new" "${BIN_DIR}/games-daemon"
+echo "Daemon binary updated."
+
+# ── Rebuild CLI ──────────────────────────────────────────────────────────────
+echo "Building CLI..."
+$GO_BIN build -o "${BIN_DIR}/gdash.new" "${REPO_DIR}/cli/cmd"
+mv "${BIN_DIR}/gdash.new" "${BIN_DIR}/gdash"
+echo "CLI binary updated."
+
+# ── Rebuild UI ───────────────────────────────────────────────────────────────
+echo "Building UI..."
+cd "$UI_SRC"
+npm install --silent 2>/dev/null
+chmod +x node_modules/.bin/* 2>/dev/null || true
+node_modules/.bin/vite build --outDir "${UI_DST}" --emptyOutDir 2>/dev/null
+echo "UI rebuilt."
+
+# ── Restart service ──────────────────────────────────────────────────────────
+echo "Restarting gdash-daemon..."
+sleep 2
+sudo systemctl restart gdash-daemon
+echo "=== Update complete ==="
+UPDATESCRIPT
+
+chmod +x "${BIN_DIR}/gdash-update.sh"
+ok "Update script installed at ${BIN_DIR}/gdash-update.sh"
+
+# Sudoers entry: allow the daemon user to restart only the gdash service
+SUDOERS_FILE="/etc/sudoers.d/gdash-update"
+$SUDO tee "$SUDOERS_FILE" > /dev/null <<SUDOERS
+# Allow the gdash daemon user to restart the gdash service (required for self-update)
+${USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart gdash-daemon, /usr/bin/systemctl restart gdash-daemon
+SUDOERS
+$SUDO chmod 440 "$SUDOERS_FILE"
+ok "Sudoers entry added for self-update ($SUDOERS_FILE)"
+
 # Allow UFW if present
 if command -v ufw &>/dev/null; then
   $SUDO ufw allow 80/tcp          >/dev/null 2>&1 || true
@@ -887,6 +985,9 @@ echo -e "     Click \"Advanced → Proceed\" to continue."
 echo ""
 echo -e "  ${BOLD}Useful commands:${NC}"
 echo -e "    gdash --help                    # CLI tool"
+echo -e "    gdash update                    # Update to latest (main branch)"
+echo -e "    gdash update --branch dev       # Update to dev branch"
+echo -e "    gdash update --check            # Check for updates without applying"
 echo -e "    sudo systemctl status gdash-daemon"
 echo -e "    sudo journalctl -u gdash-daemon -f"
 echo -e "    sudo systemctl restart gdash-daemon"
