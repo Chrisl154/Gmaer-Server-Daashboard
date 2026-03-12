@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft, Play, Square, RotateCcw, HardDrive, Package,
   Download, Maximize2, Cpu, MemoryStick, Clock, Activity,
+  FileText, RefreshCw,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { api, getWsUrl } from '../utils/api';
@@ -13,7 +14,7 @@ import {
 } from 'recharts';
 import type { ServerMetricSample } from '../types';
 
-type Tab = 'overview' | 'console' | 'backups' | 'mods' | 'ports' | 'config';
+type Tab = 'overview' | 'console' | 'logs' | 'backups' | 'mods' | 'ports' | 'config';
 
 const STATE_CLASS: Record<string, string> = {
   running:   'status-running',
@@ -76,6 +77,7 @@ export function ServerDetailPage() {
   const TABS: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview'  },
     { id: 'console',  label: 'Console'   },
+    { id: 'logs',     label: 'Logs'      },
     { id: 'backups',  label: 'Backups'   },
     { id: 'mods',     label: 'Mods'      },
     { id: 'ports',    label: 'Ports'     },
@@ -176,7 +178,8 @@ export function ServerDetailPage() {
       {/* Tab content */}
       <div>
         {activeTab === 'overview' && <OverviewTab server={server} />}
-        {activeTab === 'console'  && <ConsoleTab serverId={id!} />}
+        {activeTab === 'console'  && <ConsoleTab serverId={id!} serverState={server.state} />}
+        {activeTab === 'logs'     && <LogsTab serverId={id!} />}
         {activeTab === 'backups'  && <BackupsTab serverId={id!} />}
         {activeTab === 'mods'     && <ModsTab serverId={id!} />}
         {activeTab === 'ports'    && <PortsTab server={server} />}
@@ -303,17 +306,22 @@ function MetricsChart({ serverId }: { serverId: string }) {
 
 // ── Console tab ───────────────────────────────────────────────────────────────
 
-function ConsoleTab({ serverId }: { serverId: string }) {
+function ConsoleTab({ serverId, serverState }: { serverId: string; serverState: string }) {
   const logRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [lines, setLines] = useState<string[]>(['Connecting to console...']);
   const [connected, setConnected] = useState(false);
+  const [reconnectKey, setReconnectKey] = useState(0);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const historyRef = useRef<string[]>([]);
   const historyIdx = useRef(-1);
 
+  const isRunning = serverState === 'running';
+
   useEffect(() => {
+    setLines(['Connecting to console...']);
+    setConnected(false);
     const ws = new WebSocket(getWsUrl(`/api/v1/servers/${serverId}/console/stream`));
     wsRef.current = ws;
     ws.onopen  = () => { setConnected(true); setLines(p => [...p, '— Connected —']); };
@@ -329,7 +337,7 @@ function ConsoleTab({ serverId }: { serverId: string }) {
     ws.onclose = () => { setConnected(false); setLines(p => [...p, '— Disconnected —']); };
     ws.onerror = () => setLines(p => [...p, '— Connection error —']);
     return () => ws.close();
-  }, [serverId]);
+  }, [serverId, reconnectKey]);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -378,14 +386,33 @@ function ConsoleTab({ serverId }: { serverId: string }) {
           <span className="text-xs font-medium" style={{ color: connected ? '#4ade80' : '#f87171' }}>
             {connected ? 'Connected' : 'Disconnected'}
           </span>
+          {!connected && (
+            <button
+              onClick={() => setReconnectKey(k => k + 1)}
+              className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md transition-colors"
+              style={{ color: 'var(--text-muted)', background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+            >
+              <RefreshCw className="w-2.5 h-2.5" /> Reconnect
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-1.5">
-          {/* macOS-style dots */}
           <div className="w-3 h-3 rounded-full bg-red-500/70" />
           <div className="w-3 h-3 rounded-full bg-yellow-500/70" />
           <div className="w-3 h-3 rounded-full bg-green-500/70" />
         </div>
       </div>
+
+      {/* Hint when not running */}
+      {!isRunning && (
+        <div className="mx-4 mt-3 rounded-xl px-3 py-2 text-xs flex items-start gap-2"
+          style={{ background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.2)', color: '#fb923c' }}>
+          <FileText className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span>
+            The console streams live output while the server is running. To see startup output and pre-run events, check the <strong>Logs</strong> tab.
+          </span>
+        </div>
+      )}
 
       {/* Log output */}
       <div ref={logRef}
@@ -440,6 +467,116 @@ function ConsoleTab({ serverId }: { serverId: string }) {
           in server config.
         </p>
       </div>
+    </div>
+  );
+}
+
+// ── Logs tab ──────────────────────────────────────────────────────────────────
+
+const LOG_LINE_OPTIONS = [100, 200, 400, 800];
+
+function LogsTab({ serverId }: { serverId: string }) {
+  const logRef = useRef<HTMLDivElement>(null);
+  const [lineCount, setLineCount] = useState(200);
+  const [autoScroll, setAutoScroll] = useState(true);
+
+  const { data, isFetching, refetch } = useQuery<string[]>({
+    queryKey: ['server-logs', serverId, lineCount],
+    queryFn: () =>
+      api
+        .get(`/api/v1/servers/${serverId}/logs`, { params: { lines: lineCount } })
+        .then(r => r.data.logs as string[]),
+    refetchInterval: 3_000,
+  });
+
+  const logs = data ?? [];
+
+  useEffect(() => {
+    if (autoScroll && logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logs, autoScroll]);
+
+  const handleScroll = () => {
+    if (!logRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = logRef.current;
+    setAutoScroll(scrollHeight - scrollTop - clientHeight < 40);
+  };
+
+  return (
+    <div className="card overflow-hidden" style={{ position: 'relative' }}>
+      <div className="flex items-center justify-between px-4 py-3"
+        style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+        <div className="flex items-center gap-2">
+          <FileText className="w-3.5 h-3.5" style={{ color: 'var(--primary)' }} />
+          <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Server Log</span>
+          {isFetching && (
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Refreshing…</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Lines</label>
+          <select
+            className="input text-xs"
+            style={{ width: 80, padding: '2px 6px' }}
+            value={lineCount}
+            onChange={e => setLineCount(Number(e.target.value))}
+          >
+            {LOG_LINE_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <button
+            onClick={() => refetch()}
+            className="flex items-center justify-center w-7 h-7 rounded-lg transition-colors"
+            style={{ color: 'var(--text-muted)', background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+            title="Refresh logs"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      <div
+        ref={logRef}
+        onScroll={handleScroll}
+        className="p-4 h-96 overflow-y-auto font-mono text-xs space-y-0.5"
+        style={{ background: '#080810' }}
+      >
+        {logs.length === 0 ? (
+          <p className="opacity-40">No log entries yet. Logs appear here once the server has been started or deployed.</p>
+        ) : (
+          logs.map((line, i) => (
+            <div
+              key={i}
+              className={cn(
+                'whitespace-pre-wrap break-all leading-5',
+                line.includes('[error]') || line.includes('ERROR') || line.includes('FATAL') ? 'text-red-400' :
+                line.includes('WARN') ? 'text-yellow-400' :
+                line.startsWith('{') ? 'opacity-70' : '',
+              )}
+              style={
+                !line.includes('[error]') && !line.includes('ERROR') && !line.includes('FATAL') && !line.includes('WARN')
+                  ? { color: 'var(--text-primary)' }
+                  : {}
+              }
+            >
+              {line}
+            </div>
+          ))
+        )}
+      </div>
+
+      {!autoScroll && (
+        <button
+          onClick={() => {
+            setAutoScroll(true);
+            if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+          }}
+          className="absolute bottom-20 right-6 text-xs px-3 py-1.5 rounded-full shadow-lg"
+          style={{ background: 'var(--primary)', color: '#fff' }}
+        >
+          ↓ Jump to bottom
+        </button>
+      )}
     </div>
   );
 }

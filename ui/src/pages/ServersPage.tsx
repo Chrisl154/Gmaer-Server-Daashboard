@@ -1,7 +1,7 @@
 // ServersPage.tsx
 import React, { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Plus, Search, Server, X, Play, Square, RotateCcw, Trash2, ChevronLeft } from 'lucide-react';
+import { Plus, Search, Server, X, Play, Square, RotateCcw, Trash2, ChevronLeft, ExternalLink } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
@@ -118,9 +118,10 @@ interface ActionOverlayProps {
   serverName: string;
   state: string;
   onDeleteRequest: () => void;
+  onNavigate: () => void;
 }
 
-function ActionOverlay({ serverId, serverName, state, onDeleteRequest }: ActionOverlayProps) {
+function ActionOverlay({ serverId, serverName, state, onDeleteRequest, onNavigate }: ActionOverlayProps) {
   const startM   = useStartServer(serverId);
   const stopM    = useStopServer(serverId);
   const restartM = useRestartServer(serverId);
@@ -137,8 +138,15 @@ function ActionOverlay({ serverId, serverName, state, onDeleteRequest }: ActionO
       style={{ background: 'rgba(0,0,0,0.52)', backdropFilter: 'blur(2px)' }}
       onClick={e => e.stopPropagation()}
     >
-      {/* Top-right delete button */}
-      <div className="w-full flex justify-end px-2">
+      {/* Top row: open + delete */}
+      <div className="w-full flex justify-between px-2">
+        <button
+          className="flex items-center justify-center w-7 h-7 rounded-full bg-white/15 hover:bg-white/30 backdrop-blur-sm transition-all duration-150 text-white"
+          title={`Open ${serverName}`}
+          onClick={onNavigate}
+        >
+          <ExternalLink className="w-3.5 h-3.5" />
+        </button>
         <button
           className="flex items-center justify-center w-7 h-7 rounded-full bg-rose-500/20 hover:bg-rose-500/50 backdrop-blur-sm transition-all duration-150 text-rose-300"
           title={`Delete ${serverName}`}
@@ -304,6 +312,7 @@ function GamePosterCard({ server }: GamePosterCardProps) {
             serverName={server.name}
             state={server.state}
             onDeleteRequest={() => setConfirmDelete(true)}
+            onNavigate={() => navigate(`/servers/${server.id}`)}
           />
         )}
       </div>

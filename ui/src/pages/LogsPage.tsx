@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Activity, FileText, RefreshCw, Server, ShieldCheck } from 'lucide-react';
+import { Activity, FileText, Filter, RefreshCw, Server, ShieldCheck } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../utils/api';
 import { useServers } from '../hooks/useServers';
@@ -83,6 +83,7 @@ export function LogsPage() {
   const [activeTab, setActiveTab] = useState<TabId>('server');
   const [selectedServer, setSelectedServer] = useState<string | null>(null);
   const [lines, setLines] = useState(LINE_OPTIONS[1]);
+  const [eventFilter, setEventFilter] = useState<string>('all');
   const serversQuery = useServers();
   const servers = serversQuery.data?.servers ?? [];
 
@@ -105,6 +106,24 @@ export function LogsPage() {
     () => auditEntries.filter(entry => entry.resource === 'auth'),
     [auditEntries],
   );
+
+  // Derive subsystem categories from action prefixes (e.g. "server.start" → "server")
+  const eventCategories = useMemo(() => {
+    const cats = new Set<string>();
+    eventEntries.forEach(e => {
+      const prefix = e.action?.split('.')[0] ?? e.resource ?? 'other';
+      cats.add(prefix);
+    });
+    return Array.from(cats).sort();
+  }, [eventEntries]);
+
+  const filteredEventEntries = useMemo(() => {
+    if (eventFilter === 'all') return eventEntries;
+    return eventEntries.filter(e => {
+      const prefix = e.action?.split('.')[0] ?? e.resource ?? 'other';
+      return prefix === eventFilter;
+    });
+  }, [eventEntries, eventFilter]);
 
   useEffect(() => {
     if (!selectedServer && servers.length > 0) {
@@ -263,9 +282,36 @@ export function LogsPage() {
               Refresh
             </button>
           </div>
+          {/* Subsystem filter — only shown on Events tab */}
+          {activeTab === 'events' && eventCategories.length > 1 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <Filter className="w-3 h-3 text-[rgba(148,163,184,0.7)] shrink-0" />
+              {['all', ...eventCategories].map(cat => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setEventFilter(cat)}
+                  className={cn(
+                    'rounded-xl px-2.5 py-1 text-[11px] font-semibold capitalize transition-all duration-150',
+                    eventFilter === cat
+                      ? 'bg-[rgba(249,115,22,0.2)] text-white'
+                      : 'bg-[rgba(255,255,255,0.04)] text-[rgba(208,208,232,0.8)] hover:bg-[rgba(255,255,255,0.08)]',
+                  )}
+                >
+                  {cat === 'all' ? 'All' : cat}
+                  {cat !== 'all' && (
+                    <span className="ml-1 opacity-60">
+                      ({eventEntries.filter(e => (e.action?.split('.')[0] ?? e.resource ?? 'other') === cat).length})
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="max-h-[520px] overflow-y-auto space-y-3">
-            {activeTab === 'events' && (eventEntries.length > 0 ? (
-              eventEntries.map(entry => <AuditEntryRow key={entry.id} entry={entry} />)
+            {activeTab === 'events' && (filteredEventEntries.length > 0 ? (
+              filteredEventEntries.map(entry => <AuditEntryRow key={entry.id} entry={entry} />)
             ) : (
               <p className="text-xs text-[rgba(148,163,184,0.8)]">No recent events.</p>
             ))}
