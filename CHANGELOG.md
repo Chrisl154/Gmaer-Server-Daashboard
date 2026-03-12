@@ -10,6 +10,46 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+
+#### Installer — Interactive TUI Wizard
+- **Full whiptail TUI** — The installer now launches a 5-screen interactive wizard when run in a terminal (including via `curl | bash`). Screens: Network & Paths → Admin Account → Storage & Backup → Container Runtimes → Review & Confirm. Falls back to plain readline prompts if `whiptail`/`dialog` is unavailable.
+- **Docker CE installation** — New "Container Runtimes" screen asks whether to install Docker CE (recommended — enables the Docker deploy method for 19 of 24 games) and optionally k3s (lightweight Kubernetes). Both can also be set via `GDASH_INSTALL_DOCKER=true` / `GDASH_INSTALL_K8S=true` for non-interactive installs.
+- **Non-interactive mode** — All wizard settings are overridable via environment variables (`GDASH_INSTALL_DIR`, `GDASH_HOST`, `GDASH_HOSTNAME`, `GDASH_ADMIN_PASS`, `GDASH_INSTALL_DOCKER`, `GDASH_INSTALL_K8S`, etc.) when `GDASH_NONINTERACTIVE=1` is set. Documented in README.
+- **SteamCMD** — Now installed automatically by the installer (required for Valheim, CS2, Rust, ARK, and all other Steam-based servers).
+- **Java 21 LTS** — Now installed automatically (required for Minecraft and other JVM-based game servers).
+
+#### Servers Page — UI Improvements
+- **Visual game picker** — "New Server" now opens a 2-step modal. Step 1 shows all 24 games as colour-themed poster cards with filter tabs (All / SteamCMD / Manual / Docker). Clicking a game advances to step 2.
+- **Deploy method filtering** — The game grid filters live as you click the deploy method tabs; only games that support the selected method are shown. The deploy method in step 2 is pre-populated to match your filter choice.
+- **Delete server** — Hovering a server poster now shows a trash icon in the top-right corner of the hover overlay. Clicking it opens a confirmation modal before calling `DELETE /api/v1/servers/:id`.
+
+#### Logs Page
+- **New Logs page** (`/logs`) — Four tabs:
+  - **Server Logs** — server picker sidebar + live console tail polling `GET /api/v1/servers/:id/logs` every 5 s, with line-count selector (100/200/400/800) and manual refresh.
+  - **Events** — lifecycle events (start, stop, deploy, backup) from the audit log.
+  - **Security** — authentication events only (logins, failures) from the audit log.
+  - **Audit Trail** — full audit log in reverse-chronological order, auto-refreshing every 20 s.
+- **Persistent event log** — Broker writes `system`, `error`, and `deploy` console messages to `{data_dir}/servers/{id}/logs/gdash-events.log` so they survive restarts and appear in the Server Logs tab even before a game process starts.
+- **Audit recording** — `RecordEvent()` wired into all major API handlers: create/delete server, start/stop/restart, deploy, backup/restore, mod install/uninstall/rollback.
+
+#### Adapter Fixes
+- **Valheim** — Fixed `start_command` to export `LD_LIBRARY_PATH=./linux64` and `SteamAppId=892970` before launching, resolving server startup failure.
+- **"Not deployed" guard** — `doStart()` now checks for the install directory before executing and emits a clear error message instead of a cryptic `chdir` failure.
+- **Docker deploy method** — Added `docker` to `deploy_methods` in all 19 adapter manifests that have a configured Docker image (Valheim, Minecraft, CS2, Rust, TF2, GMod, ARK, DayZ, DST, Project Zomboid, Terraria, Factorio, L4D2, Risk of Rain 2, Squad, 7DTD, Among Us, Dota 2, Conan Exiles).
+- **All 24 adapters audited** — Fixed broken `kill -SIGTERM $(cat /tmp/*.pid)` stop/restart commands across all manifests; replaced with `pkill -SIGTERM -f <binary> || true`.
+- **Eco** — Fixed `start_command` (was incorrect `mono EcoServer.exe`; now `./EcoServer`).
+- **DayZ** — Added `LD_LIBRARY_PATH` and explicit paths to `start_command`.
+- **Minecraft** — Auto-accepts EULA (`echo 'eula=true' > eula.txt`) before starting.
+- **Risk of Rain 2** — Added `wine` prefix to `start_command`.
+
+### Fixed
+- **Installer TUI broken under `curl | bash`** — When piped, bash reads the script from stdin; `read` calls were consuming lines of the script itself as "user input". Fixed by redirecting all `read` commands to `/dev/tty`. Added `HAVE_TTY` detection (`[[ -r /dev/tty ]]`) so the readline path is only used when a keyboard is actually available, and a clear no-tty fallback message otherwise.
+- **Installer unicode rendering** — Replaced `━` box-drawing characters with plain ASCII `=`/`-` so the header renders on all terminals regardless of locale.
+- **`tailFile` ring-buffer returning empty strings** — When a log file had fewer lines than `maxLines`, `start := idx % n` pointed to the uninitialized portion of the ring buffer, returning empty strings. Fixed to `start := 0` when `total <= n`.
+
+---
+
+### Added
 - **`test-live.sh`** — One-liner end-to-end test runner. Installs all dependencies (Go 1.22, Node.js 20 LTS, Trivy, Python packages) in userspace, clones the repo, builds both binaries, generates TLS certs, starts the daemon, and runs the full API + CLI + unit test suite. Minimum requirement: Ubuntu 24.04 with internet access and `bash`.
 - **24 game adapters** — Expanded from 7 to 24: added 7 Days to Die, Among Us (Impostor), ARK Survival Ascended, Conan Exiles, Counter-Strike 2, DayZ, Don't Starve Together, Dota 2, Factorio, Garry's Mod, Left 4 Dead 2, Project Zomboid, Risk of Rain 2, Rust, Squad, Team Fortress 2, and Terraria — alongside the existing Eco, Enshrouded, Minecraft, Palworld, Riftbreaker, Satisfactory, and Valheim.
 

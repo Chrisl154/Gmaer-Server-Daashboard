@@ -9,12 +9,15 @@
 
 | Category | Capabilities |
 |---|---|
-| **Servers** | 24 supported games (Valheim, Minecraft, Rust, CS2, ARK, Palworld, and more) |
-| **Deploy** | SteamCMD, manual archive, Docker, Kubernetes operator |
+| **Servers** | 24 supported games — visual poster-card grid with per-game color themes; hover for start/stop/restart/delete |
+| **Add Server** | 2-step wizard: visual game picker filtered by deploy method → config form |
+| **Deploy** | SteamCMD, manual archive, Docker (19 games), Kubernetes operator |
+| **Logs** | 4-tab Logs page: live server console tail, lifecycle Events, Security/auth events, full Audit Trail |
 | **Console** | Live WebSocket console streaming per server |
 | **Backups** | Scheduled/manual, NFS + S3, incremental, integrity-verified restore |
 | **Mods** | Steam Workshop, CurseForge, Thunderstore, Git, local; sandboxed test harness; RBAC |
 | **Security** | TLS everywhere, AES-256 secrets at rest, TOTP 2FA, OIDC/SAML/OAuth2 |
+| **Audit** | Signed audit trail for all operations; filterable by lifecycle events vs. auth events |
 | **CVE/SBOM** | CycloneDX SBOM, Trivy/Grype scanning, OSV/NVD queries, evidence model |
 | **Networking** | Port mapping UI, reachability probe, UPnP/NAT, firewall automation |
 | **Observability** | Prometheus metrics, Grafana dashboards, structured JSON logs |
@@ -24,7 +27,7 @@
 
 ## 🚀 Quick Start
 
-**Minimum requirement:** Ubuntu 22.04 or 24.04 with internet access and `bash`. Everything else — Go 1.22, Node.js 20 LTS, nginx, Python packages — is installed automatically.
+**Minimum requirement:** Ubuntu 22.04 or 24.04 with internet access and `bash`. Everything else — Go 1.22, Node.js 20 LTS, nginx, SteamCMD, Java, Python packages — is installed automatically.
 
 ### Install (Deploy & Run)
 
@@ -41,6 +44,48 @@ After install, open `https://<your-server-ip>` in a browser. Your browser will s
 > - nginx reverse proxy on port 443 serving the UI and proxying `/api/*` to the daemon
 > - `gdash` CLI available system-wide at `/usr/local/bin/gdash`
 > - All files under `/opt/gdash/`
+> - SteamCMD (required for Steam-based game servers)
+> - Java 21 LTS (required for Minecraft and JVM-based servers)
+> - Docker CE and/or k3s if selected during setup
+
+#### Interactive Setup Wizard
+
+When run in a terminal the installer launches a full TUI wizard with five screens:
+
+1. **Network & Paths** — install directory, server IP, optional hostname, daemon port, HTTPS port
+2. **Admin Account** — username and password (auto-generates a secure password you can keep or replace)
+3. **Storage & Backup** — data directory, backup cron schedule, retention days
+4. **Container Runtimes** — optional Docker CE (enables 19 Docker-capable game servers) and k3s
+5. **Review & Confirm** — summary of all settings before anything is written to disk
+
+> **Tip:** Requires `whiptail` for the full TUI (pre-installed on Ubuntu). Falls back to plain readline prompts if unavailable.
+
+#### Non-Interactive / CI Install
+
+Skip the wizard entirely using environment variables:
+
+```bash
+GDASH_NONINTERACTIVE=1 \
+GDASH_ADMIN_PASS=MySecurePass123 \
+GDASH_INSTALL_DOCKER=true \
+  bash install.sh
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `GDASH_NONINTERACTIVE` | — | Set to `1` to skip all prompts |
+| `GDASH_INSTALL_DIR` | `/opt/gdash` | Root install directory |
+| `GDASH_HOST` | auto-detected | Server IP for TLS and URLs |
+| `GDASH_HOSTNAME` | — | Optional FQDN for TLS SAN |
+| `GDASH_DAEMON_PORT` | `8443` | Internal daemon port |
+| `GDASH_UI_PORT` | `443` | Public HTTPS port |
+| `GDASH_ADMIN_USER` | `admin` | Admin username |
+| `GDASH_ADMIN_PASS` | auto-generated | Admin password |
+| `GDASH_DATA_DIR` | `{INSTALL_DIR}/data` | Runtime data directory |
+| `GDASH_BACKUP_SCHEDULE` | `0 3 * * *` | Default backup cron schedule |
+| `GDASH_BACKUP_RETAIN_DAYS` | `30` | Days to keep old backups |
+| `GDASH_INSTALL_DOCKER` | `false` | Install Docker CE (`true`/`false`) |
+| `GDASH_INSTALL_K8S` | `false` | Install k3s Kubernetes (`true`/`false`) |
 
 ---
 
@@ -86,32 +131,36 @@ curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/m
 
 ## 🎮 Supported Games & Adapters (24)
 
-| Game | Steam App ID | Deploy Methods | Console | Mods |
+Deploy methods: **S** = SteamCMD · **M** = Manual · **D** = Docker · **C** = Custom
+
+| Game | Steam App ID | Deploy | Console | Mods |
 |---|---|---|---|---|
-| 7 Days to Die | 294420 | SteamCMD | Telnet | Yes |
-| Among Us (Impostor) | 945360 | Manual/Custom | stdio | Yes |
-| ARK Survival Ascended | 2430930 | SteamCMD | RCON | Yes |
-| Conan Exiles | 443030 | SteamCMD | RCON | Yes |
-| Counter-Strike 2 | 730 | SteamCMD | RCON | Yes |
-| DayZ | 223350 | SteamCMD | stdio | Yes |
-| Don't Starve Together | 343050 | SteamCMD | stdio | Yes |
-| Dota 2 | 570 | SteamCMD | RCON | Yes |
-| Eco | 382310 | SteamCMD/Manual | WebSocket | Yes |
-| Enshrouded | 2278520 | SteamCMD/Manual | stdio | — |
-| Factorio | 427520 | Manual/SteamCMD | RCON | Yes |
-| Garry's Mod | 4020 | SteamCMD | RCON | Yes |
-| Left 4 Dead 2 | 222860 | SteamCMD | RCON | Yes |
-| Minecraft Java | — | Manual/Custom | RCON | Yes |
-| Palworld | 2394010 | SteamCMD/Manual | RCON | — |
-| Project Zomboid | 380870 | SteamCMD | stdio | Yes |
-| Risk of Rain 2 | 1180760 | SteamCMD | stdio | Yes |
-| Rust | 252490 | SteamCMD | WebRCON | Yes |
-| Satisfactory | 1690800 | SteamCMD/Manual | stdio | Yes |
-| Squad | 403240 | SteamCMD | RCON | Yes |
-| Team Fortress 2 | 232250 | SteamCMD | RCON | Yes |
-| Terraria | — | Manual | stdio | Yes |
-| The Riftbreaker | — | Manual/Custom | stdio | Yes |
-| Valheim | 896660 | SteamCMD/Manual | stdio | Yes (Thunderstore) |
+| 7 Days to Die | 294420 | S, D | Telnet | Yes |
+| Among Us (Impostor) | 945360 | M, C, D | stdio | Yes |
+| ARK Survival Ascended | 2430930 | S, D | RCON | Yes |
+| Conan Exiles | 443030 | S, D | RCON | Yes |
+| Counter-Strike 2 | 730 | S, D | RCON | Yes |
+| DayZ | 223350 | S, D | stdio | Yes |
+| Don't Starve Together | 343050 | S, D | stdio | Yes |
+| Dota 2 | 570 | S, D | RCON | Yes |
+| Eco | 382310 | S, M | WebSocket | Yes |
+| Enshrouded | 2278520 | S, M | stdio | — |
+| Factorio | 427520 | M, S, D | RCON | Yes |
+| Garry's Mod | 4020 | S, D | RCON | Yes |
+| Left 4 Dead 2 | 222860 | S, D | RCON | Yes |
+| Minecraft Java | — | M, C, D | RCON | Yes |
+| Palworld | 2394010 | S, M | RCON | — |
+| Project Zomboid | 380870 | S, D | stdio | Yes |
+| Risk of Rain 2 | 1180760 | S, D | stdio | Yes |
+| Rust | 252490 | S, D | WebRCON | Yes |
+| Satisfactory | 1690800 | S, M | stdio | Yes |
+| Squad | 403240 | S, D | RCON | Yes |
+| Team Fortress 2 | 232250 | S, D | RCON | Yes |
+| Terraria | — | M, D | stdio | Yes |
+| The Riftbreaker | — | M, C | stdio | Yes |
+| Valheim | 896660 | S, M, D | stdio | Yes (Thunderstore) |
+
+> **Docker:** 19 of 24 games have pre-configured Docker images. Install Docker CE during setup (or set `GDASH_INSTALL_DOCKER=true`) to enable the Docker deploy method.
 
 ---
 
