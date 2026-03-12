@@ -283,6 +283,16 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 	}
 	modMgr := modmanager.NewManager(modDir, logger)
 
+	persistedServers := loadServersState(cfg, logger)
+
+	// Pre-populate consoleChs and metricsData for loaded servers.
+	consoleChs := make(map[string]chan string)
+	metricsData := make(map[string]*metricsRing)
+	for id := range persistedServers {
+		consoleChs[id] = make(chan string, 1000)
+		metricsData[id] = &metricsRing{}
+	}
+
 	return &Broker{
 		cfg:         cfg,
 		secrets:     secretsMgr,
@@ -294,17 +304,66 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		clusterMgr:  clusterMgr,
 		backupSvc:   bkpSvc,
 		modMgr:      modMgr,
-		servers:     make(map[string]*Server),
+		servers:     persistedServers,
 		jobs:        make(map[string]*Job),
-		consoleChs:  make(map[string]chan string),
+		consoleChs:  consoleChs,
 		processes:   make(map[string]*exec.Cmd),
-		metricsData: make(map[string]*metricsRing),
+		metricsData: metricsData,
 	}, nil
 }
 
 // ClusterManager returns the cluster manager (may be nil if cluster disabled)
 func (b *Broker) ClusterManager() *cluster.Manager {
 	return b.clusterMgr
+}
+
+// saveServersLocked persists the servers map to disk. Must be called with b.mu held (read or write).
+func (b *Broker) saveServersLocked() {
+	if b.cfg == nil {
+		return
+	}
+	path := filepath.Join(b.cfg.Storage.DataDir, "servers.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		b.logger.Warn("Failed to create data dir for server state", zap.Error(err))
+		return
+	}
+	data, err := json.Marshal(b.servers)
+	if err != nil {
+		b.logger.Warn("Failed to marshal server state", zap.Error(err))
+		return
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		b.logger.Warn("Failed to write server state", zap.Error(err))
+	}
+}
+
+// loadServersState reads the persisted servers map from disk. Transient states are reset to stopped.
+func loadServersState(cfg *config.Config, logger *zap.Logger) map[string]*Server {
+	servers := make(map[string]*Server)
+	if cfg == nil {
+		return servers
+	}
+	path := filepath.Join(cfg.Storage.DataDir, "servers.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logger.Warn("Failed to read server state file", zap.Error(err))
+		}
+		return servers
+	}
+	if err := json.Unmarshal(data, &servers); err != nil {
+		logger.Warn("Failed to parse server state file — starting fresh", zap.Error(err))
+		return make(map[string]*Server)
+	}
+	// Reset transient states so the UI doesn't show stale starting/running/stopping entries.
+	for _, s := range servers {
+		if s.State == StateStarting || s.State == StateRunning || s.State == StateStopping {
+			s.State = StateStopped
+		}
+		s.PID = 0
+	}
+	logger.Info("Loaded persisted server state", zap.Int("count", len(servers)))
+	return servers
 }
 
 // BackupService returns the backup service
@@ -531,6 +590,7 @@ func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Se
 	b.servers[req.ID] = server
 	b.consoleChs[req.ID] = make(chan string, 1000)
 	b.metricsData[req.ID] = &metricsRing{}
+	b.saveServersLocked()
 
 	b.logger.Info("Server created",
 		zap.String("id", req.ID),
@@ -571,6 +631,7 @@ func (b *Broker) UpdateServer(ctx context.Context, id string, req UpdateServerRe
 		s.BackupConfig = req.BackupConfig
 	}
 	s.UpdatedAt = time.Now()
+	b.saveServersLocked()
 	return s, nil
 }
 
@@ -591,6 +652,7 @@ func (b *Broker) DeleteServer(ctx context.Context, id string) error {
 	deployMethod := s.DeployMethod
 	containerID := s.ContainerID
 	delete(b.servers, id)
+	b.saveServersLocked()
 	if ch, ok := b.consoleChs[id]; ok {
 		close(ch)
 		delete(b.consoleChs, id)

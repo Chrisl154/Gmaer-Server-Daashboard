@@ -44,9 +44,9 @@ After install, open `https://<your-server-ip>` in a browser. Your browser will s
 > - nginx reverse proxy on port 443 serving the UI and proxying `/api/*` to the daemon
 > - `gdash` CLI available system-wide at `/usr/local/bin/gdash`
 > - All files under `/opt/gdash/`
-> - SteamCMD (required for Steam-based game servers)
+> - **Docker CE** (required — used for SteamCMD installs and Docker-native game servers)
 > - Java 21 LTS (required for Minecraft and JVM-based servers)
-> - Docker CE and/or k3s if selected during setup
+> - k3s Kubernetes if selected during setup
 
 #### Interactive Setup Wizard
 
@@ -55,7 +55,7 @@ When run in a terminal the installer launches a full TUI wizard with five screen
 1. **Network & Paths** — install directory, server IP, optional hostname, daemon port, HTTPS port
 2. **Admin Account** — username and password (auto-generates a secure password you can keep or replace)
 3. **Storage & Backup** — data directory, backup cron schedule, retention days
-4. **Container Runtimes** — optional Docker CE (enables 19 Docker-capable game servers) and k3s
+4. **Container Runtimes** — Docker CE (required; installed automatically) and optional k3s
 5. **Review & Confirm** — summary of all settings before anything is written to disk
 
 > **Tip:** Requires `whiptail` for the full TUI (pre-installed on Ubuntu). Falls back to plain readline prompts if unavailable.
@@ -84,7 +84,7 @@ GDASH_INSTALL_DOCKER=true \
 | `GDASH_DATA_DIR` | `{INSTALL_DIR}/data` | Runtime data directory |
 | `GDASH_BACKUP_SCHEDULE` | `0 3 * * *` | Default backup cron schedule |
 | `GDASH_BACKUP_RETAIN_DAYS` | `30` | Days to keep old backups |
-| `GDASH_INSTALL_DOCKER` | `false` | Install Docker CE (`true`/`false`) |
+| `GDASH_INSTALL_DOCKER` | `true` | Install Docker CE (required; set `false` only if Docker is already installed) |
 | `GDASH_INSTALL_K8S` | `false` | Install k3s Kubernetes (`true`/`false`) |
 
 ---
@@ -346,10 +346,17 @@ See [ROADMAP.md](docs/ROADMAP.md) for planned features.
 
 What's coming next — loosely ordered by impact. See [ROADMAP.md](docs/ROADMAP.md) for the full list with details.
 
+### Shipped
+| Feature | Description |
+|---|---|
+| **SteamCMD via Docker** | All SteamCMD installs now run in an isolated Docker container — no host SteamCMD required |
+| **Persistent server state** | JSON-backed state that survives daemon restarts; transient states (starting/running/stopping) reset to stopped on reload |
+| **Per-server logs tab** | Logs tab on each server detail page streams lifecycle output before and after the server process starts |
+| **Subsystem log filtering** | Global Logs page Events tab filters by subsystem prefix (server, backup, mod, auth, etc.) |
+
 ### Near-term
 | Feature | Description |
 |---|---|
-| **Persistent server state** | SQLite-backed state that survives daemon restarts |
 | **Automatic crash recovery** | Auto-restart on unexpected exit, configurable retries + back-off |
 | **Self-update mechanism** | "Check for Updates" + "Apply Update" buttons — no SSH required |
 | **Plain-English errors** | Human-readable error messages instead of raw Go stack traces |

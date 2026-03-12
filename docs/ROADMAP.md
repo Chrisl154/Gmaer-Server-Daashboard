@@ -25,12 +25,8 @@ Add a `--mode=node` flag (or a TUI screen) to `install.sh` that installs a machi
 - `gdash node remove <id>` drain + deregister flow
 - What is already built: `cluster.Manager`, BestFit placement, `gdash node list/add` CLI
 
-### Persistent server state (survive daemon restarts)
-All server records currently live in memory. A daemon restart wipes every server definition.
-
-- Write server records to a SQLite (or JSON) state file on every create/update/delete
-- Re-hydrate on startup so all servers, deploy methods, and container IDs are restored
-- This is the single most critical reliability gap — without it nothing else matters in production
+### ~~Persistent server state~~ ✅ SHIPPED
+Server records are now written to `{data_dir}/servers.json` on every create/update/delete and re-hydrated on startup. Transient states (starting/running/stopping) are reset to `stopped` on load. Container IDs and all configuration are preserved across restarts.
 
 ### Automatic crash recovery
 If a game server process exits unexpectedly, the broker should auto-restart it.
