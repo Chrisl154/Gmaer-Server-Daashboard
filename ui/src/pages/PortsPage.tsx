@@ -33,10 +33,11 @@ interface FirewallStatus {
 function FirewallPanel() {
   const qc = useQueryClient();
 
-  const { data: fw, isLoading, isError } = useQuery<FirewallStatus>({
+  const { data: fw, isLoading, isError, error, refetch } = useQuery<FirewallStatus>({
     queryKey: ['firewall'],
     queryFn: () => api.get('/api/v1/firewall').then(r => r.data),
     refetchInterval: 15_000,
+    retry: 2,
   });
 
   const [form, setForm] = useState({ port: '', proto: 'tcp', from: '', comment: '' });
@@ -91,10 +92,29 @@ function FirewallPanel() {
   }
 
   if (isError || !fw) {
+    const detail = (error as any)?.response?.data?.error
+      ?? (error as any)?.message
+      ?? 'No response from daemon — make sure it is running and up to date.';
+    const status = (error as any)?.response?.status;
     return (
-      <div className="card p-8 flex items-center gap-3" style={{ color: 'var(--text-secondary)' }}>
-        <AlertTriangle className="w-5 h-5 text-yellow-400" />
-        <span className="text-sm">Could not reach the firewall API.</span>
+      <div className="card p-6 flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 flex-shrink-0 text-yellow-400" />
+          <div>
+            <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Could not reach the firewall API
+              {status ? ` (HTTP ${status})` : ''}
+            </p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>{detail}</p>
+          </div>
+        </div>
+        <button
+          onClick={() => refetch()}
+          className="self-start text-xs px-3 py-1.5 rounded border"
+          style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+        >
+          Retry
+        </button>
       </div>
     );
   }
