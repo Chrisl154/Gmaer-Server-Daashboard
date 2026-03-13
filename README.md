@@ -438,12 +438,12 @@ What's coming next — loosely ordered by impact. See [ROADMAP.md](docs/ROADMAP.
 | **GUI firewall rule editor** | Ports page → Firewall Rules panel: view rules, add (port/proto/CIDR/comment), delete, enable/disable UFW — no SSH needed |
 | **Cluster join tokens** | Single-use 24 h tokens required to register worker nodes; persisted across daemon restarts; `gdash node token` to generate |
 | **Valheim binary fix** | Post-deploy `exec_bins` chmod step + pre-start binary verification — fixes "not found" on SteamCMD-installed game binaries |
+| **In-UI config file editor** | Edit `server.properties`, `cfg/*.cfg`, launch scripts, etc. from the Config tab — no SSH needed; path-traversal safe, 1 MiB cap, audit-logged |
 
 ### Near-term
 | Feature | Description |
 |---|---|
 | **Automatic crash recovery** | Auto-restart on unexpected exit, configurable retries + back-off |
-| **In-UI config file editor** | Edit `server.properties`, launch scripts, etc. without SSH |
 
 ### Medium-term
 | Feature | Description |
