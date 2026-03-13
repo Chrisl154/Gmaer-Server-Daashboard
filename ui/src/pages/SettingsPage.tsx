@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Settings, Shield, Server, HardDrive, Network, Activity,
@@ -744,11 +744,26 @@ interface UpdateStatus {
   error?: string;
 }
 
+function progressStage(p: number): string {
+  if (p < 5)  return 'Starting update…';
+  if (p < 15) return 'Checking environment (Go, Node)…';
+  if (p < 30) return 'Pulling latest code from GitHub…';
+  if (p < 60) return 'Building daemon binary…';
+  if (p < 70) return 'Building CLI binary…';
+  if (p < 90) return 'Building UI (npm + vite build)…';
+  if (p < 95) return 'Wrapping up…';
+  if (p < 100) return 'Restarting service — page will reload shortly…';
+  return 'Complete!';
+}
+
 function UpdatesSection() {
   const qc = useQueryClient();
   const [branch, setBranch] = useState<'main' | 'dev'>('main');
   const [applyMsg, setApplyMsg] = useState('');
   const [showLog, setShowLog] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Pass selected branch so the status check compares HEAD vs origin/<branch>
   const { data: status, isLoading, isFetching, refetch } = useQuery<UpdateStatus>({
@@ -760,22 +775,62 @@ function UpdatesSection() {
   const { data: logData, refetch: refetchLog } = useQuery<{ lines: string[]; note?: string }>({
     queryKey: ['update-log'],
     queryFn: () => api.get('/api/v1/admin/update/log').then(r => r.data),
-    enabled: showLog,
-    staleTime: 5_000,
+    enabled: showLog || updating,
+    staleTime: 0,
   });
+
+  // Parse PROGRESS:N markers from the log while update is running
+  useEffect(() => {
+    if (!updating) return;
+    const lines = logData?.lines ?? [];
+    let latest = progress;
+    for (const line of lines) {
+      const m = line.match(/^PROGRESS:(\d+)$/);
+      if (m) latest = Math.max(latest, parseInt(m[1], 10));
+    }
+    if (latest !== progress) setProgress(latest);
+    // Stop polling when script signals completion
+    if (latest >= 100 || lines.some(l => l.includes('=== Update complete ==='))) {
+      setUpdating(false);
+      setProgress(100);
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    }
+  }, [logData]);
+
+  // Auto-reload the page ~35 s after restart signal (progress ≥ 95)
+  useEffect(() => {
+    if (progress >= 95 && progress < 100) {
+      const t = setTimeout(() => window.location.reload(), 35_000);
+      return () => clearTimeout(t);
+    }
+  }, [progress >= 95]);
+
+  // Clean up polling interval on unmount
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
+  const startUpdatePolling = () => {
+    setUpdating(true);
+    setProgress(0);
+    setShowLog(true);
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(() => refetchLog(), 2_000);
+  };
 
   const apply = useMutation({
     mutationFn: () => api.post('/api/v1/admin/update/apply', { branch }).then(r => r.data),
     onSuccess: (data: any) => {
       setApplyMsg(data?.msg ?? 'Update started.');
-      toast.success('Update launched — dashboard restarting…');
+      toast.success('Update launched — dashboard restarting in ~60 s…');
       qc.invalidateQueries({ queryKey: ['update-status'] });
+      startUpdatePolling();
     },
     onError: (e: any) => toast.error(e.response?.data?.error ?? 'Update failed'),
   });
 
   // Sync branch picker to current repo branch on first load
-  React.useEffect(() => {
+  useEffect(() => {
     if (status?.current_branch === 'dev') setBranch('dev');
   }, [status?.current_branch]);
 
@@ -895,7 +950,7 @@ function UpdatesSection() {
 
         <button
           onClick={() => apply.mutate()}
-          disabled={apply.isPending || !!applyMsg}
+          disabled={apply.isPending || updating || !!applyMsg}
           className="btn-primary flex items-center gap-2"
         >
           {apply.isPending
@@ -904,6 +959,55 @@ function UpdatesSection() {
           {apply.isPending ? 'Launching update…' : `Update to ${branch}`}
         </button>
       </div>
+
+      {/* Progress bar — shown while update script is running */}
+      {(updating || (progress > 0 && progress < 100)) && (
+        <div className="card p-5 space-y-3">
+          <h3 className="label flex items-center gap-2">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Update in Progress
+          </h3>
+          <div>
+            <div className="flex justify-between text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>
+              <span>{progressStage(progress)}</span>
+              <span className="tabular-nums font-mono" style={{ color: 'var(--text-muted)' }}>{progress}%</span>
+            </div>
+            {/* Track */}
+            <div className="h-2.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-elevated)' }}>
+              {/* Fill */}
+              <div
+                className="h-full rounded-full transition-all duration-700 ease-out"
+                style={{
+                  width: `${progress}%`,
+                  background: progress >= 95
+                    ? 'linear-gradient(90deg,#22c55e,#4ade80)'
+                    : 'linear-gradient(90deg,#f97316,#fb923c)',
+                }}
+              />
+            </div>
+            {/* Stage dots */}
+            <div className="flex justify-between mt-1.5 px-0.5">
+              {[10, 30, 60, 70, 90, 95].map(tick => (
+                <div
+                  key={tick}
+                  className="w-1.5 h-1.5 rounded-full transition-colors duration-300"
+                  style={{ background: progress >= tick ? '#f97316' : 'var(--bg-elevated)' }}
+                />
+              ))}
+            </div>
+          </div>
+          {progress >= 95 && (
+            <p className="text-xs flex items-center gap-1.5 text-green-400">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              Service restarting — page reloads automatically in ~35 s
+            </p>
+          )}
+        </div>
+      )}
+      {progress === 100 && !updating && (
+        <div className="card p-4 flex items-center gap-2 text-green-400 text-sm">
+          <CheckCircle2 className="w-4 h-4" /> Update complete! Dashboard has restarted.
+        </div>
+      )}
 
       {/* Update log viewer */}
       <div className="card overflow-hidden">

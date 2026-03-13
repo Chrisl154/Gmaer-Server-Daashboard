@@ -888,6 +888,7 @@ LOG="$INSTALL_DIR/logs/gdash-update.log"
 exec >> "$LOG" 2>&1
 echo ""
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') === gdash self-update to branch: $BRANCH ==="
+echo "PROGRESS:2"
 
 # ── Find Go ──────────────────────────────────────────────────────────────────
 GO_BIN=""
@@ -911,39 +912,49 @@ if ! command -v node &>/dev/null; then
   exit 1
 fi
 echo "Using Node: $(node --version)"
+echo "PROGRESS:10"
 
 # ── Pull latest code ─────────────────────────────────────────────────────────
 echo "Updating repository (branch: $BRANCH)..."
+echo "PROGRESS:15"
 git -C "$REPO_DIR" fetch origin
 git -C "$REPO_DIR" checkout "$BRANCH"
 git -C "$REPO_DIR" pull --ff-only origin "$BRANCH"
 echo "Repository updated to: $(git -C "$REPO_DIR" rev-parse --short HEAD)"
+echo "PROGRESS:30"
 
 # ── Rebuild daemon ───────────────────────────────────────────────────────────
 echo "Building daemon..."
+echo "PROGRESS:35"
 $GO_BIN build -o "${BIN_DIR}/games-daemon.new" "${REPO_DIR}/daemon/cmd/daemon"
 mv "${BIN_DIR}/games-daemon.new" "${BIN_DIR}/games-daemon"
 echo "Daemon binary updated."
+echo "PROGRESS:60"
 
 # ── Rebuild CLI ──────────────────────────────────────────────────────────────
 echo "Building CLI..."
 $GO_BIN build -o "${BIN_DIR}/gdash.new" "${REPO_DIR}/cli/cmd"
 mv "${BIN_DIR}/gdash.new" "${BIN_DIR}/gdash"
 echo "CLI binary updated."
+echo "PROGRESS:70"
 
 # ── Rebuild UI ───────────────────────────────────────────────────────────────
 echo "Building UI..."
+echo "PROGRESS:75"
 cd "$UI_SRC"
 npm install --silent 2>/dev/null
 chmod +x node_modules/.bin/* 2>/dev/null || true
 node_modules/.bin/vite build --outDir "${UI_DST}" --emptyOutDir 2>/dev/null
 echo "UI rebuilt."
+echo "PROGRESS:90"
 
 # ── Restart service ──────────────────────────────────────────────────────────
 echo "Restarting gdash-daemon..."
+echo "PROGRESS:95"
 sleep 2
 sudo systemctl restart gdash-daemon
 echo "=== Update complete ==="
+echo "PROGRESS:100"
 UPDATESCRIPT
 
 chmod +x "${BIN_DIR}/gdash-update.sh"
