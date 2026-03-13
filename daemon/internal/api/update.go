@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,14 +16,16 @@ import (
 const (
 	updateScriptPath = "/opt/gdash/bin/gdash-update.sh"
 	repoDirPath      = "/opt/gdash/repo"
+	updateLogPath    = "/var/log/gdash-update.log"
 )
 
-// getUpdateStatus returns current branch, commit, and whether updates are available.
+// getUpdateStatus returns current branch, commit, and whether updates are available
+// on the requested target branch (query param ?branch=dev|main; defaults to current branch).
 func (s *Server) getUpdateStatus(c *gin.Context) {
 	hashOut, err := exec.Command("git", "-C", repoDirPath, "rev-parse", "--short", "HEAD").Output() //nolint:gosec
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"error":          "could not read git state — is the repo at " + repoDirPath + "?",
+			"error":            "could not read git state — is the repo at " + repoDirPath + "?",
 			"update_available": false,
 		})
 		return
@@ -35,24 +38,61 @@ func (s *Server) getUpdateStatus(c *gin.Context) {
 		currentBranch = "main"
 	}
 
+	// The target branch is what the user selected in the UI (may differ from current).
+	targetBranch := c.DefaultQuery("branch", currentBranch)
+	if targetBranch != "main" && targetBranch != "dev" {
+		targetBranch = currentBranch
+	}
+
 	// Fetch so behind-count is accurate (best-effort; ignore errors — no internet, etc.)
 	_ = exec.Command("git", "-C", repoDirPath, "fetch", "origin", "--quiet").Run() //nolint:gosec
 
+	// Compare HEAD against origin/<targetBranch> so switching to dev shows dev's commits.
 	behindOut, _ := exec.Command("git", "-C", repoDirPath, "rev-list", //nolint:gosec
-		"HEAD..origin/"+currentBranch, "--count").Output()
+		"HEAD..origin/"+targetBranch, "--count").Output()
 	commitsBehind, _ := strconv.Atoi(strings.TrimSpace(string(behindOut)))
 
 	latestOut, _ := exec.Command("git", "-C", repoDirPath, "log", //nolint:gosec
-		"origin/"+currentBranch, "-1", "--pretty=format:%s").Output()
+		"origin/"+targetBranch, "-1", "--pretty=format:%s").Output()
 	latestMsg := strings.TrimSpace(string(latestOut))
 
 	c.JSON(http.StatusOK, gin.H{
 		"current_branch":   currentBranch,
+		"target_branch":    targetBranch,
 		"current_commit":   currentCommit,
 		"commits_behind":   commitsBehind,
 		"update_available": commitsBehind > 0,
 		"latest_message":   latestMsg,
 	})
+}
+
+// getUpdateLog returns the last N lines of the update log so the UI can show
+// what the background update script actually did (or why it failed).
+func (s *Server) getUpdateLog(c *gin.Context) {
+	n := 80
+	if nStr := c.Query("lines"); nStr != "" {
+		if parsed, err := strconv.Atoi(nStr); err == nil && parsed > 0 && parsed <= 500 {
+			n = parsed
+		}
+	}
+
+	f, err := os.Open(updateLogPath) //nolint:gosec
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"lines": []string{}, "note": "no update log yet — run an update first"})
+		return
+	}
+	defer f.Close()
+
+	// Collect all lines then return the last n.
+	var all []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		all = append(all, scanner.Text())
+	}
+	if len(all) > n {
+		all = all[len(all)-n:]
+	}
+	c.JSON(http.StatusOK, gin.H{"lines": all})
 }
 
 // applyUpdate kicks off the update script in a detached process and returns 202 immediately.

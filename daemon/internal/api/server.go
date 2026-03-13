@@ -205,6 +205,7 @@ func (s *Server) registerRoutes() {
 	// Self-update (admin-only)
 	admin.GET("/update/status", s.getUpdateStatus)
 	admin.POST("/update/apply", s.applyUpdate)
+	admin.GET("/update/log", s.getUpdateLog)
 
 	// Firewall (UFW)
 	v1.GET("/firewall", s.getFirewallStatus)

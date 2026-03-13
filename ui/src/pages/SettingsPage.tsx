@@ -736,6 +736,7 @@ function MonitoringSection() {
 
 interface UpdateStatus {
   current_branch: string;
+  target_branch: string;
   current_commit: string;
   commits_behind: number;
   update_available: boolean;
@@ -747,11 +748,20 @@ function UpdatesSection() {
   const qc = useQueryClient();
   const [branch, setBranch] = useState<'main' | 'dev'>('main');
   const [applyMsg, setApplyMsg] = useState('');
+  const [showLog, setShowLog] = useState(false);
 
+  // Pass selected branch so the status check compares HEAD vs origin/<branch>
   const { data: status, isLoading, isFetching, refetch } = useQuery<UpdateStatus>({
-    queryKey: ['update-status'],
-    queryFn: () => api.get('/api/v1/admin/update/status').then(r => r.data),
-    staleTime: 60_000,
+    queryKey: ['update-status', branch],
+    queryFn: () => api.get(`/api/v1/admin/update/status?branch=${branch}`).then(r => r.data),
+    staleTime: 30_000,
+  });
+
+  const { data: logData, refetch: refetchLog } = useQuery<{ lines: string[]; note?: string }>({
+    queryKey: ['update-log'],
+    queryFn: () => api.get('/api/v1/admin/update/log').then(r => r.data),
+    enabled: showLog,
+    staleTime: 5_000,
   });
 
   const apply = useMutation({
@@ -764,7 +774,7 @@ function UpdatesSection() {
     onError: (e: any) => toast.error(e.response?.data?.error ?? 'Update failed'),
   });
 
-  // Sync branch picker to current remote branch on first load
+  // Sync branch picker to current repo branch on first load
   React.useEffect(() => {
     if (status?.current_branch === 'dev') setBranch('dev');
   }, [status?.current_branch]);
@@ -893,6 +903,42 @@ function UpdatesSection() {
             : <Download className="w-3.5 h-3.5" />}
           {apply.isPending ? 'Launching update…' : `Update to ${branch}`}
         </button>
+      </div>
+
+      {/* Update log viewer */}
+      <div className="card overflow-hidden">
+        <button
+          className="w-full flex items-center justify-between px-5 py-3.5 text-sm"
+          style={{ borderBottom: showLog ? '1px solid var(--border)' : undefined }}
+          onClick={() => {
+            setShowLog(v => !v);
+            if (!showLog) refetchLog();
+          }}
+        >
+          <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>Update Log</span>
+          <span style={{ color: 'var(--text-muted)' }}>{showLog ? '▲ Hide' : '▼ Show'}</span>
+        </button>
+        {showLog && (
+          <div className="p-4">
+            {logData?.note ? (
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{logData.note}</p>
+            ) : (
+              <pre
+                className="text-xs font-mono whitespace-pre-wrap overflow-auto max-h-80 leading-relaxed"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                {(logData?.lines ?? []).join('\n') || '(empty)'}
+              </pre>
+            )}
+            <button
+              onClick={() => refetchLog()}
+              className="mt-3 text-xs px-3 py-1.5 rounded border"
+              style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+            >
+              Refresh
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
