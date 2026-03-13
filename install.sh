@@ -551,8 +551,8 @@ ok "Python packages: pyyaml, bcrypt"
 section "Step 1: Clone / Update Repository"
 # =============================================================================
 
-$SUDO mkdir -p "$INSTALL_DIR"
-$SUDO chown "$USER":"$USER" "$INSTALL_DIR"
+$SUDO mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/logs"
+$SUDO chown "$USER":"$USER" "$INSTALL_DIR" "$INSTALL_DIR/logs"
 
 REPO_DIR="$INSTALL_DIR/repo"
 if [[ -d "$REPO_DIR/.git" ]]; then
@@ -883,7 +883,7 @@ REPO_DIR="$INSTALL_DIR/repo"
 BIN_DIR="$INSTALL_DIR/bin"
 UI_SRC="$REPO_DIR/ui"
 UI_DST="$INSTALL_DIR/ui"
-LOG="/var/log/gdash-update.log"
+LOG="$INSTALL_DIR/logs/gdash-update.log"
 
 exec >> "$LOG" 2>&1
 echo ""

@@ -16,7 +16,7 @@ import (
 const (
 	updateScriptPath = "/opt/gdash/bin/gdash-update.sh"
 	repoDirPath      = "/opt/gdash/repo"
-	updateLogPath    = "/var/log/gdash-update.log"
+	updateLogPath    = "/opt/gdash/logs/gdash-update.log"
 )
 
 // getUpdateStatus returns current branch, commit, and whether updates are available

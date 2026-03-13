@@ -150,6 +150,8 @@ curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/m
 | `/opt/gdash/tls/` | Self-signed TLS certificate (10 years) |
 | `/opt/gdash/data/` | Runtime data (servers, backups, etc.) |
 | `/opt/gdash/secrets/` | Encrypted secrets store |
+| `/opt/gdash/logs/gdash-update.log` | Self-update script output (viewable in Settings → Updates) |
+| `/opt/gdash/bin/gdash-update.sh` | Self-update script (called by daemon on update) |
 | `/etc/systemd/system/gdash-daemon.service` | Systemd unit |
 | `/etc/nginx/sites-available/gdash` | nginx site config |
 | `/usr/local/bin/gdash` | CLI symlink |
@@ -429,7 +431,7 @@ What's coming next — loosely ordered by impact. See [ROADMAP.md](docs/ROADMAP.
 | **Persistent server state** | JSON-backed state that survives daemon restarts; transient states (starting/running/stopping) reset to stopped on reload |
 | **Per-server logs tab** | Logs tab on each server detail page streams lifecycle output before and after the server process starts |
 | **Subsystem log filtering** | Global Logs page Events tab filters by subsystem prefix (server, backup, mod, auth, etc.) |
-| **Self-update** | Settings → Updates tab + `gdash update`; git pull, rebuild daemon + UI, restart — choose `main` or `dev` branch |
+| **Self-update** | Settings → Updates tab + `gdash update`; git pull, rebuild daemon + UI, restart — choose `main` or `dev` branch; branch-aware status check + in-UI update log viewer |
 | **Plain-English errors** | All daemon/API/cluster error messages rewritten to be human-readable and actionable (no raw Go traces) |
 | **Node-install mode** | `--mode=node` installer flag deploys daemon-only on a worker machine and outputs the `gdash node add` registration command |
 | **UFW firewall management** | Installer auto-configures UFW (deny-by-default, SSH restricted to local subnets); full rule CRUD in the Ports page GUI |
