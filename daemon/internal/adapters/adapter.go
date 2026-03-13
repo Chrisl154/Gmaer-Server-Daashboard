@@ -172,6 +172,15 @@ func (r *Registry) DefaultPorts(adapterID string) []PortSpec {
 	return m.Ports
 }
 
+// ConfigTemplates returns the config file templates for an adapter.
+func (r *Registry) ConfigTemplates(adapterID string) []ConfigTemplate {
+	m, ok := r.manifests[adapterID]
+	if !ok {
+		return nil
+	}
+	return m.ConfigTemplates
+}
+
 // BackupPaths returns the recommended backup paths for an adapter
 func (r *Registry) BackupPaths(adapterID string) []string {
 	m, ok := r.manifests[adapterID]

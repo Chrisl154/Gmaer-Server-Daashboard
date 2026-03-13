@@ -2156,3 +2156,126 @@ func jsonStr(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// ── Config file editor ────────────────────────────────────────────────────────
+
+// ConfigFileInfo describes one adapter-defined config file and whether it exists.
+type ConfigFileInfo struct {
+	Path        string `json:"path"`
+	Description string `json:"description"`
+	Exists      bool   `json:"exists"`
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+}
+
+// ListConfigFiles returns the adapter-defined config file templates for a server,
+// annotated with whether each file currently exists on disk.
+func (b *Broker) ListConfigFiles(_ context.Context, serverID string) ([]ConfigFileInfo, error) {
+	b.mu.RLock()
+	s, ok := b.servers[serverID]
+	b.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("server %q not found", serverID)
+	}
+
+	templates := b.adapters.ConfigTemplates(s.Adapter)
+	result := make([]ConfigFileInfo, 0, len(templates))
+	for _, t := range templates {
+		rel := configTemplatePath(t.Path)
+		info := ConfigFileInfo{Path: rel, Description: t.Description}
+		if s.InstallDir != "" {
+			if fi, err := os.Stat(filepath.Join(s.InstallDir, rel)); err == nil {
+				info.Exists = true
+				info.SizeBytes = fi.Size()
+			}
+		}
+		result = append(result, info)
+	}
+	return result, nil
+}
+
+// ReadConfigFile reads a config file relative to the server's install directory.
+func (b *Broker) ReadConfigFile(_ context.Context, serverID, relPath string) (string, error) {
+	installDir, err := b.serverInstallDir(serverID)
+	if err != nil {
+		return "", err
+	}
+	abs, err := safeConfigPath(installDir, relPath)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(abs) //nolint:gosec
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("file %q does not exist yet — save to create it", relPath)
+		}
+		return "", fmt.Errorf("could not read %q: %w", relPath, err)
+	}
+	if len(data) > 1<<20 { // 1 MiB limit
+		return "", fmt.Errorf("file too large (> 1 MiB) — use SSH to edit it directly")
+	}
+	return string(data), nil
+}
+
+// WriteConfigFile writes content to a config file relative to the server's install directory.
+func (b *Broker) WriteConfigFile(_ context.Context, serverID, relPath, content string) error {
+	installDir, err := b.serverInstallDir(serverID)
+	if err != nil {
+		return err
+	}
+	abs, err := safeConfigPath(installDir, relPath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return fmt.Errorf("could not create directory for %q: %w", relPath, err)
+	}
+	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil { //nolint:gosec
+		return fmt.Errorf("could not write %q: %w", relPath, err)
+	}
+	b.logger.Info("Config file saved", zap.String("server", serverID), zap.String("path", relPath))
+	return nil
+}
+
+// GetAdapterConfigTemplates returns the config templates defined in an adapter manifest.
+func (b *Broker) GetAdapterConfigTemplates(adapterID string) []adapters.ConfigTemplate {
+	t := b.adapters.ConfigTemplates(adapterID)
+	if t == nil {
+		return []adapters.ConfigTemplate{}
+	}
+	return t
+}
+
+// serverInstallDir returns a server's InstallDir or an error if unknown.
+func (b *Broker) serverInstallDir(serverID string) (string, error) {
+	b.mu.RLock()
+	s, ok := b.servers[serverID]
+	b.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("server %q not found", serverID)
+	}
+	if s.InstallDir == "" {
+		return "", fmt.Errorf("server %q has no install directory — deploy it first", serverID)
+	}
+	return s.InstallDir, nil
+}
+
+// safeConfigPath joins base and rel, rejecting paths that escape base.
+func safeConfigPath(base, rel string) (string, error) {
+	// Strip leading slash so callers can pass either "server.properties" or "/server.properties".
+	rel = strings.TrimPrefix(filepath.Clean(rel), "/")
+	abs := filepath.Join(base, rel)
+	if !strings.HasPrefix(abs, filepath.Clean(base)+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid path: %q escapes the server directory", rel)
+	}
+	return abs, nil
+}
+
+// configTemplatePath converts an adapter template path (e.g. "/data/server.properties")
+// to a path relative to install_dir by stripping the "/data/" prefix used by Docker volumes.
+func configTemplatePath(p string) string {
+	p = filepath.Clean(p)
+	if strings.HasPrefix(p, "/data/") {
+		return p[len("/data/"):]
+	}
+	return strings.TrimPrefix(p, "/")
+}

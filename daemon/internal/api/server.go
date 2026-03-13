@@ -154,6 +154,12 @@ func (s *Server) registerRoutes() {
 	v1.GET("/servers/:id/console/stream", s.streamConsole)
 	v1.POST("/servers/:id/console/command", s.sendConsoleCommand)
 
+	// Config file editor
+	v1.GET("/servers/:id/config/files", s.listConfigFiles)
+	v1.GET("/servers/:id/config/files/*path", s.readConfigFile)
+	v1.PUT("/servers/:id/config/files/*path", s.writeConfigFile)
+	v1.GET("/adapters/:adapterId/config-templates", s.getAdapterTemplates)
+
 	// Backups
 	v1.GET("/servers/:id/backups", s.listBackups)
 	v1.POST("/servers/:id/backup", s.triggerBackup)

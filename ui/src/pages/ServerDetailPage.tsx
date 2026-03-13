@@ -1,10 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft, Play, Square, RotateCcw, HardDrive, Package,
   Download, Maximize2, Cpu, MemoryStick, Clock, Activity,
-  FileText, RefreshCw,
+  FileText, RefreshCw, Save, RotateCw, AlertCircle, CheckCircle2,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { api, getWsUrl } from '../utils/api';
@@ -805,24 +805,262 @@ function PortsTab({ server }: { server: any }) {
 
 // ── Config tab ────────────────────────────────────────────────────────────────
 
+interface ConfigFileInfo {
+  path: string;
+  description: string;
+  exists: boolean;
+  size_bytes?: number;
+}
+
+interface ConfigTemplate {
+  path: string;
+  description: string;
+  sample: string;
+}
+
 function ConfigTab({ server }: { server: any }) {
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [content, setContent] = useState('');
+  const [originalContent, setOriginalContent] = useState('');
+  const [loadingContent, setLoadingContent] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
+  const [saveError, setSaveError] = useState('');
+  const [fileList, setFileList] = useState<ConfigFileInfo[]>([]);
+
+  const { data: templates } = useQuery<{ templates: ConfigTemplate[] }>({
+    queryKey: ['adapter-templates', server.adapter],
+    queryFn: () => api.get(`/api/v1/adapters/${server.adapter}/config-templates`).then(r => r.data),
+    staleTime: 60_000,
+  });
+
+  const { data: filesData, isLoading: filesLoading } = useQuery<{ files: ConfigFileInfo[] }>({
+    queryKey: ['config-files', server.id],
+    queryFn: () => api.get(`/api/v1/servers/${server.id}/config/files`).then(r => r.data),
+    staleTime: 30_000,
+  });
+
+  useEffect(() => {
+    if (filesData?.files) {
+      setFileList(filesData.files);
+      if (!selectedPath && filesData.files.length > 0) {
+        handleSelectFile(filesData.files[0]);
+      }
+    }
+  }, [filesData]);
+
+  const handleSelectFile = useCallback(async (file: ConfigFileInfo) => {
+    setSelectedPath(file.path);
+    setSaveStatus('idle');
+    setSaveError('');
+
+    if (!file.exists) {
+      const tmpl = templates?.templates?.find(t => {
+        const cleaned = t.path.replace(/^\/data\//, '').replace(/^\//, '');
+        return cleaned === file.path;
+      });
+      setContent(tmpl?.sample ?? '');
+      setOriginalContent('');
+      return;
+    }
+
+    setLoadingContent(true);
+    try {
+      const r = await api.get(`/api/v1/servers/${server.id}/config/files/${file.path}`);
+      setContent(r.data.content);
+      setOriginalContent(r.data.content);
+    } catch (e: any) {
+      const msg = e?.response?.data?.error ?? 'Failed to read file';
+      setContent(`# Error: ${msg}`);
+      setOriginalContent('');
+    } finally {
+      setLoadingContent(false);
+    }
+  }, [server.id, templates]);
+
+  const handleSave = async () => {
+    if (!selectedPath) return;
+    setSaving(true);
+    setSaveStatus('idle');
+    setSaveError('');
+    try {
+      await api.put(`/api/v1/servers/${server.id}/config/files/${selectedPath}`, { content });
+      setOriginalContent(content);
+      setSaveStatus('saved');
+      setFileList(prev => prev.map(f => f.path === selectedPath ? { ...f, exists: true } : f));
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    } catch (e: any) {
+      setSaveStatus('error');
+      setSaveError(e?.response?.data?.error ?? 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUseTemplate = () => {
+    if (!selectedPath) return;
+    const tmpl = templates?.templates?.find(t => {
+      const cleaned = t.path.replace(/^\/data\//, '').replace(/^\//, '');
+      return cleaned === selectedPath;
+    });
+    if (tmpl?.sample) setContent(tmpl.sample);
+  };
+
+  const isDirty = content !== originalContent;
+
+  if (filesLoading) {
+    return (
+      <div className="flex items-center justify-center h-40" style={{ color: 'var(--text-muted)' }}>
+        <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading config files…
+      </div>
+    );
+  }
+
+  if (fileList.length === 0) {
+    return (
+      <div className="card p-8 text-center" style={{ color: 'var(--text-muted)' }}>
+        <FileText className="w-8 h-8 mx-auto mb-3 opacity-40" />
+        <p className="text-sm">No config files defined for this adapter.</p>
+        <p className="text-xs mt-1 opacity-70">Deploy the server first, then add config template entries to the adapter manifest.</p>
+      </div>
+    );
+  }
+
   return (
-    <div>
-      <h3 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Configuration</h3>
-      <div className="card overflow-hidden">
-        <div className="px-4 py-2.5 flex items-center gap-2"
-          style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
-          <div className="flex items-center gap-1.5">
-            <div className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
-            <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/70" />
-            <div className="w-2.5 h-2.5 rounded-full bg-green-500/70" />
+    <div className="flex gap-4" style={{ minHeight: '520px' }}>
+      {/* File list sidebar */}
+      <div className="w-56 flex-shrink-0 space-y-1">
+        <p className="label mb-2">Config Files</p>
+        {fileList.map(file => (
+          <button
+            key={file.path}
+            onClick={() => handleSelectFile(file)}
+            className={cn(
+              'w-full text-left px-3 py-2 rounded text-xs font-mono transition-colors',
+              selectedPath === file.path
+                ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
+                : 'hover:bg-white/5 border border-transparent',
+            )}
+            style={{ color: selectedPath === file.path ? undefined : 'var(--text-secondary)' }}
+          >
+            <div className="flex items-center gap-1.5">
+              <div className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', file.exists ? 'bg-green-500' : 'bg-yellow-500/60')} />
+              <span className="truncate">{file.path.split('/').pop()}</span>
+            </div>
+            {file.description && (
+              <div className="text-xs mt-0.5 ml-3 opacity-60 truncate font-sans">{file.description}</div>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Editor pane */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {selectedPath ? (
+          <>
+            {/* Toolbar */}
+            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                  {selectedPath}
+                </span>
+                {isDirty && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400">unsaved</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {templates?.templates?.some(t => {
+                  const cleaned = t.path.replace(/^\/data\//, '').replace(/^\//, '');
+                  return cleaned === selectedPath;
+                }) && (
+                  <button
+                    onClick={handleUseTemplate}
+                    className="btn-ghost text-xs flex items-center gap-1"
+                    title="Replace with adapter sample template"
+                  >
+                    <RotateCw className="w-3 h-3" /> Use Template
+                  </button>
+                )}
+                <button
+                  onClick={handleSave}
+                  disabled={saving || !isDirty}
+                  className="btn-primary text-xs flex items-center gap-1 disabled:opacity-40"
+                >
+                  {saving ? (
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Save className="w-3 h-3" />
+                  )}
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+
+            {/* Status messages */}
+            {saveStatus === 'saved' && (
+              <div className="flex items-center gap-1.5 text-xs text-green-400 mb-2">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Saved successfully
+              </div>
+            )}
+            {saveStatus === 'error' && (
+              <div className="flex items-center gap-1.5 text-xs text-red-400 mb-2">
+                <AlertCircle className="w-3.5 h-3.5" /> {saveError}
+              </div>
+            )}
+
+            {/* Editor */}
+            <div className="card overflow-hidden flex-1 flex flex-col">
+              {/* macOS-style title bar */}
+              <div className="px-4 py-2 flex items-center gap-2 flex-shrink-0"
+                style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/70" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-green-500/70" />
+                </div>
+                <span className="text-xs font-mono ml-2" style={{ color: 'var(--text-muted)' }}>
+                  {selectedPath.split('/').pop()}
+                </span>
+              </div>
+              {loadingContent ? (
+                <div className="flex items-center justify-center flex-1 p-8" style={{ color: 'var(--text-muted)' }}>
+                  <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading…
+                </div>
+              ) : (
+                <textarea
+                  className="flex-1 p-4 text-xs font-mono resize-none outline-none w-full"
+                  style={{
+                    background: '#080810',
+                    color: 'var(--text-primary)',
+                    minHeight: '400px',
+                    lineHeight: '1.6',
+                    tabSize: 2,
+                  }}
+                  value={content}
+                  onChange={e => setContent(e.target.value)}
+                  spellCheck={false}
+                  onKeyDown={e => {
+                    // Tab inserts two spaces instead of moving focus
+                    if (e.key === 'Tab') {
+                      e.preventDefault();
+                      const el = e.currentTarget;
+                      const start = el.selectionStart;
+                      const end = el.selectionEnd;
+                      setContent(content.substring(0, start) + '  ' + content.substring(end));
+                      requestAnimationFrame(() => {
+                        el.selectionStart = el.selectionEnd = start + 2;
+                      });
+                    }
+                  }}
+                />
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center justify-center h-full" style={{ color: 'var(--text-muted)' }}>
+            <p className="text-sm">Select a file to edit</p>
           </div>
-          <span className="text-xs font-mono ml-2" style={{ color: 'var(--text-muted)' }}>config.json</span>
-        </div>
-        <pre className="p-5 text-xs font-mono overflow-auto max-h-96"
-          style={{ background: '#080810', color: 'var(--text-primary)' }}>
-          {JSON.stringify(server.config ?? {}, null, 2)}
-        </pre>
+        )}
       </div>
     </div>
   );
