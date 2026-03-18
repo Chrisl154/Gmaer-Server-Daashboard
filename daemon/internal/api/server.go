@@ -171,6 +171,12 @@ func (s *Server) registerRoutes() {
 	v1.GET("/servers/:id/config-files/*path", s.readConfigFile)
 	v1.PUT("/servers/:id/config-files/*path", s.writeConfigFile)
 
+	// File browser
+	v1.GET("/servers/:id/files", s.listFiles)
+	v1.GET("/servers/:id/files/download", s.downloadFile)
+	v1.POST("/servers/:id/files/upload", s.uploadFile)
+	v1.DELETE("/servers/:id/files", s.deleteFile)
+
 	// Mods
 	v1.GET("/servers/:id/mods", s.listMods)
 	v1.POST("/servers/:id/mods", s.installMod)
@@ -597,6 +603,87 @@ func (s *Server) writeConfigFile(c *gin.Context) {
 		return
 	}
 	if err := s.cfg.Broker.WriteConfigFile(c.Request.Context(), id, relPath, body.Content); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ── File browser ──────────────────────────────────────────────────────────────
+
+func (s *Server) listFiles(c *gin.Context) {
+	id := c.Param("id")
+	dirPath := c.DefaultQuery("path", "/")
+	entries, err := s.cfg.Broker.ListFiles(c.Request.Context(), id, dirPath)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"path": dirPath, "entries": entries})
+}
+
+func (s *Server) downloadFile(c *gin.Context) {
+	id := c.Param("id")
+	filePath := c.Query("path")
+	if filePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+	content, err := s.cfg.Broker.ReadConfigFile(c.Request.Context(), id, filePath)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	filename := filePath
+	if idx := strings.LastIndex(filePath, "/"); idx >= 0 {
+		filename = filePath[idx+1:]
+	}
+	c.Header("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	c.Data(http.StatusOK, "application/octet-stream", []byte(content))
+}
+
+func (s *Server) uploadFile(c *gin.Context) {
+	id := c.Param("id")
+	destDir := c.DefaultQuery("dir", "/")
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "multipart form expected"})
+		return
+	}
+	files := form.File["file"]
+	if len(files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no files in request"})
+		return
+	}
+	for _, fh := range files {
+		f, openErr := fh.Open()
+		if openErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot open uploaded file"})
+			return
+		}
+		data := make([]byte, fh.Size)
+		if _, readErr := f.Read(data); readErr != nil {
+			f.Close()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot read uploaded file"})
+			return
+		}
+		f.Close()
+		if uploadErr := s.cfg.Broker.UploadFile(c.Request.Context(), id, destDir, fh.Filename, data); uploadErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": uploadErr.Error()})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "count": len(files)})
+}
+
+func (s *Server) deleteFile(c *gin.Context) {
+	id := c.Param("id")
+	filePath := c.Query("path")
+	if filePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+	if err := s.cfg.Broker.DeleteFile(c.Request.Context(), id, filePath); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

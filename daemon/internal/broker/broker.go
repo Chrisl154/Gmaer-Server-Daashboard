@@ -2439,3 +2439,104 @@ func (b *Broker) WriteConfigFile(ctx context.Context, id, relPath, content strin
 	}
 	return nil
 }
+
+// ── File browser ──────────────────────────────────────────────────────────────
+
+// FileEntry describes a single file or directory inside a server's install dir.
+type FileEntry struct {
+	Name     string    `json:"name"`
+	IsDir    bool      `json:"is_dir"`
+	Size     int64     `json:"size"`
+	Modified time.Time `json:"modified"`
+	// Path is relative to the server's install directory, starting with "/".
+	Path string `json:"path"`
+}
+
+// ListFiles returns the directory entries at dirPath inside the server's
+// install directory. dirPath is relative (leading slash stripped internally).
+func (b *Broker) ListFiles(ctx context.Context, id, dirPath string) ([]FileEntry, error) {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("server %q not found", id)
+	}
+	abs, err := b.configFilePath(s.InstallDir, dirPath)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		return nil, fmt.Errorf("cannot list directory: %w", err)
+	}
+	installDir := filepath.Clean(s.InstallDir)
+	result := make([]FileEntry, 0, len(entries))
+	for _, e := range entries {
+		info, iErr := e.Info()
+		if iErr != nil {
+			continue
+		}
+		full := filepath.Join(abs, e.Name())
+		rel, _ := filepath.Rel(installDir, full)
+		result = append(result, FileEntry{
+			Name:     e.Name(),
+			IsDir:    e.IsDir(),
+			Size:     info.Size(),
+			Modified: info.ModTime().UTC(),
+			Path:     "/" + rel,
+		})
+	}
+	return result, nil
+}
+
+// DeleteFile deletes a file (not a directory) at relPath inside the server's
+// install directory.
+func (b *Broker) DeleteFile(ctx context.Context, id, relPath string) error {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("server %q not found", id)
+	}
+	abs, err := b.configFilePath(s.InstallDir, relPath)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return fmt.Errorf("file not found: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("path %q is a directory — use recursive delete explicitly", relPath)
+	}
+	return os.Remove(abs)
+}
+
+// UploadFile writes the contents of an uploaded file to destDir/filename inside
+// the server's install directory, creating destDir if needed.
+func (b *Broker) UploadFile(ctx context.Context, id, destDir, filename string, data []byte) error {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("server %q not found", id)
+	}
+	dirAbs, err := b.configFilePath(s.InstallDir, destDir)
+	if err != nil {
+		return err
+	}
+	// Validate filename has no path separators.
+	if strings.ContainsAny(filename, "/\\") {
+		return fmt.Errorf("filename must not contain path separators")
+	}
+	if err := os.MkdirAll(dirAbs, 0o755); err != nil {
+		return fmt.Errorf("cannot create destination directory: %w", err)
+	}
+	dest := filepath.Join(dirAbs, filename)
+	// Re-check the destination is still within the install dir.
+	prefix := filepath.Clean(s.InstallDir) + string(os.PathSeparator)
+	if !strings.HasPrefix(filepath.Clean(dest), prefix) {
+		return fmt.Errorf("destination path is outside the server install directory")
+	}
+	return os.WriteFile(dest, data, 0o644)
+}

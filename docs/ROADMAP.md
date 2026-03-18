@@ -57,12 +57,15 @@ Users should be able to tweak server settings without SSH.
 - Saves write directly to the install directory with path-traversal protection
 - Falls back to the manifest sample content when the file doesn't exist yet
 
-### In-UI file browser
+### ~~In-UI file browser~~ ✅ SHIPPED
 Browse, download, upload, and delete files in the server install directory from the browser — important for mod assets, world saves, and config files.
 
-- Tree view with drag-and-drop upload
-- Download individual files or zip an entire folder
-- Delete with confirmation
+- Directory tree with breadcrumb navigation — click folders to descend, `..` row to go up
+- File table showing name, size, modified date with icons for files vs folders
+- Download individual files (raw bytes served via `GET /files/download`)
+- Upload one or more files to the current directory via multipart form
+- Delete files with a confirmation modal (directory delete blocked)
+- New **Files** tab on the Server Detail page (tab #8)
 
 ### "Share with Friends" connection info panel
 One click to get everything a friend needs to join.

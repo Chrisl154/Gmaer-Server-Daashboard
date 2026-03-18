@@ -5,7 +5,7 @@ import {
   ArrowLeft, Play, Square, RotateCcw, HardDrive, Package,
   Download, Maximize2, Cpu, MemoryStick, Clock, Activity,
   FileText, RefreshCw, Save, FolderOpen, Share2, Copy, Check, X,
-  Wifi, WifiOff,
+  Wifi, WifiOff, Upload, Trash2, Folder, File, ChevronRight,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { api, getWsUrl } from '../utils/api';
@@ -15,7 +15,7 @@ import {
 } from 'recharts';
 import type { ServerMetricSample } from '../types';
 
-type Tab = 'overview' | 'console' | 'logs' | 'backups' | 'mods' | 'ports' | 'config';
+type Tab = 'overview' | 'console' | 'logs' | 'backups' | 'mods' | 'ports' | 'config' | 'files';
 
 const STATE_CLASS: Record<string, string> = {
   running:   'status-running',
@@ -84,6 +84,7 @@ export function ServerDetailPage() {
     { id: 'mods',     label: 'Mods'      },
     { id: 'ports',    label: 'Ports'     },
     { id: 'config',   label: 'Config'    },
+    { id: 'files',    label: 'Files'     },
   ];
 
   return (
@@ -194,6 +195,7 @@ export function ServerDetailPage() {
         {activeTab === 'mods'     && <ModsTab serverId={id!} />}
         {activeTab === 'ports'    && <PortsTab server={server} />}
         {activeTab === 'config'   && <ConfigTab server={server} />}
+        {activeTab === 'files'    && <FilesTab serverId={id!} />}
       </div>
     </div>
   );
@@ -1194,6 +1196,266 @@ function ConfigTab({ server }: { server: any }) {
           <span>{selectedPath?.split('/').pop() ?? ''}</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Files tab ─────────────────────────────────────────────────────────────────
+
+interface FileEntry {
+  name: string;
+  is_dir: boolean;
+  size: number;
+  modified: string;
+  path: string;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function FilesTab({ serverId }: { serverId: string }) {
+  const [currentPath, setCurrentPath] = useState('/');
+  const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['files', serverId, currentPath],
+    queryFn: () => api.get(`/api/v1/servers/${serverId}/files`, { params: { path: currentPath } }).then(r => r.data),
+  });
+
+  const entries: FileEntry[] = data?.entries ?? [];
+
+  const deleteMutation = useMutation({
+    mutationFn: (path: string) => api.delete(`/api/v1/servers/${serverId}/files`, { params: { path } }),
+    onSuccess: () => {
+      toast.success('File deleted');
+      setDeleteTarget(null);
+      queryClient.invalidateQueries({ queryKey: ['files', serverId, currentPath] });
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.error ?? 'Delete failed'),
+  });
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const form = new FormData();
+    for (let i = 0; i < files.length; i++) form.append('file', files[i]);
+    try {
+      await api.post(`/api/v1/servers/${serverId}/files/upload`, form, {
+        params: { dir: currentPath },
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      toast.success(`Uploaded ${files.length} file(s)`);
+      queryClient.invalidateQueries({ queryKey: ['files', serverId, currentPath] });
+    } catch (e: any) {
+      toast.error(e?.response?.data?.error ?? 'Upload failed');
+    }
+    if (uploadRef.current) uploadRef.current.value = '';
+  };
+
+  const handleDownload = (entry: FileEntry) => {
+    const url = `/api/v1/servers/${serverId}/files/download?path=${encodeURIComponent(entry.path)}`;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = entry.name;
+    a.click();
+  };
+
+  // Build breadcrumb segments from currentPath.
+  const segments = currentPath === '/'
+    ? []
+    : currentPath.split('/').filter(Boolean);
+
+  const navigateTo = (idx: number) => {
+    if (idx < 0) { setCurrentPath('/'); return; }
+    setCurrentPath('/' + segments.slice(0, idx + 1).join('/'));
+  };
+
+  return (
+    <div className="card overflow-hidden">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between px-4 py-3 gap-3"
+        style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+        {/* Breadcrumb */}
+        <div className="flex items-center gap-1 text-sm flex-1 min-w-0 overflow-hidden">
+          <button
+            onClick={() => setCurrentPath('/')}
+            className="transition-colors hover:underline shrink-0"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            <FolderOpen className="w-4 h-4 inline-block mr-1" />
+            root
+          </button>
+          {segments.map((seg, i) => (
+            <React.Fragment key={i}>
+              <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
+              <button
+                onClick={() => navigateTo(i)}
+                className="transition-colors hover:underline truncate max-w-[120px]"
+                style={{ color: i === segments.length - 1 ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+              >
+                {seg}
+              </button>
+            </React.Fragment>
+          ))}
+        </div>
+        {/* Actions */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            className="btn-secondary flex items-center gap-1.5 text-xs px-3 py-1.5"
+            onClick={() => uploadRef.current?.click()}
+          >
+            <Upload className="w-3.5 h-3.5" /> Upload
+          </button>
+          <input ref={uploadRef} type="file" multiple className="hidden" onChange={handleUpload} />
+        </div>
+      </div>
+
+      {/* File list */}
+      {isLoading ? (
+        <div className="p-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>Loading…</div>
+      ) : error ? (
+        <div className="p-8 text-center text-sm" style={{ color: 'var(--error)' }}>
+          Could not load files — make sure the server has been deployed.
+        </div>
+      ) : entries.length === 0 ? (
+        <div className="p-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+          This directory is empty.
+        </div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+              <th className="text-left px-4 py-2 font-medium" style={{ color: 'var(--text-secondary)' }}>Name</th>
+              <th className="text-right px-4 py-2 font-medium hidden sm:table-cell" style={{ color: 'var(--text-secondary)' }}>Size</th>
+              <th className="text-right px-4 py-2 font-medium hidden md:table-cell" style={{ color: 'var(--text-secondary)' }}>Modified</th>
+              <th className="px-4 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {/* Parent dir row */}
+            {currentPath !== '/' && (
+              <tr
+                className="cursor-pointer transition-colors"
+                style={{ borderBottom: '1px solid var(--border)' }}
+                onClick={() => {
+                  const parent = currentPath.split('/').slice(0, -1).join('/') || '/';
+                  setCurrentPath(parent);
+                }}
+              >
+                <td className="px-4 py-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <Folder className="w-4 h-4 shrink-0" style={{ color: 'var(--text-muted)' }} />
+                    <span style={{ color: 'var(--text-secondary)' }}>..</span>
+                  </div>
+                </td>
+                <td className="px-4 py-2.5 hidden sm:table-cell" />
+                <td className="px-4 py-2.5 hidden md:table-cell" />
+                <td className="px-4 py-2.5" />
+              </tr>
+            )}
+            {entries
+              .slice()
+              .sort((a, b) => {
+                if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+                return a.name.localeCompare(b.name);
+              })
+              .map(entry => (
+                <tr
+                  key={entry.path}
+                  className="transition-colors"
+                  style={{ borderBottom: '1px solid var(--border)' }}
+                >
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2.5">
+                      {entry.is_dir
+                        ? <Folder className="w-4 h-4 shrink-0 text-yellow-400" />
+                        : <File className="w-4 h-4 shrink-0" style={{ color: 'var(--text-muted)' }} />}
+                      {entry.is_dir ? (
+                        <button
+                          className="hover:underline text-left truncate"
+                          style={{ color: 'var(--text-primary)' }}
+                          onClick={() => setCurrentPath(entry.path)}
+                        >
+                          {entry.name}
+                        </button>
+                      ) : (
+                        <span className="truncate" style={{ color: 'var(--text-primary)' }}>{entry.name}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-right hidden sm:table-cell font-mono text-xs"
+                    style={{ color: 'var(--text-secondary)' }}>
+                    {entry.is_dir ? '—' : formatBytes(entry.size)}
+                  </td>
+                  <td className="px-4 py-2.5 text-right hidden md:table-cell text-xs"
+                    style={{ color: 'var(--text-muted)' }}>
+                    {new Date(entry.modified).toLocaleDateString()}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center justify-end gap-1">
+                      {!entry.is_dir && (
+                        <button
+                          className="p-1.5 rounded transition-colors"
+                          style={{ color: 'var(--text-muted)' }}
+                          title="Download"
+                          onClick={() => handleDownload(entry)}
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        className="p-1.5 rounded transition-colors"
+                        style={{ color: 'var(--text-muted)' }}
+                        title="Delete"
+                        onClick={() => setDeleteTarget(entry)}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      )}
+
+      {/* Delete confirmation modal */}
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.6)' }}
+          onClick={() => setDeleteTarget(null)}
+        >
+          <div
+            className="card p-6 max-w-sm w-full"
+            style={{ background: 'var(--bg-card)' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+              Delete {deleteTarget.is_dir ? 'folder' : 'file'}?
+            </h3>
+            <p className="text-sm mb-5" style={{ color: 'var(--text-secondary)' }}>
+              <span className="font-mono">{deleteTarget.name}</span> will be permanently deleted.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button className="btn-secondary" onClick={() => setDeleteTarget(null)}>Cancel</button>
+              <button
+                className="btn-danger"
+                onClick={() => deleteMutation.mutate(deleteTarget.path)}
+                disabled={deleteMutation.isPending}
+              >
+                {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

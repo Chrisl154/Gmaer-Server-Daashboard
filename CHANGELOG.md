@@ -31,6 +31,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Color-coded disk bar on `ServerCard`** — Green below 70%, yellow 70–84%, orange 85–94%, red ≥ 95%.
 - **Dashboard-level sticky banner** — `DashboardPage` shows a warning/critical banner listing every server at ≥ 85% full with their current percentage. Banner is orange at warning level and red when any server hits ≥ 95%.
 
+#### In-UI File Browser
+- **`GET /api/v1/servers/:id/files`** — lists directory entries (name, is_dir, size, modified, path) at an arbitrary path inside the server's install dir. Path-traversal-safe via the existing `configFilePath` helper.
+- **`GET /api/v1/servers/:id/files/download`** — serves a file as a raw download attachment. Uses the existing `ReadConfigFile` broker method.
+- **`POST /api/v1/servers/:id/files/upload`** — accepts a `multipart/form-data` upload of one or more files (`field name: file`) and writes them to the destination directory (`?dir=` query param).
+- **`DELETE /api/v1/servers/:id/files`** — deletes a single file (directories blocked). Path-traversal-safe.
+- **Broker methods** — `ListFiles`, `UploadFile`, `DeleteFile` added to `broker.go`, all using path-traversal protection consistent with the config file editor.
+- **FilesTab component** — new 8th tab on the Server Detail page. Shows a breadcrumb navigator, sortable file table (dirs first, then files alphabetically), size formatting (`formatBytes`), upload button, per-file download and delete buttons, and a delete-confirmation modal.
+
 #### Getting Started Checklist (Onboarding)
 - **`GettingStartedChecklist` component** — A dismissible panel on the Dashboard with four steps: Add your first server, Take a backup, Set up crash notifications, Invite a user.
 - **Auto-progress** — The "Add server" step is automatically marked done when `serverCount > 0` (server list updates every 15 s).

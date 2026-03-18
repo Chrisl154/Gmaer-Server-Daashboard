@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React from 'react';
 
 vi.mock('../utils/api', () => ({
-  api: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
+  api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
   getWsUrl: vi.fn((path: string) => `ws://localhost${path}`),
 }));
 vi.mock('react-hot-toast', () => ({
@@ -70,6 +70,7 @@ beforeEach(() => {
     if (url.includes('/backups'))      return Promise.resolve({ data: { backups: [] } });
     if (url.includes('/mods'))         return Promise.resolve({ data: { mods: [] } });
     if (url.includes('/config-files')) return Promise.resolve({ data: { files: [] } });
+    if (url.includes('/files'))        return Promise.resolve({ data: { path: '/', entries: [] } });
     // default: server detail
     return Promise.resolve({ data: serverData });
   });
@@ -87,10 +88,10 @@ describe('ServerDetailPage', () => {
     await waitFor(() => expect(screen.getAllByText('minecraft').length).toBeGreaterThanOrEqual(1));
   });
 
-  it('renders all 7 tabs', async () => {
+  it('renders all 8 tabs', async () => {
     wrap();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Overview' })).toBeTruthy());
-    ['Console', 'Logs', 'Backups', 'Mods', 'Ports', 'Config'].forEach(tab => {
+    ['Console', 'Logs', 'Backups', 'Mods', 'Ports', 'Config', 'Files'].forEach(tab => {
       expect(screen.getByRole('button', { name: tab })).toBeTruthy();
     });
   });
@@ -188,5 +189,38 @@ describe('ServerDetailPage', () => {
       const ta = screen.getByRole('textbox');
       expect(ta).toBeTruthy();
     });
+  });
+
+  it('switches to Files tab and shows empty directory state', async () => {
+    wrap();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+    await waitFor(() => expect(screen.getByText('This directory is empty.')).toBeTruthy());
+  });
+
+  it('Files tab shows file list with names, sizes and actions', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes('/metrics'))      return Promise.resolve({ data: { samples: [] } });
+      if (url.includes('/logs'))         return Promise.resolve({ data: { logs: [] } });
+      if (url.includes('/backups'))      return Promise.resolve({ data: { backups: [] } });
+      if (url.includes('/mods'))         return Promise.resolve({ data: { mods: [] } });
+      if (url.includes('/config-files')) return Promise.resolve({ data: { files: [] } });
+      if (url.includes('/files')) return Promise.resolve({
+        data: {
+          path: '/',
+          entries: [
+            { name: 'world', is_dir: true,  size: 0,    modified: '2024-01-01T00:00:00Z', path: '/world' },
+            { name: 'server.properties', is_dir: false, size: 1024, modified: '2024-01-01T00:00:00Z', path: '/server.properties' },
+          ],
+        },
+      });
+      return Promise.resolve({ data: serverData });
+    });
+    wrap();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+    await waitFor(() => expect(screen.getByText('world')).toBeTruthy());
+    expect(screen.getByText('server.properties')).toBeTruthy();
+    expect(screen.getByText('1.0 KB')).toBeTruthy();
   });
 });
