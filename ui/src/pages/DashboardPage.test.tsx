@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React from 'react';
@@ -39,7 +39,10 @@ function wrap() {
   );
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  localStorage.clear();
+});
 
 describe('DashboardPage', () => {
   it('renders the Dashboard heading', () => {
@@ -157,5 +160,60 @@ describe('DashboardPage', () => {
     });
     wrap();
     await waitFor(() => expect(screen.queryByText(/disk space/i)).toBeNull());
+  });
+
+  describe('GettingStartedChecklist', () => {
+    it('renders the Getting Started checklist by default', async () => {
+      mockGet.mockResolvedValue({ data: { servers: [], count: 0 } });
+      wrap();
+      await waitFor(() => expect(screen.getByText('Getting Started')).toBeTruthy());
+      expect(screen.getByText('Add your first game server')).toBeTruthy();
+      expect(screen.getByText('Take a backup')).toBeTruthy();
+      expect(screen.getByText('Set up crash notifications')).toBeTruthy();
+      expect(screen.getByText('Invite a user')).toBeTruthy();
+    });
+
+    it('hides checklist after dismiss button click', async () => {
+      mockGet.mockResolvedValue({ data: { servers: [], count: 0 } });
+      wrap();
+      await waitFor(() => expect(screen.getByTitle('Dismiss')).toBeTruthy());
+      fireEvent.click(screen.getByTitle('Dismiss'));
+      await waitFor(() => expect(screen.queryByText('Getting Started')).toBeNull());
+    });
+
+    it('auto-marks server step done when serverCount > 0', async () => {
+      mockGet.mockResolvedValue({
+        data: {
+          servers: [{ id: 's1', name: 'Test', adapter: 'minecraft', state: 'running', ports: [], resources: { cpu_cores: 2, ram_gb: 4, disk_gb: 20 } }],
+          count: 1,
+        },
+      });
+      wrap();
+      await waitFor(() => {
+        // "1/4" badge indicates one step done
+        expect(screen.getByText('1/4')).toBeTruthy();
+      });
+    });
+
+    it('does not render checklist when already dismissed via localStorage', async () => {
+      localStorage.setItem('gdash_checklist_dismissed', '1');
+      mockGet.mockResolvedValue({ data: { servers: [], count: 0 } });
+      wrap();
+      await waitFor(() => expect(screen.queryByText('Getting Started')).toBeNull());
+    });
+
+    it('collapses and expands the checklist', async () => {
+      mockGet.mockResolvedValue({ data: { servers: [], count: 0 } });
+      wrap();
+      await waitFor(() => expect(screen.getByText('Getting Started')).toBeTruthy());
+      // Step text is visible before collapsing
+      expect(screen.getByText('Add your first game server')).toBeTruthy();
+      // Click header to collapse
+      fireEvent.click(screen.getByText('Getting Started'));
+      await waitFor(() => expect(screen.queryByText('Add your first game server')).toBeNull());
+      // Click again to expand
+      fireEvent.click(screen.getByText('Getting Started'));
+      await waitFor(() => expect(screen.getByText('Add your first game server')).toBeTruthy());
+    });
   });
 });

@@ -31,6 +31,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Color-coded disk bar on `ServerCard`** — Green below 70%, yellow 70–84%, orange 85–94%, red ≥ 95%.
 - **Dashboard-level sticky banner** — `DashboardPage` shows a warning/critical banner listing every server at ≥ 85% full with their current percentage. Banner is orange at warning level and red when any server hits ≥ 95%.
 
+#### Getting Started Checklist (Onboarding)
+- **`GettingStartedChecklist` component** — A dismissible panel on the Dashboard with four steps: Add your first server, Take a backup, Set up crash notifications, Invite a user.
+- **Auto-progress** — The "Add server" step is automatically marked done when `serverCount > 0` (server list updates every 15 s).
+- **Per-step toggle** — Each step has a checkbox button; clicking marks it done / undone. State persisted to `localStorage` (`gdash_checklist_steps`).
+- **Collapsible header** — Clicking the "Getting Started" header collapses/expands the step list. A `n/4` progress badge is always visible.
+- **Dismiss** — The × button permanently hides the checklist (persisted via `localStorage` key `gdash_checklist_dismissed`).
+- **Action links** — Each step has a "Go to …" button linking to the relevant page.
+
 #### Live Resource Overview Table (Dashboard)
 - **`cpu_pct` / `ram_pct` mirrored onto `Server`** — The metrics collector now copies the latest CPU and RAM percentages from the ring buffer directly onto the `Server` struct each cycle, so the servers-list endpoint carries live metrics without extra API calls.
 - **`ResourceTable` component** — Replaces the old server card grid on the dashboard. Each server is a row with columns: Server (icon + name + game) | Status | CPU bar | RAM bar | Disk bar | Allocated (cores / RAM / disk).

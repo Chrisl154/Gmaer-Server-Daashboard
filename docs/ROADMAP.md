@@ -86,12 +86,13 @@ Manage who can join without editing text files.
 - UI shows a searchable table: add players by name/Steam ID, remove with one click
 - Changes write the file and optionally send a live RCON reload command
 
-### Discord / webhook notifications
+### ~~Discord / webhook notifications~~ ✅ SHIPPED
 Alert the server owner when something important happens — no polling required.
 
 - Configurable webhook URL in Settings (Discord, Slack, generic HTTP POST)
-- Events: server crashed, server restarted, backup completed/failed, disk >80% full, player count hits 0 after being non-zero (server may be empty/stuck)
-- Per-server toggles so noisy servers don't spam
+- Events: server crashed, server restarted, disk >80% full
+- Per-event toggles so noisy events don't spam
+- One-click "Send Test" button to verify the webhook works
 
 ### ~~Disk space and resource warning banners~~ ✅ SHIPPED
 Non-technical users won't notice a full disk until everything breaks.
@@ -109,12 +110,13 @@ Keep game servers up to date without manual deploys.
 - Automatic backup before every update
 - Show "Update available" badge on server cards when a newer version is detected
 
-### Onboarding wizard (in-UI first-run)
+### ~~Onboarding wizard (in-UI first-run)~~ ✅ SHIPPED
 After the install the user lands on a blank servers page with no guidance.
 
-- On first login (no servers exist) launch a 3-step modal: pick a game → name your server → deploy
-- Contextual tooltips on every form field explaining what the value does
-- A dismissible "Getting started" checklist in the sidebar (Deploy a server · Take a backup · Invite a user)
+- A dismissible "Getting Started" checklist on the Dashboard (Deploy a server · Take a backup · Set up notifications · Invite a user)
+- Auto-marks the "Add server" step done when the first server is created
+- Collapsible, persisted via localStorage, with per-step toggle
+- Hides completely once dismissed
 
 ### Persistent server state across daemon restarts
 - SQLite store under `data/state.db`

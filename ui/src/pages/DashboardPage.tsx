@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, Server, HardDrive, Shield, AlertTriangle, ExternalLink } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import {
+  Activity, Server, HardDrive, Shield, AlertTriangle, ExternalLink,
+  CheckCircle2, Circle, X, ChevronDown, ChevronUp, Bell, Users,
+} from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
 import { StatsCard } from '../components/Dashboard/StatsCard';
 import { api } from '../utils/api';
 import { ADAPTER_ICONS, ADAPTER_NAMES } from '../utils/adapters';
@@ -192,8 +195,243 @@ export function DashboardPage() {
         </div>
       )}
 
+      {/* Getting Started checklist — shown until dismissed */}
+      <GettingStartedChecklist serverCount={servers.length} />
+
       {/* Resource Table */}
       <ResourceTable servers={servers} isLoading={isLoading} />
+    </div>
+  );
+}
+
+// ── Getting Started checklist ─────────────────────────────────────────────────
+
+const CHECKLIST_KEY = 'gdash_checklist_dismissed';
+const CHECKLIST_STEPS_KEY = 'gdash_checklist_steps';
+
+interface ChecklistStep {
+  id: string;
+  label: string;
+  description: string;
+  link: string;
+  linkLabel: string;
+  icon: React.FC<any>;
+}
+
+const STEPS: ChecklistStep[] = [
+  {
+    id: 'server',
+    label: 'Add your first game server',
+    description: 'Deploy Valheim, Minecraft, Satisfactory or any of 24 supported games.',
+    link: '/servers',
+    linkLabel: 'Go to Servers',
+    icon: Server,
+  },
+  {
+    id: 'backup',
+    label: 'Take a backup',
+    description: 'Protect your world saves and config files with one click.',
+    link: '/backups',
+    linkLabel: 'Go to Backups',
+    icon: HardDrive,
+  },
+  {
+    id: 'notifications',
+    label: 'Set up crash notifications',
+    description: 'Get a Discord or Slack alert when a server crashes or disk fills up.',
+    link: '/settings',
+    linkLabel: 'Open Settings',
+    icon: Bell,
+  },
+  {
+    id: 'user',
+    label: 'Invite a user',
+    description: 'Let friends or co-admins manage servers without sharing your password.',
+    link: '/settings',
+    linkLabel: 'Open Settings',
+    icon: Users,
+  },
+];
+
+function GettingStartedChecklist({ serverCount }: { serverCount: number }) {
+  const [dismissed, setDismissed] = useState<boolean>(() => {
+    try { return localStorage.getItem(CHECKLIST_KEY) === '1'; } catch { return false; }
+  });
+  const [doneSteps, setDoneSteps] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(CHECKLIST_STEPS_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+  const [collapsed, setCollapsed] = useState(false);
+
+  // Auto-mark "server" step done when servers exist.
+  useEffect(() => {
+    if (serverCount > 0 && !doneSteps.includes('server')) {
+      const next = [...doneSteps, 'server'];
+      setDoneSteps(next);
+      try { localStorage.setItem(CHECKLIST_STEPS_KEY, JSON.stringify(next)); } catch {}
+    }
+  }, [serverCount]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleStep = (id: string) => {
+    const next = doneSteps.includes(id)
+      ? doneSteps.filter(s => s !== id)
+      : [...doneSteps, id];
+    setDoneSteps(next);
+    try { localStorage.setItem(CHECKLIST_STEPS_KEY, JSON.stringify(next)); } catch {}
+  };
+
+  const dismiss = () => {
+    setDismissed(true);
+    try { localStorage.setItem(CHECKLIST_KEY, '1'); } catch {}
+  };
+
+  const allDone = STEPS.every(s => doneSteps.includes(s.id));
+  const doneCount = STEPS.filter(s => doneSteps.includes(s.id)).length;
+
+  // Hide if manually dismissed or (all done + dismissed automatically after 1 day)
+  if (dismissed) return null;
+
+  return (
+    <div
+      className="card mb-8 overflow-hidden"
+      style={{ border: '1px solid var(--border)' }}
+    >
+      {/* Header */}
+      <div
+        className="flex items-center justify-between px-5 py-3.5 cursor-pointer"
+        style={{ background: 'var(--bg-elevated)', borderBottom: collapsed ? 'none' : '1px solid var(--border)' }}
+        onClick={() => setCollapsed(c => !c)}
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Getting Started
+            </span>
+            <span
+              className="text-xs px-2 py-0.5 rounded-full font-medium"
+              style={{
+                background: allDone ? 'rgba(34,197,94,0.15)' : 'rgba(249,115,22,0.12)',
+                color: allDone ? '#4ade80' : '#fb923c',
+              }}
+            >
+              {doneCount}/{STEPS.length}
+            </span>
+          </div>
+          {!collapsed && (
+            <p className="text-xs hidden sm:block" style={{ color: 'var(--text-muted)' }}>
+              Complete these steps to get your game servers up and running.
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {collapsed
+            ? <ChevronDown className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+            : <ChevronUp className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />}
+          <button
+            onClick={e => { e.stopPropagation(); dismiss(); }}
+            className="w-6 h-6 flex items-center justify-center rounded transition-colors"
+            style={{ color: 'var(--text-muted)' }}
+            title="Dismiss"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Steps */}
+      {!collapsed && (
+        <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
+          {STEPS.map(step => {
+            const done = doneSteps.includes(step.id);
+            const Icon = step.icon;
+            return (
+              <div
+                key={step.id}
+                className="flex items-start gap-4 px-5 py-4 transition-colors"
+                style={{ background: done ? 'rgba(34,197,94,0.04)' : 'transparent' }}
+              >
+                {/* Checkbox */}
+                <button
+                  onClick={() => toggleStep(step.id)}
+                  className="mt-0.5 shrink-0"
+                  title={done ? 'Mark as not done' : 'Mark as done'}
+                >
+                  {done
+                    ? <CheckCircle2 className="w-5 h-5 text-green-400" />
+                    : <Circle className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />}
+                </button>
+
+                {/* Icon */}
+                <div
+                  className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+                  style={{
+                    background: done ? 'rgba(34,197,94,0.12)' : 'var(--bg-elevated)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  <Icon className="w-4 h-4" style={{ color: done ? '#4ade80' : 'var(--text-muted)' }} />
+                </div>
+
+                {/* Text */}
+                <div className="flex-1 min-w-0">
+                  <p
+                    className="text-sm font-medium"
+                    style={{
+                      color: done ? 'var(--text-muted)' : 'var(--text-primary)',
+                      textDecoration: done ? 'line-through' : 'none',
+                    }}
+                  >
+                    {step.label}
+                  </p>
+                  {!done && (
+                    <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      {step.description}
+                    </p>
+                  )}
+                </div>
+
+                {/* Action link */}
+                {!done && (
+                  <Link
+                    to={step.link}
+                    className="shrink-0 text-xs px-3 py-1.5 rounded-lg transition-colors"
+                    style={{
+                      background: 'var(--primary-subtle)',
+                      color: 'var(--primary)',
+                      border: '1px solid var(--primary-border)',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    {step.linkLabel}
+                  </Link>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* All done banner */}
+      {allDone && !collapsed && (
+        <div
+          className="flex items-center justify-between px-5 py-3"
+          style={{ background: 'rgba(34,197,94,0.08)', borderTop: '1px solid rgba(34,197,94,0.2)' }}
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-green-400" />
+            <span className="text-sm font-medium text-green-400">You're all set! Nice work.</span>
+          </div>
+          <button
+            onClick={dismiss}
+            className="text-xs px-3 py-1.5 rounded-lg"
+            style={{ background: 'rgba(34,197,94,0.15)', color: '#4ade80' }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
     </div>
   );
 }
