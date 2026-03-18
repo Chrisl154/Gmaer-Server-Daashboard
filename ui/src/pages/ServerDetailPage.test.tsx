@@ -134,6 +134,33 @@ describe('ServerDetailPage', () => {
     await waitFor(() => expect(screen.getByText('No config files declared')).toBeTruthy());
   });
 
+  it('shows Share button and opens Share modal', async () => {
+    wrap();
+    await waitFor(() => expect(screen.getByRole('button', { name: /share/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /share/i }));
+    // Modal shows public hostname label
+    await waitFor(() => expect(screen.getByText(/public hostname/i)).toBeTruthy());
+  });
+
+  it('Share modal shows join string for Valheim server', async () => {
+    const valheimServer = {
+      ...serverData, adapter: 'valheim',
+      ports: [{ internal: 2456, external: 2456, protocol: 'udp', exposed: true, description: 'Game port' }],
+    };
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes('/metrics'))      return Promise.resolve({ data: { samples: [] } });
+      if (url.includes('/logs'))         return Promise.resolve({ data: { logs: [] } });
+      if (url.includes('/backups'))      return Promise.resolve({ data: { backups: [] } });
+      if (url.includes('/mods'))         return Promise.resolve({ data: { mods: [] } });
+      if (url.includes('/config-files')) return Promise.resolve({ data: { files: [] } });
+      return Promise.resolve({ data: valheimServer });
+    });
+    wrap();
+    await waitFor(() => expect(screen.getByRole('button', { name: /share/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /share/i }));
+    await waitFor(() => expect(screen.getByText(/steam:\/\/connect\//i)).toBeTruthy());
+  });
+
   it('Config tab shows file list and editor when files exist', async () => {
     mockGet.mockImplementation((url: string) => {
       if (url.includes('/metrics'))  return Promise.resolve({ data: { samples: [] } });

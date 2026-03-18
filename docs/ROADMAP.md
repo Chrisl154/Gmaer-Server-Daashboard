@@ -49,12 +49,13 @@ Raw Go error strings are meaningless to non-technical users.
 
 ## Medium-term
 
-### In-UI config file editor
+### ~~In-UI config file editor~~ ✅ SHIPPED
 Users should be able to tweak server settings without SSH.
 
 - Each adapter manifest declares a list of "well-known config files" (e.g. `server.properties`, `valheim/start_server.sh`, `BepInEx/config/`)
-- The server detail page gets a **Config Files** tab with a syntax-highlighted editor
-- Saves write directly to the install directory and optionally restart the server
+- The server detail page **Config Files** tab lists manifest-declared files in a sidebar; clicking any opens a full textarea editor
+- Saves write directly to the install directory with path-traversal protection
+- Falls back to the manifest sample content when the file doesn't exist yet
 
 ### In-UI file browser
 Browse, download, upload, and delete files in the server install directory from the browser — important for mod assets, world saves, and config files.

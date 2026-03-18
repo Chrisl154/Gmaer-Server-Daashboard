@@ -4,7 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft, Play, Square, RotateCcw, HardDrive, Package,
   Download, Maximize2, Cpu, MemoryStick, Clock, Activity,
-  FileText, RefreshCw, Save, FolderOpen,
+  FileText, RefreshCw, Save, FolderOpen, Share2, Copy, Check, X,
+  Wifi, WifiOff,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { api, getWsUrl } from '../utils/api';
@@ -29,6 +30,7 @@ const STATE_CLASS: Record<string, string> = {
 export function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const [showShare, setShowShare] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: server, isLoading } = useQuery({
@@ -151,8 +153,16 @@ export function ServerDetailPage() {
           >
             <HardDrive className="w-4 h-4" /> Backup
           </button>
+          <button
+            onClick={() => setShowShare(true)}
+            className="btn-ghost py-2"
+          >
+            <Share2 className="w-4 h-4" /> Share
+          </button>
         </div>
       </div>
+
+      {showShare && <ShareModal server={server} onClose={() => setShowShare(false)} />}
 
       {/* Tab bar */}
       <div className="flex gap-1 overflow-x-auto" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -184,6 +194,203 @@ export function ServerDetailPage() {
         {activeTab === 'mods'     && <ModsTab serverId={id!} />}
         {activeTab === 'ports'    && <PortsTab server={server} />}
         {activeTab === 'config'   && <ConfigTab server={server} />}
+      </div>
+    </div>
+  );
+}
+
+// ── Share with Friends modal ──────────────────────────────────────────────────
+
+// Build a game-specific join string (e.g. steam:// deep link for Steam games).
+function joinString(adapter: string, host: string, port: number): string {
+  const steamConnect = `steam://connect/${host}:${port}`;
+  switch (adapter) {
+    case 'valheim':
+    case 'counter-strike-2':
+    case 'team-fortress-2':
+    case 'garrys-mod':
+    case 'left-4-dead-2':
+    case 'dota2':
+    case 'rust':
+    case 'ark-survival-ascended':
+    case 'conan-exiles':
+    case 'dayz':
+    case 'squad':
+    case 'risk-of-rain-2':
+    case '7-days-to-die':
+      return steamConnect;
+    default:
+      return `${host}:${port}`;
+  }
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+  return (
+    <button
+      onClick={copy}
+      className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg transition-colors shrink-0"
+      style={{
+        background: copied ? 'rgba(34,197,94,0.15)' : 'var(--bg-elevated)',
+        color: copied ? '#4ade80' : 'var(--text-muted)',
+        border: `1px solid ${copied ? 'rgba(34,197,94,0.3)' : 'var(--border)'}`,
+      }}
+    >
+      {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+function ShareModal({ server, onClose }: { server: any; onClose: () => void }) {
+  // Best-guess public host: use the current page's hostname (users already
+  // know it — it's in their browser address bar).
+  const [publicHost, setPublicHost] = useState(window.location.hostname || 'your-server-ip');
+
+  // Primary game port: first exposed UDP/TCP port (not admin ports).
+  const primaryPort: number = (() => {
+    const ports: any[] = server.ports ?? [];
+    const game = ports.find((p: any) => p.exposed && !p.description?.toLowerCase().includes('rcon'));
+    return game?.external ?? game?.internal ?? 0;
+  })();
+
+  const joinStr = primaryPort > 0 ? joinString(server.adapter, publicHost, primaryPort) : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.65)' }}
+      onClick={onClose}
+    >
+      <div
+        className="card w-full max-w-md p-0 overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4"
+          style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+          <div className="flex items-center gap-2.5">
+            <Share2 className="w-4 h-4" style={{ color: 'var(--primary)' }} />
+            <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Share — {server.name}
+            </span>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors"
+            style={{ color: 'var(--text-muted)' }}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Public host */}
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wide mb-1.5 block"
+              style={{ color: 'var(--text-muted)' }}>
+              Your public hostname / IP
+            </label>
+            <input
+              className="input w-full font-mono text-sm"
+              value={publicHost}
+              onChange={e => setPublicHost(e.target.value)}
+              placeholder="your-server-ip or domain.com"
+            />
+            <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              This is the address friends will type. Edit if incorrect.
+            </p>
+          </div>
+
+          {/* Port list */}
+          {(server.ports ?? []).length > 0 && (
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide mb-1.5 block"
+                style={{ color: 'var(--text-muted)' }}>
+                Ports
+              </label>
+              <div className="card p-0 overflow-hidden">
+                {(server.ports ?? []).map((p: any, i: number) => (
+                  <div key={i}
+                    className="flex items-center justify-between px-4 py-2.5 text-sm"
+                    style={{ borderBottom: i < server.ports.length - 1 ? '1px solid var(--border)' : undefined }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
+                        {p.external ?? p.internal}
+                      </span>
+                      <span className="badge uppercase text-[10px]"
+                        style={{
+                          background: p.protocol === 'tcp' ? 'rgba(59,130,246,0.12)' : 'rgba(168,85,247,0.12)',
+                          color: p.protocol === 'tcp' ? '#60a5fa' : '#c084fc',
+                        }}>
+                        {p.protocol}
+                      </span>
+                      {p.description && (
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{p.description}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {p.exposed ? (
+                        <><Wifi className="w-3.5 h-3.5 text-green-400" /><span className="text-xs text-green-400">Open</span></>
+                      ) : (
+                        <><WifiOff className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} /><span className="text-xs" style={{ color: 'var(--text-muted)' }}>Internal</span></>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Join string */}
+          {joinStr && (
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide mb-1.5 block"
+                style={{ color: 'var(--text-muted)' }}>
+                Join string
+              </label>
+              <div className="flex items-center gap-2 rounded-lg px-3 py-2.5"
+                style={{ background: '#080810', border: '1px solid var(--border)' }}>
+                <span className="flex-1 font-mono text-xs break-all" style={{ color: 'var(--primary)' }}>
+                  {joinStr}
+                </span>
+                <CopyButton text={joinStr} />
+              </div>
+              {joinStr.startsWith('steam://') && (
+                <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                  Send this link to friends — clicking it opens the game and connects directly.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Direct address */}
+          {primaryPort > 0 && (
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide mb-1.5 block"
+                style={{ color: 'var(--text-muted)' }}>
+                Direct address
+              </label>
+              <div className="flex items-center gap-2 rounded-lg px-3 py-2.5"
+                style={{ background: '#080810', border: '1px solid var(--border)' }}>
+                <span className="flex-1 font-mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  {publicHost}:{primaryPort}
+                </span>
+                <CopyButton text={`${publicHost}:${primaryPort}`} />
+              </div>
+            </div>
+          )}
+
+          {(server.ports ?? []).length === 0 && (
+            <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>
+              No ports configured on this server yet.
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
