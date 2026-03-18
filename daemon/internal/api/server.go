@@ -148,60 +148,54 @@ func (s *Server) registerRoutes() {
 	v1 := r.Group("/api/v1")
 	v1.Use(s.authMiddleware())
 
-	// Servers
+	// Server collection — list is ACL-filtered server-side; create is admin-only
 	v1.GET("/servers", s.listServers)
-	v1.POST("/servers", s.createServer)
-	v1.GET("/servers/:id", s.getServer)
-	v1.PUT("/servers/:id", s.updateServer)
-	v1.DELETE("/servers/:id", s.deleteServer)
-	v1.POST("/servers/:id/start", s.startServer)
-	v1.POST("/servers/:id/stop", s.stopServer)
-	v1.POST("/servers/:id/restart", s.restartServer)
-	v1.POST("/servers/:id/deploy", s.deployServer)
-	v1.GET("/servers/:id/status", s.getServerStatus)
-	v1.GET("/servers/:id/logs", s.getServerLogs)
-	v1.GET("/servers/:id/metrics", s.getServerMetrics)
-	v1.GET("/servers/:id/console/stream", s.streamConsole)
-	v1.POST("/servers/:id/console/command", s.sendConsoleCommand)
-
-	// Backups
-	v1.GET("/servers/:id/backups", s.listBackups)
-	v1.POST("/servers/:id/backup", s.triggerBackup)
-	v1.POST("/servers/:id/restore/:backupId", s.restoreBackup)
-
-	// Ports
-	v1.GET("/servers/:id/ports", s.listPorts)
-	v1.PUT("/servers/:id/ports", s.updatePorts)
+	v1.POST("/servers", s.requireRole("admin"), s.createServer)
 	v1.POST("/ports/validate", s.validatePorts)
 
-	// Config file editor
-	v1.GET("/servers/:id/config-files", s.listConfigFiles)
-	v1.GET("/servers/:id/config-files/*path", s.readConfigFile)
-	v1.PUT("/servers/:id/config-files/*path", s.writeConfigFile)
+	// Per-server routes — all gated by serverACLMiddleware
+	srv := v1.Group("/servers/:id")
+	srv.Use(s.serverACLMiddleware())
 
-	// File browser
-	v1.GET("/servers/:id/files", s.listFiles)
-	v1.GET("/servers/:id/files/download", s.downloadFile)
-	v1.POST("/servers/:id/files/upload", s.uploadFile)
-	v1.DELETE("/servers/:id/files", s.deleteFile)
+	// Read-only (any authenticated user with access)
+	srv.GET("", s.getServer)
+	srv.GET("/status", s.getServerStatus)
+	srv.GET("/logs", s.getServerLogs)
+	srv.GET("/metrics", s.getServerMetrics)
+	srv.GET("/backups", s.listBackups)
+	srv.GET("/ports", s.listPorts)
+	srv.GET("/config-files", s.listConfigFiles)
+	srv.GET("/config-files/*path", s.readConfigFile)
+	srv.GET("/files", s.listFiles)
+	srv.GET("/files/download", s.downloadFile)
+	srv.GET("/banlist", s.listBannedPlayers)
+	srv.GET("/whitelist", s.listWhitelistPlayers)
+	srv.GET("/mods", s.listMods)
+	srv.GET("/console/stream", s.streamConsole)
 
-	// Ban list & whitelist
-	v1.GET("/servers/:id/banlist", s.listBannedPlayers)
-	v1.POST("/servers/:id/banlist", s.banPlayer)
-	v1.DELETE("/servers/:id/banlist/:player", s.unbanPlayer)
-	v1.GET("/servers/:id/whitelist", s.listWhitelistPlayers)
-	v1.POST("/servers/:id/whitelist", s.whitelistAddPlayer)
-	v1.DELETE("/servers/:id/whitelist/:player", s.whitelistRemovePlayer)
-
-	// Game server update
-	v1.POST("/servers/:id/update", s.triggerServerUpdate)
-
-	// Mods
-	v1.GET("/servers/:id/mods", s.listMods)
-	v1.POST("/servers/:id/mods", s.installMod)
-	v1.DELETE("/servers/:id/mods/:modId", s.uninstallMod)
-	v1.POST("/servers/:id/mods/test", s.testMods)
-	v1.POST("/servers/:id/mods/rollback", s.rollbackMods)
+	// Write ops — require operator or admin
+	srv.PUT("", s.requireOperator(), s.updateServer)
+	srv.DELETE("", s.requireRole("admin"), s.deleteServer)
+	srv.POST("/start", s.requireOperator(), s.startServer)
+	srv.POST("/stop", s.requireOperator(), s.stopServer)
+	srv.POST("/restart", s.requireOperator(), s.restartServer)
+	srv.POST("/deploy", s.requireOperator(), s.deployServer)
+	srv.POST("/console/command", s.requireOperator(), s.sendConsoleCommand)
+	srv.POST("/backup", s.requireOperator(), s.triggerBackup)
+	srv.POST("/restore/:backupId", s.requireOperator(), s.restoreBackup)
+	srv.PUT("/ports", s.requireOperator(), s.updatePorts)
+	srv.PUT("/config-files/*path", s.requireOperator(), s.writeConfigFile)
+	srv.POST("/files/upload", s.requireOperator(), s.uploadFile)
+	srv.DELETE("/files", s.requireOperator(), s.deleteFile)
+	srv.POST("/banlist", s.requireOperator(), s.banPlayer)
+	srv.DELETE("/banlist/:player", s.requireOperator(), s.unbanPlayer)
+	srv.POST("/whitelist", s.requireOperator(), s.whitelistAddPlayer)
+	srv.DELETE("/whitelist/:player", s.requireOperator(), s.whitelistRemovePlayer)
+	srv.POST("/update", s.requireOperator(), s.triggerServerUpdate)
+	srv.POST("/mods", s.requireOperator(), s.installMod)
+	srv.DELETE("/mods/:modId", s.requireOperator(), s.uninstallMod)
+	srv.POST("/mods/test", s.requireOperator(), s.testMods)
+	srv.POST("/mods/rollback", s.requireOperator(), s.rollbackMods)
 
 	// SBOM & CVE
 	v1.GET("/sbom", s.getSBOM)
@@ -286,10 +280,28 @@ func (s *Server) handleMetrics(c *gin.Context) {
 }
 
 func (s *Server) listServers(c *gin.Context) {
+	claims := s.getUser(c)
 	servers, err := s.cfg.Broker.ListServers(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	// Non-admins only see their allowed servers
+	if claims != nil && !claims.HasRole("admin") {
+		allowed := s.cfg.AuthSvc.GetAllowedServers(claims.UserID)
+		if len(allowed) > 0 {
+			allowSet := make(map[string]bool, len(allowed))
+			for _, id := range allowed {
+				allowSet[id] = true
+			}
+			filtered := servers[:0]
+			for _, sv := range servers {
+				if allowSet[sv.ID] {
+					filtered = append(filtered, sv)
+				}
+			}
+			servers = filtered
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"servers": servers, "count": len(servers)})
 }
@@ -455,37 +467,10 @@ func (s *Server) getServerLogs(c *gin.Context) {
 
 func (s *Server) streamConsole(c *gin.Context) {
 	id := c.Param("id")
-	
-	// Validate authentication BEFORE upgrading to WebSocket.
-	// Browsers cannot set custom headers on WebSocket upgrade requests, so
-	// accept the JWT from either the Authorization header (CLI) or the
-	// ?token= query parameter (browser console tab).
-	authHeader := c.GetHeader("Authorization")
-	if authHeader == "" {
-		if t := c.Query("token"); t != "" {
-			authHeader = "Bearer " + t
-		}
-	}
-	if authHeader == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth token — log in first and include the token as Authorization: Bearer <token> or ?token= in the URL"})
-		return
-	}
+	// Auth and ACL are already enforced by authMiddleware + serverACLMiddleware.
+	// The claims are available in context for any audit logging.
+	_ = id
 
-	// Validate token
-	claims, err := s.cfg.AuthSvc.ValidateToken(c.Request.Context(), authHeader)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired or invalid — log in again to get a fresh token"})
-		return
-	}
-	
-	// TODO: Add RBAC check to verify user has access to this server
-	// For now, any authenticated user can access. Implement server access control:
-	// if !s.cfg.AuthSvc.CanAccessServer(c.Request.Context(), claims.UserID, id) {
-	//     c.JSON(http.StatusForbidden, gin.H{"error": "access denied to this server"})
-	//     return
-	// }
-	_ = claims // Use for future permission checks
-	
 	// Now safe to upgrade WebSocket with authenticated user
 	conn, err := s.ws.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
@@ -1205,6 +1190,13 @@ func runGit(args ...string) string {
 func (s *Server) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := c.GetHeader("Authorization")
+		// Also accept ?token= for WebSocket upgrade requests from browsers,
+		// which cannot set custom headers.
+		if token == "" {
+			if t := c.Query("token"); t != "" {
+				token = "Bearer " + t
+			}
+		}
 		if token == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
 			c.Abort()
@@ -1219,6 +1211,43 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 		}
 
 		c.Set("user", claims)
+		c.Next()
+	}
+}
+
+// serverACLMiddleware enforces per-server access control. Admins bypass the check.
+// Must run after authMiddleware (requires "user" in context).
+func (s *Server) serverACLMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims := s.getUser(c)
+		if claims == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+			c.Abort()
+			return
+		}
+		if claims.HasRole("admin") {
+			c.Next()
+			return
+		}
+		serverID := c.Param("id")
+		if !s.cfg.AuthSvc.CanAccessServer(claims.UserID, serverID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "access denied to this server"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// requireOperator rejects requests from users without operator or admin role.
+func (s *Server) requireOperator() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims := s.getUser(c)
+		if claims == nil || (!claims.HasRole("admin") && !claims.HasRole("operator")) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "operator or admin role required"})
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }

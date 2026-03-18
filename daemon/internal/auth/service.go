@@ -46,14 +46,15 @@ type SAMLConfig struct {
 
 // User represents an authenticated user
 type User struct {
-	ID           string    `json:"id"`
-	Username     string    `json:"username"`
-	PasswordHash string    `json:"-"`
-	Roles        []string  `json:"roles"`
-	TOTPEnabled  bool      `json:"totp_enabled"`
-	TOTPSecret   string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
-	LastLogin    time.Time `json:"last_login"`
+	ID             string    `json:"id"`
+	Username       string    `json:"username"`
+	PasswordHash   string    `json:"-"`
+	Roles          []string  `json:"roles"`
+	AllowedServers []string  `json:"allowed_servers,omitempty"` // nil/empty = all servers
+	TOTPEnabled    bool      `json:"totp_enabled"`
+	TOTPSecret     string    `json:"-"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastLogin      time.Time `json:"last_login"`
 }
 
 // Claims represents JWT claims
@@ -102,15 +103,17 @@ type TOTPVerifyRequest struct {
 
 // CreateUserRequest is a user creation payload
 type CreateUserRequest struct {
-	Username string   `json:"username" binding:"required"`
-	Password string   `json:"password" binding:"required"`
-	Roles    []string `json:"roles"`
+	Username       string   `json:"username" binding:"required"`
+	Password       string   `json:"password" binding:"required"`
+	Roles          []string `json:"roles"`
+	AllowedServers []string `json:"allowed_servers,omitempty"`
 }
 
 // UpdateUserRequest is a user update payload
 type UpdateUserRequest struct {
-	Password string   `json:"password,omitempty"`
-	Roles    []string `json:"roles,omitempty"`
+	Password       string    `json:"password,omitempty"`
+	Roles          []string  `json:"roles,omitempty"`
+	AllowedServers *[]string `json:"allowed_servers,omitempty"` // pointer so nil = don't change
 }
 
 // AuditEntry is an audit log record
@@ -490,11 +493,12 @@ func (s *Service) CreateUser(ctx context.Context, req CreateUserRequest) (*User,
 	}
 
 	user := &User{
-		ID:           generateID(),
-		Username:     req.Username,
-		PasswordHash: string(hash),
-		Roles:        req.Roles,
-		CreatedAt:    time.Now(),
+		ID:             generateID(),
+		Username:       req.Username,
+		PasswordHash:   string(hash),
+		Roles:          req.Roles,
+		AllowedServers: req.AllowedServers,
+		CreatedAt:      time.Now(),
 	}
 
 	s.users[req.Username] = user
@@ -518,6 +522,10 @@ func (s *Service) UpdateUser(ctx context.Context, userID string, req UpdateUserR
 
 	if len(req.Roles) > 0 {
 		user.Roles = req.Roles
+	}
+
+	if req.AllowedServers != nil {
+		user.AllowedServers = *req.AllowedServers
 	}
 
 	return sanitizeUser(user), nil
@@ -569,14 +577,43 @@ func (s *Service) audit(userID, username, action, resource, ip string, success b
 	s.auditLog = append(s.auditLog, entry)
 }
 
+// CanAccessServer returns true when the user is allowed to access the given server.
+// An empty AllowedServers list means the user can access all servers.
+func (s *Service) CanAccessServer(userID, serverID string) bool {
+	u, ok := s.getUserByID(userID)
+	if !ok {
+		return false
+	}
+	if len(u.AllowedServers) == 0 {
+		return true
+	}
+	for _, id := range u.AllowedServers {
+		if id == serverID {
+			return true
+		}
+	}
+	return false
+}
+
+// GetAllowedServers returns the list of server IDs the user is restricted to.
+// An empty slice means no restriction (access to all).
+func (s *Service) GetAllowedServers(userID string) []string {
+	u, ok := s.getUserByID(userID)
+	if !ok {
+		return nil
+	}
+	return u.AllowedServers
+}
+
 func sanitizeUser(u *User) *User {
 	return &User{
-		ID:          u.ID,
-		Username:    u.Username,
-		Roles:       u.Roles,
-		TOTPEnabled: u.TOTPEnabled,
-		CreatedAt:   u.CreatedAt,
-		LastLogin:   u.LastLogin,
+		ID:             u.ID,
+		Username:       u.Username,
+		Roles:          u.Roles,
+		AllowedServers: u.AllowedServers,
+		TOTPEnabled:    u.TOTPEnabled,
+		CreatedAt:      u.CreatedAt,
+		LastLogin:      u.LastLogin,
 	}
 }
 

@@ -106,6 +106,7 @@ function UsersSection() {
   const qc = useQueryClient();
   const { user: currentUser, setupTOTP, verifyTOTP } = useAuthStore();
   const [showCreate, setShowCreate] = useState(false);
+  const [editUser, setEditUser] = useState<any | null>(null);
   const [totpSetup, setTotpSetup] = useState<{ secret: string; qr_code_url: string } | null>(null);
   const [totpCode, setTotpCode] = useState('');
   const [totpLoading, setTotpLoading] = useState(false);
@@ -115,6 +116,11 @@ function UsersSection() {
     queryFn: () => api.get('/api/v1/admin/users').then(r => r.data),
   });
 
+  const { data: serversData } = useQuery<{ servers: any[] }>({
+    queryKey: ['servers'],
+    queryFn: () => api.get('/api/v1/servers').then(r => r.data),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/api/v1/admin/users/${id}`),
     onSuccess: () => { toast.success('User deleted'); qc.invalidateQueries({ queryKey: ['users'] }); },
@@ -122,6 +128,7 @@ function UsersSection() {
   });
 
   const users = data?.users ?? [];
+  const allServers: any[] = serversData?.servers ?? [];
 
   const handleSetupTOTP = async () => {
     setTotpLoading(true);
@@ -177,12 +184,12 @@ function UsersSection() {
                   </div>
                   <div>
                     <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{u.username}</div>
-                    <div className="flex items-center gap-2 mt-0.5">
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                       {u.roles?.map((r: string) => (
                         <span key={r} className="badge"
                           style={{
-                            background: r === 'admin' ? 'rgba(59,130,246,0.15)' : 'rgba(128,128,168,0.15)',
-                            color: r === 'admin' ? '#60a5fa' : 'var(--text-secondary)',
+                            background: r === 'admin' ? 'rgba(59,130,246,0.15)' : r === 'operator' ? 'rgba(249,115,22,0.15)' : 'rgba(128,128,168,0.15)',
+                            color: r === 'admin' ? '#60a5fa' : r === 'operator' ? 'var(--primary)' : 'var(--text-secondary)',
                           }}>
                           {r}
                         </span>
@@ -192,21 +199,40 @@ function UsersSection() {
                           <Shield className="w-3 h-3" /> MFA
                         </span>
                       )}
+                      {u.allowed_servers?.length > 0 && (
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                          {u.allowed_servers.length} server{u.allowed_servers.length !== 1 ? 's' : ''}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
-                {u.id !== currentUser?.id && (
-                  <button
-                    onClick={() => deleteMutation.mutate(u.id)}
-                    disabled={deleteMutation.isPending}
-                    className="p-1.5 rounded-lg transition-colors disabled:opacity-50"
-                    style={{ color: 'var(--text-muted)' }}
-                    onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
-                    onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
+                <div className="flex items-center gap-1">
+                  {u.id !== currentUser?.id && (
+                    <button
+                      onClick={() => setEditUser(u)}
+                      className="p-1.5 rounded-lg transition-colors"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="Edit user"
+                      onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
+                      onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
+                    >
+                      <Settings className="w-4 h-4" />
+                    </button>
+                  )}
+                  {u.id !== currentUser?.id && (
+                    <button
+                      onClick={() => deleteMutation.mutate(u.id)}
+                      disabled={deleteMutation.isPending}
+                      className="p-1.5 rounded-lg transition-colors disabled:opacity-50"
+                      style={{ color: 'var(--text-muted)' }}
+                      onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
+                      onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
               </div>
             ))
           )}
@@ -266,14 +292,75 @@ function UsersSection() {
       </div>
 
       {showCreate && (
-        <CreateUserModal onClose={() => setShowCreate(false)} onCreated={() => qc.invalidateQueries({ queryKey: ['users'] })} />
+        <CreateUserModal
+          servers={allServers}
+          onClose={() => setShowCreate(false)}
+          onCreated={() => qc.invalidateQueries({ queryKey: ['users'] })}
+        />
+      )}
+      {editUser && (
+        <EditUserModal
+          user={editUser}
+          servers={allServers}
+          onClose={() => setEditUser(null)}
+          onSaved={() => { qc.invalidateQueries({ queryKey: ['users'] }); setEditUser(null); }}
+        />
       )}
     </div>
   );
 }
 
-function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const [form, setForm] = useState({ username: '', password: '', roles: 'operator' });
+function ServerAccessPicker({ servers, selected, onChange }: {
+  servers: any[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const toggle = (id: string) => {
+    if (selected.includes(id)) {
+      onChange(selected.filter(s => s !== id));
+    } else {
+      onChange([...selected, id]);
+    }
+  };
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="label mb-0">Server Access</label>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          {selected.length === 0 ? 'All servers' : `${selected.length} selected`}
+        </span>
+      </div>
+      {servers.length === 0 ? (
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No servers yet — user will have access to all.</p>
+      ) : (
+        <div className="rounded-lg overflow-hidden divide-y max-h-40 overflow-y-auto"
+          style={{ border: '1px solid var(--border)', borderColor: 'var(--border)', background: 'var(--bg-base)' }}>
+          {servers.map((sv: any) => (
+            <label key={sv.id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-black/10 transition-colors">
+              <input
+                type="checkbox"
+                checked={selected.includes(sv.id)}
+                onChange={() => toggle(sv.id)}
+                className="w-3.5 h-3.5 accent-orange-500"
+              />
+              <span className="text-sm" style={{ color: 'var(--text-primary)' }}>{sv.name}</span>
+              <span className="text-xs ml-auto" style={{ color: 'var(--text-muted)' }}>{sv.adapter}</span>
+            </label>
+          ))}
+        </div>
+      )}
+      {selected.length > 0 && (
+        <button onClick={() => onChange([])} className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+          Clear (grant all-server access)
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CreateUserModal({ servers, onClose, onCreated }: { servers: any[]; onClose: () => void; onCreated: () => void }) {
+  const [form, setForm] = useState({ username: '', password: '', role: 'operator' });
+  const [allowedServers, setAllowedServers] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   const handleCreate = async () => {
@@ -282,7 +369,8 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
       await api.post('/api/v1/admin/users', {
         username: form.username,
         password: form.password,
-        roles: [form.roles],
+        roles: [form.role],
+        allowed_servers: allowedServers.length > 0 ? allowedServers : undefined,
       });
       toast.success('User created');
       onCreated();
@@ -316,15 +404,18 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
         <div>
           <label className="label">Role</label>
           <select
-            value={form.roles}
-            onChange={e => setForm(p => ({ ...p, roles: e.target.value }))}
+            value={form.role}
+            onChange={e => setForm(p => ({ ...p, role: e.target.value }))}
             className="input"
           >
-            <option value="admin">Admin</option>
-            <option value="operator">Operator</option>
-            <option value="viewer">Viewer</option>
+            <option value="admin">Admin — full access</option>
+            <option value="operator">Operator — start/stop/manage servers</option>
+            <option value="viewer">Viewer — read-only</option>
           </select>
         </div>
+        {form.role !== 'admin' && (
+          <ServerAccessPicker servers={servers} selected={allowedServers} onChange={setAllowedServers} />
+        )}
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-ghost flex-1 justify-center">Cancel</button>
           <button
@@ -334,6 +425,72 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
           >
             {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
             Create
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditUserModal({ user, servers, onClose, onSaved }: {
+  user: any; servers: any[]; onClose: () => void; onSaved: () => void;
+}) {
+  const [role, setRole] = useState<string>(user.roles?.[0] ?? 'viewer');
+  const [allowedServers, setAllowedServers] = useState<string[]>(user.allowed_servers ?? []);
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSave = async () => {
+    setLoading(true);
+    try {
+      const body: any = { roles: [role], allowed_servers: allowedServers };
+      if (password) body.password = password;
+      await api.put(`/api/v1/admin/users/${user.id}`, body);
+      toast.success('User updated');
+      onSaved();
+    } catch (e: any) {
+      toast.error(e.response?.data?.error ?? 'Update failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ background: 'rgba(0,0,0,0.7)' }}>
+      <div className="card p-6 w-full max-w-sm space-y-4" style={{ background: 'var(--bg-elevated)' }}>
+        <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Edit User — <span style={{ color: 'var(--primary)' }}>{user.username}</span>
+        </h2>
+        <div>
+          <label className="label">Role</label>
+          <select value={role} onChange={e => setRole(e.target.value)} className="input">
+            <option value="admin">Admin — full access</option>
+            <option value="operator">Operator — start/stop/manage servers</option>
+            <option value="viewer">Viewer — read-only</option>
+          </select>
+        </div>
+        {role !== 'admin' && (
+          <ServerAccessPicker servers={servers} selected={allowedServers} onChange={setAllowedServers} />
+        )}
+        <div>
+          <label className="label">New Password <span style={{ color: 'var(--text-muted)' }}>(leave blank to keep)</span></label>
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="••••••••"
+            className="input"
+          />
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-ghost flex-1 justify-center">Cancel</button>
+          <button
+            onClick={handleSave}
+            disabled={loading}
+            className="btn-primary flex-1 justify-center"
+          >
+            {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            Save
           </button>
         </div>
       </div>
