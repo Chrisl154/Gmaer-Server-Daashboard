@@ -154,8 +154,11 @@ func NewService(cfg Config, secretsMgr *secrets.Manager, logger *zap.Logger) (*S
 		tokenCache: make(map[string]*Claims),
 	}
 
-	// Seed admin user
-	if cfg.Local.Enabled && cfg.Local.Admin.Username != "" {
+	// Seed admin user only when a password hash exists.
+	// An empty hash means the system has not been bootstrapped yet — seeding
+	// the user without a hash would cause IsInitialized() to return true and
+	// permanently block the bootstrap endpoint while making login impossible.
+	if cfg.Local.Enabled && cfg.Local.Admin.Username != "" && cfg.Local.Admin.PasswordHash != "" {
 		svc.users[cfg.Local.Admin.Username] = &User{
 			ID:           "admin-0",
 			Username:     cfg.Local.Admin.Username,
