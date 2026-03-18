@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft, Play, Square, RotateCcw, HardDrive, Package,
   Download, Maximize2, Cpu, MemoryStick, Clock, Activity,
-  FileText, RefreshCw,
+  FileText, RefreshCw, Save, FolderOpen,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { api, getWsUrl } from '../utils/api';
@@ -806,23 +806,186 @@ function PortsTab({ server }: { server: any }) {
 // ── Config tab ────────────────────────────────────────────────────────────────
 
 function ConfigTab({ server }: { server: any }) {
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [editorContent, setEditorContent] = useState('');
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const { data: filesData } = useQuery({
+    queryKey: ['config-files', server.id],
+    queryFn: () => api.get(`/api/v1/servers/${server.id}/config-files`).then(r => r.data),
+  });
+
+  const files: Array<{ path: string; description: string; sample: string }> = filesData?.files ?? [];
+
+  // Select first file automatically once list loads.
+  useEffect(() => {
+    if (files.length > 0 && !selectedPath) {
+      setSelectedPath(files[0].path);
+    }
+  }, [files, selectedPath]);
+
+  const { isFetching: loadingContent, refetch: refetchContent } = useQuery({
+    queryKey: ['config-file-content', server.id, selectedPath],
+    queryFn: async () => {
+      if (!selectedPath) return { content: '' };
+      const r = await api.get(`/api/v1/servers/${server.id}/config-files${selectedPath}`);
+      setEditorContent(r.data.content ?? '');
+      setDirty(false);
+      return r.data;
+    },
+    enabled: !!selectedPath,
+  });
+
+  const handleSave = async () => {
+    if (!selectedPath) return;
+    setSaving(true);
+    try {
+      await api.put(`/api/v1/servers/${server.id}/config-files${selectedPath}`, { content: editorContent });
+      toast.success('Config file saved');
+      setDirty(false);
+    } catch (e: any) {
+      toast.error(e.response?.data?.error ?? 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSelect = (path: string) => {
+    if (dirty) {
+      if (!window.confirm('Discard unsaved changes?')) return;
+    }
+    setSelectedPath(path);
+    setDirty(false);
+  };
+
+  if (files.length === 0 && !filesData) {
+    return (
+      <div className="card p-10 text-center">
+        <div className="animate-pulse h-4 w-48 rounded mx-auto mb-3" style={{ background: 'var(--bg-elevated)' }} />
+        <div className="animate-pulse h-4 w-32 rounded mx-auto" style={{ background: 'var(--bg-elevated)' }} />
+      </div>
+    );
+  }
+
+  if (files.length === 0) {
+    return (
+      <div className="card p-10 text-center">
+        <FolderOpen className="w-8 h-8 mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
+        <p className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+          No config files declared
+        </p>
+        <p className="text-xs max-w-xs mx-auto" style={{ color: 'var(--text-muted)' }}>
+          The {server.adapter} adapter has no well-known config files registered in its manifest.
+        </p>
+      </div>
+    );
+  }
+
+  const selectedFile = files.find(f => f.path === selectedPath);
+
   return (
-    <div>
-      <h3 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Configuration</h3>
-      <div className="card overflow-hidden">
-        <div className="px-4 py-2.5 flex items-center gap-2"
-          style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
-          <div className="flex items-center gap-1.5">
-            <div className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
-            <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/70" />
-            <div className="w-2.5 h-2.5 rounded-full bg-green-500/70" />
-          </div>
-          <span className="text-xs font-mono ml-2" style={{ color: 'var(--text-muted)' }}>config.json</span>
+    <div className="flex gap-4 min-h-0" style={{ height: 560 }}>
+      {/* File list sidebar */}
+      <div className="w-52 shrink-0 card overflow-hidden flex flex-col">
+        <div className="px-4 py-3 text-xs font-semibold uppercase tracking-wide"
+          style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
+          Config Files
         </div>
-        <pre className="p-5 text-xs font-mono overflow-auto max-h-96"
-          style={{ background: '#080810', color: 'var(--text-primary)' }}>
-          {JSON.stringify(server.config ?? {}, null, 2)}
-        </pre>
+        <div className="overflow-y-auto flex-1">
+          {files.map(f => (
+            <button
+              key={f.path}
+              onClick={() => handleSelect(f.path)}
+              className="w-full text-left px-4 py-3 transition-colors"
+              style={{
+                borderBottom: '1px solid var(--border)',
+                background: selectedPath === f.path ? 'var(--primary-subtle)' : 'transparent',
+                color: selectedPath === f.path ? 'var(--primary)' : 'var(--text-secondary)',
+              }}
+            >
+              <div className="flex items-center gap-2 mb-0.5">
+                <FileText className="w-3.5 h-3.5 shrink-0" />
+                <span className="text-xs font-medium truncate">
+                  {f.path.split('/').pop()}
+                </span>
+              </div>
+              {f.description && (
+                <div className="text-[11px] leading-tight ml-5.5 truncate"
+                  style={{ color: 'var(--text-muted)' }}>
+                  {f.description}
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Editor panel */}
+      <div className="flex-1 card overflow-hidden flex flex-col min-w-0">
+        {/* Editor header */}
+        <div className="flex items-center justify-between px-4 py-2.5 shrink-0"
+          style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="flex items-center gap-1">
+              <div className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
+              <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/70" />
+              <div className="w-2.5 h-2.5 rounded-full bg-green-500/70" />
+            </div>
+            <span className="text-xs font-mono ml-1 truncate" style={{ color: 'var(--text-muted)' }}>
+              {selectedPath ?? ''}
+            </span>
+            {dirty && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded"
+                style={{ background: 'rgba(249,115,22,0.15)', color: '#fb923c' }}>
+                unsaved
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {loadingContent && (
+              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Loading…</span>
+            )}
+            <button
+              onClick={handleSave}
+              disabled={!dirty || saving}
+              className="btn-primary py-1.5 px-3 text-xs flex items-center gap-1.5 disabled:opacity-40"
+            >
+              <Save className="w-3.5 h-3.5" />
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+
+        {/* Description bar */}
+        {selectedFile?.description && (
+          <div className="px-4 py-1.5 text-xs shrink-0"
+            style={{ background: 'rgba(249,115,22,0.06)', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+            {selectedFile.description}
+          </div>
+        )}
+
+        {/* Textarea */}
+        <textarea
+          className="flex-1 p-4 font-mono text-xs resize-none outline-none w-full"
+          style={{
+            background: '#080810',
+            color: 'var(--text-primary)',
+            caretColor: 'var(--primary)',
+            tabSize: 2,
+          }}
+          value={editorContent}
+          onChange={e => { setEditorContent(e.target.value); setDirty(true); }}
+          spellCheck={false}
+          placeholder={loadingContent ? 'Loading…' : 'File is empty. Start typing to create it.'}
+        />
+
+        {/* Status bar */}
+        <div className="px-4 py-1.5 flex items-center justify-between text-[11px] shrink-0"
+          style={{ borderTop: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
+          <span>{editorContent.split('\n').length} lines · {editorContent.length} chars</span>
+          <span>{selectedPath?.split('/').pop() ?? ''}</span>
+        </div>
       </div>
     </div>
   );

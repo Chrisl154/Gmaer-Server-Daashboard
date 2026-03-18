@@ -2319,3 +2319,95 @@ func jsonStr(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// ── Config file editor ────────────────────────────────────────────────────────
+
+// GetConfigTemplates returns the list of well-known config files declared in the
+// adapter manifest for the given server.
+func (b *Broker) GetConfigTemplates(ctx context.Context, id string) ([]adapters.ConfigTemplate, error) {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("server %q not found", id)
+	}
+	manifest, hasManifest := b.adapters.Get(s.Adapter)
+	if !hasManifest || len(manifest.ConfigTemplates) == 0 {
+		return []adapters.ConfigTemplate{}, nil
+	}
+	return manifest.ConfigTemplates, nil
+}
+
+// configFilePath resolves a manifest-relative path to an absolute filesystem
+// path under the server's install directory, and validates that the result is
+// contained within that directory (path-traversal protection).
+func (b *Broker) configFilePath(installDir, relPath string) (string, error) {
+	if installDir == "" {
+		installDir = "/opt/gdash/data/servers"
+	}
+	// Strip leading slash so filepath.Join doesn't treat it as absolute.
+	rel := strings.TrimPrefix(relPath, "/")
+	abs := filepath.Clean(filepath.Join(installDir, rel))
+	// Ensure the resolved path is still under installDir.
+	prefix := filepath.Clean(installDir) + string(os.PathSeparator)
+	if abs != filepath.Clean(installDir) && !strings.HasPrefix(abs, prefix) {
+		return "", fmt.Errorf("path %q is outside the server install directory", relPath)
+	}
+	return abs, nil
+}
+
+// ReadConfigFile reads the contents of a config file from the server's install
+// directory. relPath should match one of the paths declared in the adapter's
+// config_templates (the leading slash is stripped before joining).
+func (b *Broker) ReadConfigFile(ctx context.Context, id, relPath string) (string, error) {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("server %q not found", id)
+	}
+	abs, err := b.configFilePath(s.InstallDir, relPath)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Return the sample content from the manifest so the editor has
+			// something useful to show even before the server is deployed.
+			if manifest, ok2 := b.adapters.Get(s.Adapter); ok2 {
+				for _, t := range manifest.ConfigTemplates {
+					if t.Path == relPath {
+						return t.Sample, nil
+					}
+				}
+			}
+			return "", nil
+		}
+		return "", fmt.Errorf("cannot read config file: %w", err)
+	}
+	return string(data), nil
+}
+
+// WriteConfigFile writes content to a config file within the server's install
+// directory, creating parent directories as needed. relPath must resolve to a
+// path inside the install directory.
+func (b *Broker) WriteConfigFile(ctx context.Context, id, relPath, content string) error {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("server %q not found", id)
+	}
+	abs, err := b.configFilePath(s.InstallDir, relPath)
+	if err != nil {
+		return err
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(abs), 0o755); mkErr != nil {
+		return fmt.Errorf("cannot create config directory: %w", mkErr)
+	}
+	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("cannot write config file: %w", err)
+	}
+	return nil
+}

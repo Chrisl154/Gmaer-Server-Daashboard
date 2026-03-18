@@ -164,6 +164,11 @@ func (s *Server) registerRoutes() {
 	v1.PUT("/servers/:id/ports", s.updatePorts)
 	v1.POST("/ports/validate", s.validatePorts)
 
+	// Config file editor
+	v1.GET("/servers/:id/config-files", s.listConfigFiles)
+	v1.GET("/servers/:id/config-files/*path", s.readConfigFile)
+	v1.PUT("/servers/:id/config-files/*path", s.writeConfigFile)
+
 	// Mods
 	v1.GET("/servers/:id/mods", s.listMods)
 	v1.POST("/servers/:id/mods", s.installMod)
@@ -549,6 +554,46 @@ func (s *Server) validatePorts(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// ── Config file editor handlers ───────────────────────────────────────────────
+
+func (s *Server) listConfigFiles(c *gin.Context) {
+	id := c.Param("id")
+	templates, err := s.cfg.Broker.GetConfigTemplates(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"files": templates})
+}
+
+func (s *Server) readConfigFile(c *gin.Context) {
+	id := c.Param("id")
+	relPath := c.Param("path") // includes leading slash, e.g. "/data/server.properties"
+	content, err := s.cfg.Broker.ReadConfigFile(c.Request.Context(), id, relPath)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"path": relPath, "content": content})
+}
+
+func (s *Server) writeConfigFile(c *gin.Context) {
+	id := c.Param("id")
+	relPath := c.Param("path")
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content field is required"})
+		return
+	}
+	if err := s.cfg.Broker.WriteConfigFile(c.Request.Context(), id, relPath, body.Content); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func (s *Server) listMods(c *gin.Context) {

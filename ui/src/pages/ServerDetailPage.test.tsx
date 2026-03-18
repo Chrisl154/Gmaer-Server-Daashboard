@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React from 'react';
 
 vi.mock('../utils/api', () => ({
-  api: { get: vi.fn(), post: vi.fn() },
+  api: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
   getWsUrl: vi.fn((path: string) => `ws://localhost${path}`),
 }));
 vi.mock('react-hot-toast', () => ({
@@ -33,6 +33,7 @@ class MockWebSocket {
 
 import { ServerDetailPage } from './ServerDetailPage';
 import { api } from '../utils/api';
+const mockPut = api.put as ReturnType<typeof vi.fn>;
 
 const mockGet = api.get as ReturnType<typeof vi.fn>;
 
@@ -64,13 +65,15 @@ function wrap() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockGet.mockImplementation((url: string) => {
-    if (url.includes('/metrics'))  return Promise.resolve({ data: { samples: [] } });
-    if (url.includes('/logs'))     return Promise.resolve({ data: { logs: [] } });
-    if (url.includes('/backups'))  return Promise.resolve({ data: { backups: [] } });
-    if (url.includes('/mods'))     return Promise.resolve({ data: { mods: [] } });
+    if (url.includes('/metrics'))      return Promise.resolve({ data: { samples: [] } });
+    if (url.includes('/logs'))         return Promise.resolve({ data: { logs: [] } });
+    if (url.includes('/backups'))      return Promise.resolve({ data: { backups: [] } });
+    if (url.includes('/mods'))         return Promise.resolve({ data: { mods: [] } });
+    if (url.includes('/config-files')) return Promise.resolve({ data: { files: [] } });
     // default: server detail
     return Promise.resolve({ data: serverData });
   });
+  mockPut.mockResolvedValue({ data: { ok: true } });
 });
 
 describe('ServerDetailPage', () => {
@@ -122,5 +125,41 @@ describe('ServerDetailPage', () => {
     mockGet.mockResolvedValue({ data: null });
     wrap();
     await waitFor(() => expect(screen.getByText('Server not found.')).toBeTruthy());
+  });
+
+  it('switches to Config tab and shows empty state when no config files', async () => {
+    wrap();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Config' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }));
+    await waitFor(() => expect(screen.getByText('No config files declared')).toBeTruthy());
+  });
+
+  it('Config tab shows file list and editor when files exist', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes('/metrics'))  return Promise.resolve({ data: { samples: [] } });
+      if (url.includes('/logs'))     return Promise.resolve({ data: { logs: [] } });
+      if (url.includes('/backups'))  return Promise.resolve({ data: { backups: [] } });
+      if (url.includes('/mods'))     return Promise.resolve({ data: { mods: [] } });
+      if (url.endsWith('/config-files')) {
+        return Promise.resolve({ data: { files: [
+          { path: '/data/server.properties', description: 'Main server config', sample: 'max-players=20' },
+        ] } });
+      }
+      if (url.includes('/config-files/')) {
+        return Promise.resolve({ data: { content: 'max-players=20\nmotd=Hello' } });
+      }
+      return Promise.resolve({ data: serverData });
+    });
+    wrap();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Config' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }));
+    await waitFor(() => expect(screen.getByText('Config Files')).toBeTruthy());
+    // File entry should appear in sidebar (and also in status bar — use getAllByText)
+    await waitFor(() => expect(screen.getAllByText('server.properties').length).toBeGreaterThanOrEqual(1));
+    // Editor textarea should be present
+    await waitFor(() => {
+      const ta = screen.getByRole('textbox');
+      expect(ta).toBeTruthy();
+    });
   });
 });
