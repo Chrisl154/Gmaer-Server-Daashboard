@@ -92,4 +92,48 @@ describe('ServerCard', () => {
     wrap(<ServerCard server={server} />);
     expect(screen.getByText('+1')).toBeTruthy();
   });
+
+  it('shows error banner with message when state is error', () => {
+    wrap(<ServerCard server={{ ...base, state: 'error', last_error: 'Server not deployed yet — install directory missing.' }} />);
+    expect(screen.getByText('Server not deployed yet — install directory missing.')).toBeTruthy();
+  });
+
+  it('does not show error banner when state is error but last_error is empty', () => {
+    wrap(<ServerCard server={{ ...base, state: 'error' }} />);
+    expect(screen.queryByTitle('What does this mean?')).toBeNull();
+  });
+
+  it('opens help modal when help button is clicked', () => {
+    wrap(<ServerCard server={{ ...base, state: 'error', last_error: 'Disk full.' }} />);
+    fireEvent.click(screen.getByTitle('What does this mean?'));
+    expect(screen.getByText('What does this mean?')).toBeTruthy();
+    expect(screen.getAllByText('Disk full.').length).toBeGreaterThan(0);
+  });
+
+  it('closes help modal when backdrop is clicked', () => {
+    wrap(<ServerCard server={{ ...base, state: 'error', last_error: 'Disk full.' }} />);
+    fireEvent.click(screen.getByTitle('What does this mean?'));
+    // click the backdrop (the fixed overlay div)
+    const backdrop = document.querySelector('.fixed.inset-0') as HTMLElement;
+    fireEvent.click(backdrop);
+    expect(screen.queryByText('What does this mean?')).toBeNull();
+  });
+
+  it('shows error badge label when in error state', () => {
+    wrap(<ServerCard server={{ ...base, state: 'error' }} />);
+    expect(screen.getByText('Error')).toBeTruthy();
+  });
+
+  it('shows Disk label and percentage when disk_pct is set', () => {
+    wrap(<ServerCard server={{ ...base, disk_pct: 72 }} />);
+    expect(screen.getByText('Disk')).toBeTruthy();
+    expect(screen.getByText('72%')).toBeTruthy();
+  });
+
+  it('shows Disk label with dash when disk_pct is 0', () => {
+    wrap(<ServerCard server={{ ...base, disk_pct: 0 }} />);
+    expect(screen.getByText('Disk')).toBeTruthy();
+    // All three bars show "—" for a stopped server with no disk data
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(1);
+  });
 });

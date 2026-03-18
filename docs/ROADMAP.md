@@ -28,7 +28,7 @@ Add a `--mode=node` flag (or a TUI screen) to `install.sh` that installs a machi
 ### ~~Persistent server state~~ ✅ SHIPPED
 Server records are now written to `{data_dir}/servers.json` on every create/update/delete and re-hydrated on startup. Transient states (starting/running/stopping) are reset to `stopped` on load. Container IDs and all configuration are preserved across restarts.
 
-### Automatic crash recovery
+### ~~Automatic crash recovery~~ ✅ SHIPPED
 If a game server process exits unexpectedly, the broker should auto-restart it.
 
 - Configurable per server: `auto_restart: true`, max retries (default 3), back-off delay
@@ -38,7 +38,7 @@ If a game server process exits unexpectedly, the broker should auto-restart it.
 ### ~~Self-update mechanism~~ ✅ SHIPPED
 Settings → Updates tab + `gdash update` CLI command. Fetches latest from git, rebuilds daemon + CLI + UI, restarts the systemd service. Branch selector: `main` (stable) or `dev` (pre-release). The update script runs detached so the daemon restart doesn't kill it mid-flight. Sudoers entry installed automatically so no password prompt is required.
 
-### Plain-English error messages
+### ~~Plain-English error messages~~ ✅ SHIPPED
 Raw Go error strings are meaningless to non-technical users.
 
 - Every `StateError` transition writes a human-readable explanation to the console stream (e.g. "SteamCMD could not find the game files — your disk may be full, or the Steam servers may be down. Try deploying again.")
@@ -92,12 +92,13 @@ Alert the server owner when something important happens — no polling required.
 - Events: server crashed, server restarted, backup completed/failed, disk >80% full, player count hits 0 after being non-zero (server may be empty/stuck)
 - Per-server toggles so noisy servers don't spam
 
-### Disk space and resource warning banners
+### ~~Disk space and resource warning banners~~ ✅ SHIPPED
 Non-technical users won't notice a full disk until everything breaks.
 
 - Dashboard shows a banner when any server's install directory host partition is >85% full
 - Server cards show a color-coded disk bar (green → yellow → red)
 - Daemon emits a console warning event at 80% and 95% thresholds
+- Live resource table on dashboard: CPU, RAM, Disk bars + allocated resources per server row
 
 ### Game server auto-update
 Keep game servers up to date without manual deploys.

@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, Server, HardDrive, Shield } from 'lucide-react';
-import { ServerCard } from '../components/Dashboard/ServerCard';
+import { Activity, Server, HardDrive, Shield, AlertTriangle, ExternalLink } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { StatsCard } from '../components/Dashboard/StatsCard';
 import { api } from '../utils/api';
+import { ADAPTER_ICONS, ADAPTER_NAMES } from '../utils/adapters';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -28,6 +29,12 @@ export function DashboardPage() {
   const stopped = servers.filter((s: any) => s.state === 'stopped').length;
   const healthy = statusData?.healthy;
 
+  // Disk warnings: collect servers whose install partition is >85% full.
+  const diskWarnServers: Array<{ name: string; pct: number }> = servers
+    .filter((s: any) => s.disk_pct >= 85)
+    .map((s: any) => ({ name: s.name, pct: Math.round(s.disk_pct) }))
+    .sort((a: any, b: any) => b.pct - a.pct);
+
   // Accumulate running-server count history locally (no extra API call).
   const historyRef = useRef<TrendPoint[]>([]);
   const [, forceUpdate] = useState(0);
@@ -43,6 +50,31 @@ export function DashboardPage() {
 
   return (
     <div className="p-6 md:p-8 animate-page">
+      {/* Disk space warning banner */}
+      {diskWarnServers.length > 0 && (
+        <div
+          className="flex items-start gap-3 rounded-xl px-4 py-3 mb-6"
+          style={{
+            background: diskWarnServers.some(s => s.pct >= 95) ? 'rgba(239,68,68,0.12)' : 'rgba(249,115,22,0.12)',
+            border: `1px solid ${diskWarnServers.some(s => s.pct >= 95) ? 'rgba(239,68,68,0.35)' : 'rgba(249,115,22,0.35)'}`,
+          }}
+        >
+          <AlertTriangle
+            className="w-5 h-5 shrink-0 mt-0.5"
+            style={{ color: diskWarnServers.some(s => s.pct >= 95) ? '#ef4444' : '#f97316' }}
+          />
+          <div>
+            <p className="text-sm font-semibold" style={{ color: diskWarnServers.some(s => s.pct >= 95) ? '#fca5a5' : '#fdba74' }}>
+              {diskWarnServers.some(s => s.pct >= 95) ? 'Critical: Disk almost full' : 'Warning: Disk space running low'}
+            </p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+              {diskWarnServers.map(s => `${s.name} (${s.pct}%)`).join(' · ')}
+              {' — '}Free up disk space to prevent server crashes.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Page Header */}
       <div className="mb-8">
         <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
@@ -160,49 +192,188 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* Server Overview section */}
-      <div>
-        <div
-          className="flex items-center justify-between pb-4 mb-6"
-          style={{ borderBottom: '1px solid var(--border)' }}
-        >
-          <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-            Server Overview
-          </h2>
-          {servers.length > 0 && (
-            <span
-              className="badge"
-              style={{
-                background: 'rgba(249,115,22,0.1)',
-                color: '#fb923c',
-                border: '1px solid rgba(249,115,22,0.2)',
-              }}
-            >
-              {servers.length} total
-            </span>
-          )}
-        </div>
+      {/* Resource Table */}
+      <ResourceTable servers={servers} isLoading={isLoading} />
+    </div>
+  );
+}
 
-        {isLoading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[1, 2, 3].map(i => (
-              <div
-                key={i}
-                className="card"
-                style={{ height: 220, animation: 'pulse 1.5s ease-in-out infinite', opacity: 0.5 }}
-              />
-            ))}
-          </div>
-        ) : servers.length === 0 ? (
-          <EmptyServers />
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {servers.map((server: any) => (
-              <ServerCard key={server.id} server={server} />
-            ))}
-          </div>
-        )}
+// Mini inline progress bar used in the resource table cells.
+function MiniBar({ pct, color }: { pct: number; color: string }) {
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <div
+        className="flex-1 h-1.5 rounded-full"
+        style={{ background: 'var(--bg-elevated)', minWidth: 60 }}
+      >
+        <div
+          className="h-full rounded-full transition-all duration-700"
+          style={{ width: `${Math.min(100, pct)}%`, background: color }}
+        />
       </div>
+      <span className="text-xs font-mono w-9 text-right shrink-0" style={{ color: 'var(--text-secondary)' }}>
+        {pct > 0 ? `${Math.round(pct)}%` : '—'}
+      </span>
+    </div>
+  );
+}
+
+const STATE_COLOR: Record<string, string> = {
+  running:   '#22c55e',
+  stopped:   '#6b7280',
+  starting:  '#f59e0b',
+  stopping:  '#f59e0b',
+  deploying: '#3b82f6',
+  error:     '#ef4444',
+  idle:      '#6b7280',
+};
+const STATE_LABEL: Record<string, string> = {
+  running: 'Running', stopped: 'Stopped', starting: 'Starting',
+  stopping: 'Stopping', deploying: 'Deploying', error: 'Error', idle: 'Idle',
+};
+
+function ResourceTable({ servers, isLoading }: { servers: any[]; isLoading: boolean }) {
+  const navigate = useNavigate();
+
+  if (isLoading) {
+    return (
+      <div className="card p-0 overflow-hidden">
+        <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div className="h-5 w-40 rounded" style={{ background: 'var(--bg-elevated)' }} />
+        </div>
+        {[1, 2, 3].map(i => (
+          <div key={i} className="px-5 py-4 flex gap-4" style={{ borderBottom: '1px solid var(--border)', opacity: 0.5 }}>
+            <div className="h-4 w-32 rounded" style={{ background: 'var(--bg-elevated)' }} />
+            <div className="h-4 flex-1 rounded" style={{ background: 'var(--bg-elevated)' }} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (servers.length === 0) {
+    return <EmptyServers />;
+  }
+
+  return (
+    <div className="card p-0 overflow-hidden">
+      {/* Table header */}
+      <div
+        className="flex items-center justify-between px-5 py-3"
+        style={{ borderBottom: '1px solid var(--border)' }}
+      >
+        <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Resource Overview
+        </h2>
+        <div className="flex items-center gap-2">
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Updates every 15 s
+          </span>
+          <span
+            className="badge"
+            style={{ background: 'rgba(249,115,22,0.1)', color: '#fb923c', border: '1px solid rgba(249,115,22,0.2)' }}
+          >
+            Live
+          </span>
+        </div>
+      </div>
+
+      {/* Column headers */}
+      <div
+        className="grid px-5 py-2 text-xs font-medium uppercase tracking-wide"
+        style={{
+          color: 'var(--text-muted)',
+          borderBottom: '1px solid var(--border)',
+          gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr',
+          background: 'var(--bg-elevated)',
+        }}
+      >
+        <span>Server</span>
+        <span>Status</span>
+        <span>CPU</span>
+        <span>RAM</span>
+        <span>Disk</span>
+        <span>Allocated</span>
+      </div>
+
+      {/* Rows */}
+      {servers.map((s: any, idx: number) => {
+        const AdapterIcon = ADAPTER_ICONS[s.adapter] ?? ADAPTER_ICONS.default;
+        const adapterName = ADAPTER_NAMES[s.adapter] ?? s.adapter;
+        const stateColor = STATE_COLOR[s.state] ?? '#6b7280';
+        const stateLabel = STATE_LABEL[s.state] ?? s.state;
+        const isRunning = s.state === 'running';
+
+        const cpuColor = s.cpu_pct >= 90 ? '#ef4444' : s.cpu_pct >= 70 ? '#f97316' : '#22c55e';
+        const ramColor = s.ram_pct >= 90 ? '#ef4444' : s.ram_pct >= 70 ? '#f97316' : '#3b82f6';
+        const diskColor = s.disk_pct >= 95 ? '#ef4444' : s.disk_pct >= 85 ? '#f97316' : s.disk_pct >= 70 ? '#eab308' : '#22c55e';
+
+        return (
+          <div
+            key={s.id}
+            className="grid px-5 py-3 items-center cursor-pointer hover:bg-white/[0.02] transition-colors"
+            style={{
+              gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr',
+              borderBottom: idx < servers.length - 1 ? '1px solid var(--border)' : 'none',
+            }}
+            onClick={() => navigate(`/servers/${s.id}`)}
+          >
+            {/* Server name + game */}
+            <div className="flex items-center gap-2.5 min-w-0 pr-4">
+              <AdapterIcon className="w-4 h-4 shrink-0" style={{ color: 'var(--text-muted)' }} />
+              <div className="min-w-0">
+                <div className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                  {s.name}
+                </div>
+                <div className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
+                  {adapterName}
+                </div>
+              </div>
+              <ExternalLink className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-100 ml-auto" style={{ color: 'var(--text-muted)' }} />
+            </div>
+
+            {/* Status */}
+            <div className="flex items-center gap-1.5">
+              <span
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ background: stateColor, boxShadow: isRunning ? `0 0 6px ${stateColor}80` : 'none' }}
+              />
+              <span className="text-xs" style={{ color: stateColor }}>{stateLabel}</span>
+            </div>
+
+            {/* CPU */}
+            <div className="pr-4">
+              <MiniBar pct={isRunning ? (s.cpu_pct ?? 0) : 0} color={cpuColor} />
+            </div>
+
+            {/* RAM */}
+            <div className="pr-4">
+              <MiniBar pct={isRunning ? (s.ram_pct ?? 0) : 0} color={ramColor} />
+            </div>
+
+            {/* Disk */}
+            <div className="pr-4">
+              <MiniBar pct={s.disk_pct ?? 0} color={diskColor} />
+            </div>
+
+            {/* Allocated resources */}
+            <div className="text-xs space-y-0.5" style={{ color: 'var(--text-muted)' }}>
+              {s.resources?.cpu_cores > 0 && (
+                <div>{s.resources.cpu_cores} core{s.resources.cpu_cores !== 1 ? 's' : ''}</div>
+              )}
+              {s.resources?.ram_gb > 0 && (
+                <div>{s.resources.ram_gb} GB RAM</div>
+              )}
+              {s.resources?.disk_gb > 0 && (
+                <div>{s.resources.disk_gb} GB disk</div>
+              )}
+              {!s.resources?.cpu_cores && !s.resources?.ram_gb && (
+                <div style={{ color: 'var(--text-muted)' }}>—</div>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

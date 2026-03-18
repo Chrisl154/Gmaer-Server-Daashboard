@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -20,7 +21,25 @@ type ServerMetricSample struct {
 	Timestamp   int64   `json:"ts"`
 	CPUPercent  float64 `json:"cpu_pct"`
 	RAMPercent  float64 `json:"ram_pct"`
+	DiskPercent float64 `json:"disk_pct"`
 	PlayerCount int     `json:"player_count"`
+}
+
+// diskUsagePct returns the percentage of the filesystem partition that is used
+// by the given path. Returns 0 on any error or on non-Linux platforms.
+func diskUsagePct(path string) float64 {
+	if path == "" || runtime.GOOS != "linux" {
+		return 0
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0
+	}
+	if stat.Blocks == 0 {
+		return 0
+	}
+	used := stat.Blocks - stat.Bfree
+	return float64(used) / float64(stat.Blocks) * 100.0
 }
 
 // metricsRing is a thread-safe fixed-capacity ring buffer of ServerMetricSamples.

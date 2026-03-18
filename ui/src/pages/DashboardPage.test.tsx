@@ -77,4 +77,85 @@ describe('DashboardPage', () => {
     wrap();
     expect(screen.getByText(/checking/i)).toBeTruthy();
   });
+
+  it('renders resource table with server rows', async () => {
+    mockGet.mockResolvedValue({
+      data: {
+        servers: [
+          {
+            id: 's1', name: 'Valheim Server', adapter: 'valheim', state: 'running',
+            ports: [], resources: { cpu_cores: 4, ram_gb: 8, disk_gb: 40 },
+            cpu_pct: 55, ram_pct: 70, disk_pct: 35,
+          },
+          {
+            id: 's2', name: 'Minecraft', adapter: 'minecraft', state: 'stopped',
+            ports: [], resources: { cpu_cores: 2, ram_gb: 4, disk_gb: 20 },
+            cpu_pct: 0, ram_pct: 0, disk_pct: 45,
+          },
+        ],
+        count: 2,
+      },
+    });
+    wrap();
+    await waitFor(() => expect(screen.getByText('Resource Overview')).toBeTruthy());
+    expect(screen.getByText('Valheim Server')).toBeTruthy();
+    expect(screen.getAllByText('Minecraft').length).toBeGreaterThanOrEqual(1);
+    // Column headers
+    expect(screen.getByText('CPU')).toBeTruthy();
+    expect(screen.getByText('RAM')).toBeTruthy();
+    expect(screen.getByText('Disk')).toBeTruthy();
+    expect(screen.getByText('Allocated')).toBeTruthy();
+    // Status labels (may appear in stats cards too)
+    expect(screen.getAllByText('Running').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Stopped').length).toBeGreaterThanOrEqual(1);
+    // Allocated resources
+    expect(screen.getByText('4 cores')).toBeTruthy();
+    expect(screen.getByText('8 GB RAM')).toBeTruthy();
+  });
+
+  it('shows disk warning banner when a server has disk_pct >= 85', async () => {
+    mockGet.mockResolvedValue({
+      data: {
+        servers: [{
+          id: 's1', name: 'Valheim', adapter: 'valheim', state: 'running',
+          ports: [], resources: { cpu_cores: 2, ram_gb: 4, disk_gb: 20 },
+          disk_pct: 88,
+        }],
+        count: 1,
+      },
+    });
+    wrap();
+    await waitFor(() => expect(screen.getByText(/disk space running low/i)).toBeTruthy());
+    expect(screen.getByText(/Valheim \(88%\)/)).toBeTruthy();
+  });
+
+  it('shows critical disk banner when disk_pct >= 95', async () => {
+    mockGet.mockResolvedValue({
+      data: {
+        servers: [{
+          id: 's1', name: 'Minecraft', adapter: 'minecraft', state: 'running',
+          ports: [], resources: { cpu_cores: 2, ram_gb: 4, disk_gb: 20 },
+          disk_pct: 97,
+        }],
+        count: 1,
+      },
+    });
+    wrap();
+    await waitFor(() => expect(screen.getByText(/critical/i)).toBeTruthy());
+  });
+
+  it('does not show disk banner when all servers are below 85%', async () => {
+    mockGet.mockResolvedValue({
+      data: {
+        servers: [{
+          id: 's1', name: 'Minecraft', adapter: 'minecraft', state: 'running',
+          ports: [], resources: { cpu_cores: 2, ram_gb: 4, disk_gb: 20 },
+          disk_pct: 60,
+        }],
+        count: 1,
+      },
+    });
+    wrap();
+    await waitFor(() => expect(screen.queryByText(/disk space/i)).toBeNull());
+  });
 });

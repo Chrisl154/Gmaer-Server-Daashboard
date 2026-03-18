@@ -11,6 +11,34 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+#### Automatic Crash Recovery
+- **`auto_restart` per-server flag** — When enabled, the broker automatically restarts a game server process if it exits unexpectedly. Configurable: `auto_restart` (bool), `max_restarts` (default 3), `restart_delay_secs` (default 10).
+- **Exponential back-off loop** — `doStart` now runs as a restart loop. After each unexpected exit it increments `restart_count`, waits `restart_delay_secs`, and re-launches. After `max_restarts` attempts it marks the server `error`.
+- **Crash counter reset** — If the server runs cleanly for more than 60 seconds the restart counter resets, so isolated crashes don't accumulate toward the limit over time.
+- **`restart_count` and `last_crash_at`** — Both fields are visible on the server object (API + UI) so users can see how many times a server has restarted.
+- **API fields** — `CreateServerRequest` and `UpdateServerRequest` both expose the auto-restart fields.
+
+#### Plain-English Error Messages
+- **`last_error` field on `Server`** — Set whenever a server transitions to `StateError`; cleared automatically when it returns to `StateRunning`.
+- **`setServerError()` helper** — All 9 error-transition sites in `broker.go` now call this helper with a human-readable explanation (e.g. "SteamCMD could not find the game files — your disk may be full…").
+- **Error banner on `ServerCard`** — A red inline banner appears below the status badge when `state === 'error'` and `last_error` is set, showing the first two lines of the message.
+- **"What does this mean?" modal** — A `HelpCircle` button next to the error banner opens `ErrorHelpModal` with the full error text plus generic next-steps. Dismissible via button or backdrop click.
+
+#### Disk Space Warning Banners
+- **`diskUsagePct(path)`** — New function in `metrics.go` using `syscall.Statfs` to compute disk usage for any path on Linux.
+- **`disk_pct` on `Server`** — Sampled every 15 seconds for all servers (running or stopped) and included in both the server list API response and `ServerMetricSample`.
+- **Daemon console warnings** — `checkDiskWarning()` emits a console warning event at 80% and again at 95% full; throttled to once per hour per server via `diskWarnedAt` map.
+- **Color-coded disk bar on `ServerCard`** — Green below 70%, yellow 70–84%, orange 85–94%, red ≥ 95%.
+- **Dashboard-level sticky banner** — `DashboardPage` shows a warning/critical banner listing every server at ≥ 85% full with their current percentage. Banner is orange at warning level and red when any server hits ≥ 95%.
+
+#### Live Resource Overview Table (Dashboard)
+- **`cpu_pct` / `ram_pct` mirrored onto `Server`** — The metrics collector now copies the latest CPU and RAM percentages from the ring buffer directly onto the `Server` struct each cycle, so the servers-list endpoint carries live metrics without extra API calls.
+- **`ResourceTable` component** — Replaces the old server card grid on the dashboard. Each server is a row with columns: Server (icon + name + game) | Status | CPU bar | RAM bar | Disk bar | Allocated (cores / RAM / disk).
+- **`MiniBar` component** — Inline mini progress bar (thin colored fill + numeric label) used in the resource table cells.
+- **Stopped-server handling** — CPU and RAM show `—` for non-running servers; Disk is always shown.
+- **Live badge + 15 s refresh** — Table header shows "Updates every 15 s" and a "Live" badge; driven by the existing 15-second `react-query` refetch interval.
+- **Click-to-navigate** — Clicking any row navigates to the server detail page.
+
 #### Installer — Interactive TUI Wizard
 - **Full whiptail TUI** — The installer now launches a 5-screen interactive wizard when run in a terminal (including via `curl | bash`). Screens: Network & Paths → Admin Account → Storage & Backup → Container Runtimes → Review & Confirm. Falls back to plain readline prompts if `whiptail`/`dialog` is unavailable.
 - **Docker CE installation** — New "Container Runtimes" screen asks whether to install Docker CE (recommended — enables the Docker deploy method for 19 of 24 games) and optionally k3s (lightweight Kubernetes). Both can also be set via `GDASH_INSTALL_DOCKER=true` / `GDASH_INSTALL_K8S=true` for non-interactive installs.
