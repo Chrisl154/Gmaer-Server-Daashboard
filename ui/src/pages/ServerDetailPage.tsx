@@ -6,6 +6,7 @@ import {
   Download, Maximize2, Cpu, MemoryStick, Clock, Activity,
   FileText, RefreshCw, Save, FolderOpen, Share2, Copy, Check, X,
   Wifi, WifiOff, Upload, Trash2, Folder, File, ChevronRight, Users,
+  ArrowDownToLine,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { api, getWsUrl } from '../utils/api';
@@ -403,6 +404,7 @@ function ShareModal({ server, onClose }: { server: any; onClose: () => void }) {
 // ── Overview tab ─────────────────────────────────────────────────────────────
 
 function OverviewTab({ server }: { server: any }) {
+  const queryClient = useQueryClient();
   const playerCount: number = server.player_count ?? -1;
   const maxPlayers: number = server.max_players ?? 0;
   const playerLabel = server.state !== 'running' || playerCount < 0
@@ -410,6 +412,23 @@ function OverviewTab({ server }: { server: any }) {
     : maxPlayers > 0
       ? `${playerCount} / ${maxPlayers}`
       : String(playerCount);
+
+  const updateMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/servers/${server.id}/update`),
+    onSuccess: () => {
+      toast.success('Update started — server will restart when complete');
+      queryClient.invalidateQueries({ queryKey: ['server', server.id] });
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.error ?? 'Update failed'),
+  });
+
+  const autoUpdateMutation = useMutation({
+    mutationFn: (payload: { auto_update: boolean; auto_update_schedule?: string }) =>
+      api.put(`/api/v1/servers/${server.id}`, payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['server', server.id] }),
+  });
+
+  const [schedule, setSchedule] = useState<string>(server.auto_update_schedule || '0 4 * * *');
 
   return (
     <div className="space-y-4">
@@ -443,6 +462,9 @@ function OverviewTab({ server }: { server: any }) {
           {server.container_id && (
             <InfoRow label="Container ID" value={server.container_id.slice(0, 12)}       mono />
           )}
+          {server.last_update_check && (
+            <InfoRow label="Last Updated" value={new Date(server.last_update_check).toLocaleString()} />
+          )}
         </InfoCard>
 
         <div className="card p-5">
@@ -455,6 +477,49 @@ function OverviewTab({ server }: { server: any }) {
             ].map(({ label, value }) => (
               <InfoRow key={label} label={label} value={value} />
             ))}
+          </div>
+        </div>
+
+        {/* Auto-update card */}
+        <div className="card p-5">
+          <h3 className="label mb-4">Auto-Update</h3>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Enabled</span>
+              <button
+                onClick={() => autoUpdateMutation.mutate({
+                  auto_update: !server.auto_update,
+                  auto_update_schedule: schedule,
+                })}
+                className={cn('relative inline-flex h-5 w-9 rounded-full transition-colors',
+                  server.auto_update ? 'bg-[var(--primary)]' : 'bg-[var(--border)]')}
+              >
+                <span className={cn('inline-block h-4 w-4 mt-0.5 rounded-full bg-white shadow transition-transform',
+                  server.auto_update ? 'translate-x-4' : 'translate-x-0.5')} />
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm shrink-0" style={{ color: 'var(--text-secondary)' }}>Schedule (cron)</span>
+              <input
+                value={schedule}
+                onChange={e => setSchedule(e.target.value)}
+                onBlur={() => {
+                  if (server.auto_update && schedule !== server.auto_update_schedule) {
+                    autoUpdateMutation.mutate({ auto_update: true, auto_update_schedule: schedule });
+                  }
+                }}
+                className="input text-xs flex-1"
+                placeholder="0 4 * * *"
+              />
+            </div>
+            <button
+              onClick={() => updateMutation.mutate()}
+              disabled={updateMutation.isPending || !server.deploy_method}
+              className="btn-ghost w-full py-1.5 text-sm"
+            >
+              <ArrowDownToLine className="w-4 h-4" />
+              {updateMutation.isPending ? 'Updating…' : 'Update Now'}
+            </button>
           </div>
         </div>
 

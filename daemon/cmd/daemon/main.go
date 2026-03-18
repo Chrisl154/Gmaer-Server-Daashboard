@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,6 +19,8 @@ import (
 	"github.com/games-dashboard/daemon/internal/secrets"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 var (
@@ -129,11 +133,46 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Initialize firewall service (gracefully unavailable when ufw not installed)
 	firewallSvc := firewall.NewService(logger)
 
+	// TLS: set up autocert when AutoTLS is enabled, otherwise use static cert files.
+	var autoTLSConfig *tls.Config
+	if cfg.TLS.AutoTLS {
+		if cfg.TLS.ACMEDomain == "" {
+			return fmt.Errorf("auto_tls is enabled but acme_domain is not set in the config")
+		}
+		cacheDir := cfg.TLS.ACMECacheDir
+		if cacheDir == "" {
+			cacheDir = "/etc/games-dashboard/tls/acme"
+		}
+		if err := os.MkdirAll(cacheDir, 0700); err != nil {
+			return fmt.Errorf("failed to create ACME cache dir %s: %w", cacheDir, err)
+		}
+		m := &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(cfg.TLS.ACMEDomain),
+			Cache:      autocert.DirCache(cacheDir),
+			Email:      cfg.TLS.ACMEEmail,
+		}
+		if cfg.TLS.ACMEStaging {
+			// Override CA URL to Let's Encrypt staging for testing.
+			m.Client = &acme.Client{DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"}
+		}
+		// Start HTTP-01 challenge handler on port 80.
+		go func() {
+			logger.Info("Starting ACME HTTP-01 challenge server on :80")
+			if err := http.ListenAndServe(":80", m.HTTPHandler(nil)); err != nil { //nolint:gosec
+				logger.Warn("ACME HTTP-01 server stopped", zap.Error(err))
+			}
+		}()
+		autoTLSConfig = m.TLSConfig()
+		logger.Info("AutoTLS enabled via Let's Encrypt", zap.String("domain", cfg.TLS.ACMEDomain))
+	}
+
 	// Initialize API server
 	apiServer, err := api.NewServer(api.Config{
 		BindAddr:        bindAddr,
 		TLSCert:         cfg.TLS.CertFile,
 		TLSKey:          cfg.TLS.KeyFile,
+		AutoTLSConfig:   autoTLSConfig,
 		Logger:          logger,
 		AuthSvc:         authSvc,
 		Broker:          gameBroker,

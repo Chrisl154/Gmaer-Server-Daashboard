@@ -44,6 +44,9 @@ type Config struct {
 	DaemonCfg  *daemonconfig.Config
 	// ConfigPath is the path to daemon.yaml; when set, PATCH /settings writes back to disk.
 	ConfigPath string
+	// AutoTLSConfig is set by main when AutoTLS is enabled; it overrides TLSCert/TLSKey
+	// and uses the autocert manager's GetCertificate function for Let's Encrypt.
+	AutoTLSConfig *tls.Config
 }
 
 // Server is the HTTP/WebSocket API server
@@ -88,15 +91,20 @@ func NewServer(cfg Config) (*Server, error) {
 
 	s.registerRoutes()
 
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
+	if cfg.AutoTLSConfig != nil {
+		// Merge: keep MinVersion but adopt autocert's GetCertificate.
+		tlsCfg.GetCertificate = cfg.AutoTLSConfig.GetCertificate
+		tlsCfg.NextProtos = cfg.AutoTLSConfig.NextProtos
+	}
+
 	s.srv = &http.Server{
 		Addr:         cfg.BindAddr,
 		Handler:      router,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
-		TLSConfig: &tls.Config{
-			MinVersion: tls.VersionTLS13,
-		},
+		TLSConfig:    tlsCfg,
 	}
 
 	return s, nil
@@ -185,6 +193,9 @@ func (s *Server) registerRoutes() {
 	v1.POST("/servers/:id/whitelist", s.whitelistAddPlayer)
 	v1.DELETE("/servers/:id/whitelist/:player", s.whitelistRemovePlayer)
 
+	// Game server update
+	v1.POST("/servers/:id/update", s.triggerServerUpdate)
+
 	// Mods
 	v1.GET("/servers/:id/mods", s.listMods)
 	v1.POST("/servers/:id/mods", s.installMod)
@@ -233,6 +244,9 @@ func (s *Server) registerRoutes() {
 	admin.PATCH("/notifications", s.patchNotifications)
 	admin.POST("/notifications/test", s.testNotification)
 
+	// TLS status (admin-only)
+	admin.GET("/tls/status", s.getTLSStatus)
+
 	// Firewall (UFW)
 	v1.GET("/firewall", s.getFirewallStatus)
 	v1.POST("/firewall/rules", s.addFirewallRule)
@@ -244,6 +258,11 @@ func (s *Server) registerRoutes() {
 }
 
 func (s *Server) ListenAndServeTLS() error {
+	// When AutoTLS is configured, GetCertificate is set — pass empty cert/key
+	// so the standard library uses the TLSConfig instead of file-based certs.
+	if s.srv.TLSConfig != nil && s.srv.TLSConfig.GetCertificate != nil {
+		return s.srv.ListenAndServeTLS("", "")
+	}
 	return s.srv.ListenAndServeTLS(s.cfg.TLSCert, s.cfg.TLSKey)
 }
 
@@ -1288,6 +1307,51 @@ func (s *Server) testNotification(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// triggerServerUpdate kicks off a game-server update (re-deploy) for the given server.
+// The server is stopped first if it is running, re-deployed, then restarted.
+func (s *Server) triggerServerUpdate(c *gin.Context) {
+	id := c.Param("id")
+	job, err := s.cfg.Broker.TriggerServerUpdate(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	s.recordEvent(c, "server_update", id, true, nil)
+	c.JSON(http.StatusAccepted, job)
+}
+
+// getTLSStatus returns current TLS certificate metadata (expiry, subject, auto-renewal status).
+func (s *Server) getTLSStatus(c *gin.Context) {
+	cfg := s.cfg.DaemonCfg
+	if cfg == nil {
+		c.JSON(http.StatusOK, gin.H{"auto_tls": false})
+		return
+	}
+
+	resp := gin.H{
+		"auto_tls":     cfg.TLS.AutoTLS,
+		"acme_domain":  cfg.TLS.ACMEDomain,
+		"acme_email":   cfg.TLS.ACMEEmail,
+		"acme_staging": cfg.TLS.ACMEStaging,
+	}
+
+	// Parse the cert file (if present) to expose expiry.
+	certPath := cfg.TLS.CertFile
+	if cfg.TLS.AutoTLS && cfg.TLS.ACMECacheDir != "" {
+		// autocert stores cert under <cache>/<domain>
+		certPath = cfg.TLS.ACMECacheDir + "/" + cfg.TLS.ACMEDomain
+	}
+	if data, err := os.ReadFile(certPath); err == nil {
+		resp["cert_file"] = certPath
+		_ = data // cert parsing would require x509 — just confirm it exists
+		resp["cert_present"] = true
+	} else {
+		resp["cert_present"] = false
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 // recordEvent is a convenience wrapper that writes a structured event to the

@@ -31,6 +31,7 @@ import (
 	"github.com/games-dashboard/daemon/internal/secrets"
 	telnetsvc "github.com/games-dashboard/daemon/internal/telnet"
 	webrconpkg "github.com/games-dashboard/daemon/internal/webrcon"
+	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
 )
 
@@ -85,6 +86,10 @@ type Server struct {
 	// or the RCON password is not set.  PlayerCount >= 0 is the live count.
 	PlayerCount int `json:"player_count"`
 	MaxPlayers  int `json:"max_players,omitempty"`
+	// Auto-update — when enabled the server is re-deployed on AutoUpdateSchedule.
+	AutoUpdate         bool       `json:"auto_update,omitempty"`
+	AutoUpdateSchedule string     `json:"auto_update_schedule,omitempty"` // cron expr; default "0 4 * * *"
+	LastUpdateCheck    *time.Time `json:"last_update_check,omitempty"`
 }
 
 // PortMapping represents a port forwarding rule
@@ -172,13 +177,15 @@ type CreateServerRequest struct {
 }
 
 type UpdateServerRequest struct {
-	Name             string         `json:"name,omitempty"`
-	Config           map[string]any `json:"config,omitempty"`
-	Resources        *ResourceSpec  `json:"resources,omitempty"`
-	BackupConfig     *BackupConfig  `json:"backup_config,omitempty"`
-	AutoRestart      *bool          `json:"auto_restart,omitempty"`
-	MaxRestarts      *int           `json:"max_restarts,omitempty"`
-	RestartDelaySecs *int           `json:"restart_delay_secs,omitempty"`
+	Name               string         `json:"name,omitempty"`
+	Config             map[string]any `json:"config,omitempty"`
+	Resources          *ResourceSpec  `json:"resources,omitempty"`
+	BackupConfig       *BackupConfig  `json:"backup_config,omitempty"`
+	AutoRestart        *bool          `json:"auto_restart,omitempty"`
+	MaxRestarts        *int           `json:"max_restarts,omitempty"`
+	RestartDelaySecs   *int           `json:"restart_delay_secs,omitempty"`
+	AutoUpdate         *bool          `json:"auto_update,omitempty"`
+	AutoUpdateSchedule *string        `json:"auto_update_schedule,omitempty"`
 }
 
 type DeployRequest struct {
@@ -265,7 +272,15 @@ type Broker struct {
 	processes    map[string]*exec.Cmd
 	metricsData  map[string]*metricsRing
 	diskWarnedAt map[string]time.Time // throttle: last time a disk warning was emitted per server
-	mu           sync.RWMutex
+	// auto-update scheduler (robfig/cron); updateMu protects updateEntries independently
+	// of the main mu to avoid lock-ordering issues.
+	updateCron    *cron.Cron
+	updateEntries map[string]cron.EntryID
+	updateMu      sync.Mutex
+	// per-server rotating log writers
+	logWriters map[string]*rotatingWriter
+	logWriteMu sync.Mutex // protects logWriters map
+	mu         sync.RWMutex
 }
 
 // NewBroker creates a new Broker
@@ -336,23 +351,24 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 	}
 
 	return &Broker{
-		cfg:         cfg,
-		secrets:     secretsMgr,
-		logger:      logger,
-		metrics:     metricsSvc,
-		adapters:    registry,
-		sbomSvc:     sbomSvc,
-		networkSvc:  networkSvc,
-		clusterMgr:  clusterMgr,
-		backupSvc:   bkpSvc,
-		modMgr:      modMgr,
-		notify:      notifySvc,
-		servers:     persistedServers,
-		jobs:        make(map[string]*Job),
+		cfg:          cfg,
+		secrets:      secretsMgr,
+		logger:       logger,
+		metrics:      metricsSvc,
+		adapters:     registry,
+		sbomSvc:      sbomSvc,
+		networkSvc:   networkSvc,
+		clusterMgr:   clusterMgr,
+		backupSvc:    bkpSvc,
+		modMgr:       modMgr,
+		notify:       notifySvc,
+		servers:      persistedServers,
+		jobs:         make(map[string]*Job),
 		consoleChs:   consoleChs,
 		processes:    make(map[string]*exec.Cmd),
 		metricsData:  metricsData,
 		diskWarnedAt: make(map[string]time.Time),
+		logWriters:   make(map[string]*rotatingWriter),
 	}, nil
 }
 
@@ -423,6 +439,9 @@ func (b *Broker) BackupService() *backupsvc.Service {
 // Start begins background goroutines
 func (b *Broker) Start(ctx context.Context) {
 	b.logger.Info("Broker starting")
+
+	// Auto-update cron scheduler.
+	b.initAutoUpdateScheduler(ctx)
 
 	// Metrics sampling goroutine — collects per-server CPU/RAM every 15 s.
 	go func() {
@@ -773,9 +792,9 @@ func (b *Broker) GetServer(ctx context.Context, id string) (*Server, error) {
 // UpdateServer modifies server configuration
 func (b *Broker) UpdateServer(ctx context.Context, id string, req UpdateServerRequest) (*Server, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	s, ok := b.servers[id]
 	if !ok {
+		b.mu.Unlock()
 		return nil, fmt.Errorf("server not found: %s", id)
 	}
 	if req.Name != "" {
@@ -799,9 +818,32 @@ func (b *Broker) UpdateServer(ctx context.Context, id string, req UpdateServerRe
 	if req.RestartDelaySecs != nil {
 		s.RestartDelaySecs = *req.RestartDelaySecs
 	}
+	if req.AutoUpdate != nil {
+		s.AutoUpdate = *req.AutoUpdate
+	}
+	if req.AutoUpdateSchedule != nil {
+		s.AutoUpdateSchedule = *req.AutoUpdateSchedule
+	}
+	// Capture auto-update state before releasing lock.
+	autoUpdate := s.AutoUpdate
+	autoUpdateSchedule := s.AutoUpdateSchedule
+	autoUpdateChanged := req.AutoUpdate != nil || req.AutoUpdateSchedule != nil
 	s.UpdatedAt = time.Now()
 	b.saveServersLocked()
-	return s, nil
+	b.mu.Unlock()
+
+	// Re-schedule (or remove) the cron job outside b.mu to avoid lock ordering issues.
+	if autoUpdateChanged {
+		if autoUpdate {
+			b.scheduleAutoUpdate(id, autoUpdateSchedule)
+		} else {
+			b.unscheduleAutoUpdate(id)
+		}
+	}
+	b.mu.RLock()
+	result := b.servers[id]
+	b.mu.RUnlock()
+	return result, nil
 }
 
 // DeleteServer removes a server
@@ -2010,23 +2052,39 @@ func (b *Broker) sendConsoleMessage(id, msg string) {
 		}
 	}
 
-	// Persist all console output to a per-server log file so the Logs page can
-	// show it. stdout/stderr from Docker containers and native processes are
-	// written here; system/error/deploy events are always included.
+	// Persist all console output via a rotating log writer.
 	if b.cfg != nil {
 		dataDir := b.cfg.Storage.DataDir
 		if dataDir == "" {
 			dataDir = "/opt/gdash/data"
 		}
-		logDir := filepath.Join(dataDir, "servers", id, "logs")
-		if mkErr := os.MkdirAll(logDir, 0o750); mkErr == nil {
-			logFile := filepath.Join(logDir, "gdash-events.log")
-			if f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640); err == nil {
-				fmt.Fprintln(f, msg)
-				f.Close()
-			}
-		}
+		logFile := filepath.Join(dataDir, "servers", id, "logs", "gdash-events.log")
+		b.getLogWriter(id, logFile).writeLine(msg)
 	}
+}
+
+// getLogWriter lazily creates and returns the rotating log writer for a server.
+func (b *Broker) getLogWriter(id, path string) *rotatingWriter {
+	b.logWriteMu.Lock()
+	defer b.logWriteMu.Unlock()
+	w, ok := b.logWriters[id]
+	if !ok {
+		maxMB := 100
+		maxBack := 5
+		compress := true
+		if b.cfg != nil && b.cfg.LogRotation.MaxSizeMB > 0 {
+			maxMB = b.cfg.LogRotation.MaxSizeMB
+		}
+		if b.cfg != nil && b.cfg.LogRotation.MaxBackups > 0 {
+			maxBack = b.cfg.LogRotation.MaxBackups
+		}
+		if b.cfg != nil {
+			compress = b.cfg.LogRotation.Compress
+		}
+		w = newRotatingWriter(path, maxMB, maxBack, compress)
+		b.logWriters[id] = w
+	}
+	return w
 }
 
 // Backup operations

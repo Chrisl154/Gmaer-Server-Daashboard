@@ -15,6 +15,14 @@ type NotificationsConfig struct {
 	Events        []string `yaml:"events" json:"events"`                 // server.crash|server.restart|disk.warning|backup.failed|backup.complete
 }
 
+// LogRotationConfig controls per-server daemon event log rotation.
+type LogRotationConfig struct {
+	MaxSizeMB  int  `yaml:"max_size_mb" json:"max_size_mb"`   // rotate when file exceeds this (default 100)
+	MaxBackups int  `yaml:"max_backups" json:"max_backups"`   // keep this many rotated files (default 5)
+	MaxAgeDays int  `yaml:"max_age_days" json:"max_age_days"` // delete rotated files older than this (default 30)
+	Compress   bool `yaml:"compress" json:"compress"`         // gzip rotated files (default true)
+}
+
 // Config is the top-level daemon configuration
 type Config struct {
 	BindAddr        string              `yaml:"bind_addr" json:"bind_addr"`
@@ -28,14 +36,22 @@ type Config struct {
 	Metrics         MetricsConfig       `yaml:"metrics" json:"metrics"`
 	Cluster         ClusterConfig       `yaml:"cluster" json:"cluster"`
 	Notifications   NotificationsConfig `yaml:"notifications" json:"notifications"`
+	LogRotation     LogRotationConfig   `yaml:"log_rotation" json:"log_rotation"`
 	LogLevel        string              `yaml:"log_level" json:"log_level"`
 	DataDir         string              `yaml:"data_dir" json:"data_dir"`
 }
 
 type TLSConfig struct {
-	CertFile string `yaml:"cert_file" json:"cert_file"`
-	KeyFile  string `yaml:"key_file" json:"key_file"`
-	AutoTLS  bool   `yaml:"auto_tls" json:"auto_tls"`
+	CertFile     string `yaml:"cert_file" json:"cert_file"`
+	KeyFile      string `yaml:"key_file" json:"key_file"`
+	// AutoTLS enables Let's Encrypt certificate issuance and automatic renewal
+	// via the ACME HTTP-01 challenge. Requires ACMEDomain and ACMEEmail to be set,
+	// and port 80 to be reachable from the internet.
+	AutoTLS      bool   `yaml:"auto_tls" json:"auto_tls"`
+	ACMEDomain   string `yaml:"acme_domain" json:"acme_domain"`     // domain to issue the cert for
+	ACMEEmail    string `yaml:"acme_email" json:"acme_email"`       // contact email for Let's Encrypt account
+	ACMECacheDir string `yaml:"acme_cache_dir" json:"acme_cache_dir"` // where to persist ACME state (default /etc/games-dashboard/tls/acme)
+	ACMEStaging  bool   `yaml:"acme_staging" json:"acme_staging"`   // use Let's Encrypt staging CA (for testing)
 }
 
 type AuthConfig struct {
@@ -177,6 +193,12 @@ func defaults() *Config {
 		Metrics: MetricsConfig{
 			Enabled: true,
 			Path:    "/metrics",
+		},
+		LogRotation: LogRotationConfig{
+			MaxSizeMB:  100,
+			MaxBackups: 5,
+			MaxAgeDays: 30,
+			Compress:   true,
 		},
 		LogLevel: "info",
 		DataDir:  "/var/lib/games-dashboard",
