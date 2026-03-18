@@ -8,20 +8,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// NotificationsConfig holds webhook notification settings.
+type NotificationsConfig struct {
+	WebhookURL    string   `yaml:"webhook_url" json:"webhook_url"`
+	WebhookFormat string   `yaml:"webhook_format" json:"webhook_format"` // discord|slack|generic
+	Events        []string `yaml:"events" json:"events"`                 // server.crash|server.restart|disk.warning|backup.failed|backup.complete
+}
+
 // Config is the top-level daemon configuration
 type Config struct {
-	BindAddr        string          `yaml:"bind_addr" json:"bind_addr"`
-	TLS             TLSConfig       `yaml:"tls" json:"tls"`
-	Auth            AuthConfig      `yaml:"auth" json:"auth"`
-	Secrets         SecretsConfig   `yaml:"secrets" json:"secrets"`
-	Storage         StorageConfig   `yaml:"storage" json:"storage"`
-	ShutdownTimeout time.Duration   `yaml:"shutdown_timeout" json:"shutdown_timeout"`
-	Adapters        AdaptersConfig  `yaml:"adapters" json:"adapters"`
-	Backup          BackupConfig    `yaml:"backup" json:"backup"`
-	Metrics         MetricsConfig   `yaml:"metrics" json:"metrics"`
-	Cluster         ClusterConfig   `yaml:"cluster" json:"cluster"`
-	LogLevel        string          `yaml:"log_level" json:"log_level"`
-	DataDir         string          `yaml:"data_dir" json:"data_dir"`
+	BindAddr        string              `yaml:"bind_addr" json:"bind_addr"`
+	TLS             TLSConfig           `yaml:"tls" json:"tls"`
+	Auth            AuthConfig          `yaml:"auth" json:"auth"`
+	Secrets         SecretsConfig       `yaml:"secrets" json:"secrets"`
+	Storage         StorageConfig       `yaml:"storage" json:"storage"`
+	ShutdownTimeout time.Duration       `yaml:"shutdown_timeout" json:"shutdown_timeout"`
+	Adapters        AdaptersConfig      `yaml:"adapters" json:"adapters"`
+	Backup          BackupConfig        `yaml:"backup" json:"backup"`
+	Metrics         MetricsConfig       `yaml:"metrics" json:"metrics"`
+	Cluster         ClusterConfig       `yaml:"cluster" json:"cluster"`
+	Notifications   NotificationsConfig `yaml:"notifications" json:"notifications"`
+	LogLevel        string              `yaml:"log_level" json:"log_level"`
+	DataDir         string              `yaml:"data_dir" json:"data_dir"`
 }
 
 type TLSConfig struct {

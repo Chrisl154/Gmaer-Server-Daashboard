@@ -18,6 +18,7 @@ import (
 	"github.com/games-dashboard/daemon/internal/firewall"
 	"github.com/games-dashboard/daemon/internal/health"
 	"github.com/games-dashboard/daemon/internal/metrics"
+	"github.com/games-dashboard/daemon/internal/notifications"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
@@ -31,13 +32,14 @@ type Config struct {
 	TLSKey         string
 	// AllowedOrigins is an optional allowlist of WebSocket origin hostnames.
 	// When empty, localhost/127.0.0.1/::1 plus the bind host are allowed.
-	AllowedOrigins []string
-	Logger         *zap.Logger
-	AuthSvc        *auth.Service
-	Broker         *broker.Broker
-	HealthSvc      *health.Service
-	MetricsSvc     *metrics.Service
-	FirewallSvc    *firewall.Service
+	AllowedOrigins  []string
+	Logger          *zap.Logger
+	AuthSvc         *auth.Service
+	Broker          *broker.Broker
+	HealthSvc       *health.Service
+	MetricsSvc      *metrics.Service
+	FirewallSvc     *firewall.Service
+	NotificationSvc *notifications.Service
 	// DaemonCfg is the live daemon configuration used by the settings API.
 	DaemonCfg  *daemonconfig.Config
 	// ConfigPath is the path to daemon.yaml; when set, PATCH /settings writes back to disk.
@@ -211,6 +213,11 @@ func (s *Server) registerRoutes() {
 	admin.GET("/update/status", s.getUpdateStatus)
 	admin.POST("/update/apply", s.applyUpdate)
 	admin.GET("/update/log", s.getUpdateLog)
+
+	// Notifications (admin-only)
+	admin.GET("/notifications", s.getNotifications)
+	admin.PATCH("/notifications", s.patchNotifications)
+	admin.POST("/notifications/test", s.testNotification)
 
 	// Firewall (UFW)
 	v1.GET("/firewall", s.getFirewallStatus)
@@ -1124,6 +1131,68 @@ func (s *Server) getUser(c *gin.Context) *auth.Claims {
 		return nil
 	}
 	return claims
+}
+
+func (s *Server) getNotifications(c *gin.Context) {
+	if s.cfg.NotificationSvc == nil {
+		c.JSON(http.StatusOK, gin.H{"webhook_url": "", "webhook_format": "discord", "events": []string{}})
+		return
+	}
+	cfg := s.cfg.NotificationSvc.GetConfig()
+	c.JSON(http.StatusOK, gin.H{
+		"webhook_url":    cfg.WebhookURL,
+		"webhook_format": cfg.WebhookFormat,
+		"events":         cfg.Events,
+	})
+}
+
+func (s *Server) patchNotifications(c *gin.Context) {
+	var body struct {
+		WebhookURL    *string  `json:"webhook_url"`
+		WebhookFormat *string  `json:"webhook_format"`
+		Events        []string `json:"events"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if s.cfg.NotificationSvc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "notification service not available"})
+		return
+	}
+	cur := s.cfg.NotificationSvc.GetConfig()
+	if body.WebhookURL != nil {
+		cur.WebhookURL = *body.WebhookURL
+	}
+	if body.WebhookFormat != nil {
+		cur.WebhookFormat = *body.WebhookFormat
+	}
+	if body.Events != nil {
+		cur.Events = body.Events
+	}
+	s.cfg.NotificationSvc.UpdateConfig(cur)
+	// Also persist to daemon.yaml if ConfigPath is set
+	if s.cfg.DaemonCfg != nil {
+		s.cfg.DaemonCfg.Notifications.WebhookURL = cur.WebhookURL
+		s.cfg.DaemonCfg.Notifications.WebhookFormat = cur.WebhookFormat
+		s.cfg.DaemonCfg.Notifications.Events = cur.Events
+		if s.cfg.ConfigPath != "" {
+			_ = daemonconfig.Write(s.cfg.ConfigPath, s.cfg.DaemonCfg)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) testNotification(c *gin.Context) {
+	if s.cfg.NotificationSvc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "notification service not available"})
+		return
+	}
+	if err := s.cfg.NotificationSvc.Test(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // recordEvent is a convenience wrapper that writes a structured event to the

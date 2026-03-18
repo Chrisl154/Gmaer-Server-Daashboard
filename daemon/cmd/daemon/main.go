@@ -124,22 +124,25 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to init game broker: %w", err)
 	}
 
+	notifySvc := gameBroker.NotifyService()
+
 	// Initialize firewall service (gracefully unavailable when ufw not installed)
 	firewallSvc := firewall.NewService(logger)
 
 	// Initialize API server
 	apiServer, err := api.NewServer(api.Config{
-		BindAddr:    bindAddr,
-		TLSCert:     cfg.TLS.CertFile,
-		TLSKey:      cfg.TLS.KeyFile,
-		Logger:      logger,
-		AuthSvc:     authSvc,
-		Broker:      gameBroker,
-		HealthSvc:   healthSvc,
-		MetricsSvc:  metricsSvc,
-		FirewallSvc: firewallSvc,
-		DaemonCfg:   cfg,
-		ConfigPath:  cfgFile,
+		BindAddr:        bindAddr,
+		TLSCert:         cfg.TLS.CertFile,
+		TLSKey:          cfg.TLS.KeyFile,
+		Logger:          logger,
+		AuthSvc:         authSvc,
+		Broker:          gameBroker,
+		HealthSvc:       healthSvc,
+		MetricsSvc:      metricsSvc,
+		FirewallSvc:     firewallSvc,
+		NotificationSvc: notifySvc,
+		DaemonCfg:       cfg,
+		ConfigPath:      cfgFile,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to init API server: %w", err)

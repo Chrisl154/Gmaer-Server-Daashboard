@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Settings, Shield, Server, HardDrive, Network, Activity,
   Plus, Trash2, User, QrCode, Info, Loader2, Key, Save,
-  Database, RefreshCw, Download, GitBranch, CheckCircle2, AlertCircle,
+  Database, RefreshCw, Download, GitBranch, CheckCircle2, AlertCircle, Bell,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { cn } from '../utils/cn';
@@ -12,16 +12,17 @@ import { useAuthStore } from '../store/authStore';
 import { useSystemStatus } from '../hooks/useServers';
 import type { DaemonSettings, SettingsPatch } from '../types';
 
-type Section = 'general' | 'users' | 'tls' | 'storage' | 'networking' | 'monitoring' | 'updates';
+type Section = 'general' | 'users' | 'tls' | 'storage' | 'networking' | 'monitoring' | 'updates' | 'notifications';
 
 const NAV: { id: Section; icon: React.FC<any>; label: string }[] = [
-  { id: 'general',    icon: Settings,  label: 'General'      },
-  { id: 'users',      icon: User,      label: 'Users & Auth' },
-  { id: 'tls',        icon: Shield,    label: 'TLS'          },
-  { id: 'storage',    icon: HardDrive, label: 'Storage'      },
-  { id: 'networking', icon: Network,   label: 'Networking'   },
-  { id: 'monitoring', icon: Activity,  label: 'Monitoring'   },
-  { id: 'updates',    icon: Download,  label: 'Updates'      },
+  { id: 'general',       icon: Settings,  label: 'General'       },
+  { id: 'users',         icon: User,      label: 'Users & Auth'  },
+  { id: 'tls',           icon: Shield,    label: 'TLS'           },
+  { id: 'storage',       icon: HardDrive, label: 'Storage'       },
+  { id: 'networking',    icon: Network,   label: 'Networking'    },
+  { id: 'monitoring',    icon: Activity,  label: 'Monitoring'    },
+  { id: 'updates',       icon: Download,  label: 'Updates'       },
+  { id: 'notifications', icon: Bell,      label: 'Notifications' },
 ];
 
 // ── Shared hook ─────────────────────────────────────────────────────────────
@@ -944,6 +945,164 @@ function UpdatesSection() {
   );
 }
 
+// ── Notifications section ─────────────────────────────────────────────────────
+
+function NotificationsSection() {
+  const [url, setUrl] = useState('');
+  const [format, setFormat] = useState<'discord' | 'slack' | 'generic'>('discord');
+  const [events, setEvents] = useState<string[]>([
+    'server.crash', 'server.restart', 'disk.warning', 'backup.failed',
+  ]);
+  const [loaded, setLoaded] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get('/api/v1/admin/notifications').then(r => {
+      setUrl(r.data.webhook_url ?? '');
+      setFormat(r.data.webhook_format ?? 'discord');
+      setEvents(r.data.events ?? []);
+      setLoaded(true);
+    });
+  }, []);
+
+  const ALL_EVENTS = [
+    { id: 'server.crash',    label: 'Server crashed' },
+    { id: 'server.restart',  label: 'Server auto-restarted' },
+    { id: 'disk.warning',    label: 'Disk space warning (>80%)' },
+    { id: 'backup.complete', label: 'Backup completed' },
+    { id: 'backup.failed',   label: 'Backup failed' },
+  ];
+
+  const toggleEvent = (id: string) => {
+    setEvents(prev =>
+      prev.includes(id) ? prev.filter(e => e !== id) : [...prev, id]
+    );
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.patch('/api/v1/admin/notifications', {
+        webhook_url: url, webhook_format: format, events,
+      });
+      toast.success('Notification settings saved');
+    } catch (e: any) {
+      toast.error(e.response?.data?.error ?? 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const test = async () => {
+    setTesting(true);
+    try {
+      await api.post('/api/v1/admin/notifications/test', {});
+      toast.success('Test notification sent!');
+    } catch (e: any) {
+      toast.error(e.response?.data?.error ?? 'Test failed');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  if (!loaded) return <SectionSkeleton />;
+
+  return (
+    <div className="space-y-6 max-w-xl">
+      <div>
+        <h2 className="text-lg font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+          Notifications
+        </h2>
+        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+          Send alerts to Discord, Slack, or any HTTP webhook when important events occur.
+        </p>
+      </div>
+
+      {/* Webhook URL */}
+      <div className="card p-5 space-y-4">
+        <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Webhook</h3>
+        <div>
+          <label className="block text-xs font-semibold uppercase tracking-wide mb-1.5"
+            style={{ color: 'var(--text-muted)' }}>
+            Webhook URL
+          </label>
+          <input
+            className="input w-full font-mono text-sm"
+            value={url}
+            onChange={e => setUrl(e.target.value)}
+            placeholder="https://discord.com/api/webhooks/…"
+          />
+          <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+            Paste a Discord, Slack Incoming Webhook, or any HTTP endpoint that accepts POST JSON.
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold uppercase tracking-wide mb-1.5"
+            style={{ color: 'var(--text-muted)' }}>
+            Format
+          </label>
+          <select
+            className="input w-full"
+            value={format}
+            onChange={e => setFormat(e.target.value as any)}
+          >
+            <option value="discord">Discord (rich embed)</option>
+            <option value="slack">Slack (text message)</option>
+            <option value="generic">Generic JSON (event + server + message)</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Events */}
+      <div className="card p-5 space-y-3">
+        <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Events to notify
+        </h3>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Untick events you don't want notifications for.
+        </p>
+        <div className="space-y-2">
+          {ALL_EVENTS.map(ev => (
+            <label key={ev.id}
+              className="flex items-center gap-3 cursor-pointer py-1.5 rounded-lg px-3 transition-colors"
+              style={{ background: events.includes(ev.id) ? 'var(--primary-subtle)' : 'transparent' }}
+            >
+              <input
+                type="checkbox"
+                checked={events.includes(ev.id)}
+                onChange={() => toggleEvent(ev.id)}
+                className="w-4 h-4 accent-orange-500"
+              />
+              <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{ev.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-3">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="btn-primary py-2 px-5"
+        >
+          <Save className="w-4 h-4" />
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          onClick={test}
+          disabled={testing || !url}
+          className="btn-ghost py-2 px-5 disabled:opacity-40"
+        >
+          {testing ? 'Sending…' : 'Send Test'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Skeleton ─────────────────────────────────────────────────────────────────
 
 function SectionSkeleton() {
@@ -995,13 +1154,14 @@ export function SettingsPage() {
 
       {/* Content */}
       <main className="flex-1 p-6 md:p-8 overflow-auto">
-        {section === 'general'    && <GeneralSection />}
-        {section === 'users'      && <UsersSection />}
-        {section === 'tls'        && <TLSSection />}
-        {section === 'storage'    && <StorageSection />}
-        {section === 'networking' && <NetworkingSection />}
-        {section === 'monitoring' && <MonitoringSection />}
-        {section === 'updates'    && <UpdatesSection />}
+        {section === 'general'       && <GeneralSection />}
+        {section === 'users'         && <UsersSection />}
+        {section === 'tls'           && <TLSSection />}
+        {section === 'storage'       && <StorageSection />}
+        {section === 'networking'    && <NetworkingSection />}
+        {section === 'monitoring'    && <MonitoringSection />}
+        {section === 'updates'       && <UpdatesSection />}
+        {section === 'notifications' && <NotificationsSection />}
       </main>
     </div>
   );

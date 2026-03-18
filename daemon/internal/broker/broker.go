@@ -25,6 +25,7 @@ import (
 	"github.com/games-dashboard/daemon/internal/metrics"
 	"github.com/games-dashboard/daemon/internal/modmanager"
 	"github.com/games-dashboard/daemon/internal/networking"
+	"github.com/games-dashboard/daemon/internal/notifications"
 	rconpkg "github.com/games-dashboard/daemon/internal/rcon"
 	"github.com/games-dashboard/daemon/internal/sbom"
 	"github.com/games-dashboard/daemon/internal/secrets"
@@ -251,6 +252,7 @@ type Broker struct {
 	clusterMgr *cluster.Manager
 	backupSvc  *backupsvc.Service
 	modMgr     *modmanager.Manager
+	notify     *notifications.Service
 	servers    map[string]*Server
 	jobs       map[string]*Job
 	consoleChs map[string]chan string
@@ -308,6 +310,16 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 	}
 	modMgr := modmanager.NewManager(modDir, logger)
 
+	notifyCfg := notifications.Config{}
+	if cfg != nil {
+		notifyCfg = notifications.Config{
+			WebhookURL:    cfg.Notifications.WebhookURL,
+			WebhookFormat: cfg.Notifications.WebhookFormat,
+			Events:        cfg.Notifications.Events,
+		}
+	}
+	notifySvc := notifications.New(notifyCfg, logger)
+
 	persistedServers := loadServersState(cfg, logger)
 
 	// Pre-populate consoleChs and metricsData for loaded servers.
@@ -329,6 +341,7 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		clusterMgr:  clusterMgr,
 		backupSvc:   bkpSvc,
 		modMgr:      modMgr,
+		notify:      notifySvc,
 		servers:     persistedServers,
 		jobs:        make(map[string]*Job),
 		consoleChs:   consoleChs,
@@ -336,6 +349,11 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		metricsData:  metricsData,
 		diskWarnedAt: make(map[string]time.Time),
 	}, nil
+}
+
+// NotifyService returns the notifications service instance.
+func (b *Broker) NotifyService() *notifications.Service {
+	return b.notify
 }
 
 // ClusterManager returns the cluster manager (may be nil if cluster disabled)
@@ -500,6 +518,10 @@ func (b *Broker) checkDiskWarning(id string, pct float64) {
 		return
 	}
 	b.diskWarnedAt[id] = time.Now()
+	var serverName string
+	if sv, ok := b.servers[id]; ok {
+		serverName = sv.Name
+	}
 	b.mu.Unlock()
 
 	var msg string
@@ -510,6 +532,7 @@ func (b *Broker) checkDiskWarning(id string, pct float64) {
 	}
 	b.logger.Warn("Disk usage threshold exceeded", zap.String("id", id), zap.Float64("disk_pct", pct))
 	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":%s,"ts":%d}`, jsonStr(msg), time.Now().Unix()))
+	b.notify.Send("disk.warning", serverName, msg)
 }
 
 // GetServerMetrics returns the last n metric samples for a server.
@@ -1006,6 +1029,7 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 				return
 			}
 			attempt := sv2.RestartCount
+			restartServerName := sv2.Name
 			sv2.State = StateStarting
 			b.mu.Unlock()
 
@@ -1014,6 +1038,7 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 			b.sendConsoleMessage(id, fmt.Sprintf(
 				`{"type":"system","msg":"Server %s crashed — restarting in %ds (attempt %d/%d)","ts":%d}`,
 				id, restartDelay, attempt, maxRestarts, time.Now().Unix()))
+			b.notify.Send("server.restart", restartServerName, fmt.Sprintf("Server crashed and is restarting (attempt %d/%d, delay %ds).", attempt, maxRestarts, restartDelay))
 		} else {
 			b.mu.Unlock()
 			return
@@ -1901,14 +1926,17 @@ func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (st
 // explanation in LastError so the UI can display it on the server card.
 // It also emits the message to the console stream.
 func (b *Broker) setServerError(id, humanMsg string) {
+	var serverName string
 	b.mu.Lock()
 	if sv, ok := b.servers[id]; ok {
+		serverName = sv.Name
 		sv.State = StateError
 		sv.PID = 0
 		sv.LastError = humanMsg
 	}
 	b.mu.Unlock()
 	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(humanMsg), time.Now().Unix()))
+	b.notify.Send("server.crash", serverName, humanMsg)
 }
 
 func (b *Broker) sendConsoleMessage(id, msg string) {

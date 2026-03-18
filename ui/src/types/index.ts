@@ -334,6 +334,18 @@ export interface SettingsPatch {
   };
 }
 
+export interface NotificationSettings {
+  webhook_url: string;
+  webhook_format: 'discord' | 'slack' | 'generic';
+  events: string[];
+}
+
+export interface NotificationSettingsPatch {
+  webhook_url?: string;
+  webhook_format?: string;
+  events?: string[];
+}
+
 // ── API helpers ───────────────────────────────────────────────────────────────
 
 export interface APIError {
