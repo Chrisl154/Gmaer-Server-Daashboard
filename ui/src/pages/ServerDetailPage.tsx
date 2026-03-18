@@ -15,7 +15,7 @@ import {
 } from 'recharts';
 import type { ServerMetricSample } from '../types';
 
-type Tab = 'overview' | 'console' | 'logs' | 'backups' | 'mods' | 'ports' | 'config' | 'files';
+type Tab = 'overview' | 'console' | 'logs' | 'backups' | 'mods' | 'ports' | 'config' | 'files' | 'players';
 
 const STATE_CLASS: Record<string, string> = {
   running:   'status-running',
@@ -85,6 +85,7 @@ export function ServerDetailPage() {
     { id: 'ports',    label: 'Ports'     },
     { id: 'config',   label: 'Config'    },
     { id: 'files',    label: 'Files'     },
+    { id: 'players',  label: 'Players'   },
   ];
 
   return (
@@ -196,6 +197,7 @@ export function ServerDetailPage() {
         {activeTab === 'ports'    && <PortsTab server={server} />}
         {activeTab === 'config'   && <ConfigTab server={server} />}
         {activeTab === 'files'    && <FilesTab serverId={id!} />}
+        {activeTab === 'players'  && <PlayersTab serverId={id!} adapter={server.adapter} />}
       </div>
     </div>
   );
@@ -1486,6 +1488,215 @@ function InfoRow({ label, value, mono = false }: { label: string; value: string;
       style={{ borderBottom: '1px solid var(--border)' }}>
       <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
       <span className={cn(mono && 'font-mono text-xs')} style={{ color: 'var(--text-primary)' }}>{value}</span>
+    </div>
+  );
+}
+
+// ── Players tab ───────────────────────────────────────────────────────────────
+
+function PlayersTab({ serverId, adapter }: { serverId: string; adapter: string }) {
+  const queryClient = useQueryClient();
+  const [banInput, setBanInput] = React.useState('');
+  const [banReason, setBanReason] = React.useState('');
+  const [wlInput, setWlInput] = React.useState('');
+
+  const banlistQuery = useQuery({
+    queryKey: ['banlist', serverId],
+    queryFn: () => api.get(`/api/v1/servers/${serverId}/banlist`).then(r => r.data as { players: string[]; supported: boolean }),
+    retry: false,
+  });
+
+  const whitelistQuery = useQuery({
+    queryKey: ['whitelist', serverId],
+    queryFn: () => api.get(`/api/v1/servers/${serverId}/whitelist`).then(r => r.data as { players: string[]; supported: boolean }),
+    retry: false,
+  });
+
+  const banMutation = useMutation({
+    mutationFn: ({ player, reason }: { player: string; reason: string }) =>
+      api.post(`/api/v1/servers/${serverId}/banlist`, { player, reason }),
+    onSuccess: () => {
+      toast.success('Player banned');
+      setBanInput('');
+      setBanReason('');
+      queryClient.invalidateQueries({ queryKey: ['banlist', serverId] });
+    },
+    onError: (e: { response?: { data?: { error?: string } } }) =>
+      toast.error(e.response?.data?.error ?? 'Failed to ban player'),
+  });
+
+  const unbanMutation = useMutation({
+    mutationFn: (player: string) =>
+      api.delete(`/api/v1/servers/${serverId}/banlist/${encodeURIComponent(player)}`),
+    onSuccess: () => {
+      toast.success('Player unbanned');
+      queryClient.invalidateQueries({ queryKey: ['banlist', serverId] });
+    },
+    onError: (e: { response?: { data?: { error?: string } } }) =>
+      toast.error(e.response?.data?.error ?? 'Failed to unban player'),
+  });
+
+  const wlAddMutation = useMutation({
+    mutationFn: (player: string) =>
+      api.post(`/api/v1/servers/${serverId}/whitelist`, { player }),
+    onSuccess: () => {
+      toast.success('Added to whitelist');
+      setWlInput('');
+      queryClient.invalidateQueries({ queryKey: ['whitelist', serverId] });
+    },
+    onError: (e: { response?: { data?: { error?: string } } }) =>
+      toast.error(e.response?.data?.error ?? 'Failed to add player'),
+  });
+
+  const wlRemoveMutation = useMutation({
+    mutationFn: (player: string) =>
+      api.delete(`/api/v1/servers/${serverId}/whitelist/${encodeURIComponent(player)}`),
+    onSuccess: () => {
+      toast.success('Removed from whitelist');
+      queryClient.invalidateQueries({ queryKey: ['whitelist', serverId] });
+    },
+    onError: (e: { response?: { data?: { error?: string } } }) =>
+      toast.error(e.response?.data?.error ?? 'Failed to remove player'),
+  });
+
+  const banSupported = banlistQuery.data?.supported !== false;
+  const wlSupported = whitelistQuery.data?.supported !== false;
+
+  return (
+    <div className="space-y-6">
+      {/* Ban List */}
+      <div className="card p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Users className="w-4 h-4" style={{ color: 'var(--primary)' }} />
+          <h3 className="label">Ban List</h3>
+        </div>
+
+        {!banSupported ? (
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            Ban management is not supported for <span className="font-medium capitalize">{adapter}</span> servers.
+            {(adapter === 'ark-survival-ascended' || adapter === 'conan-exiles') &&
+              ' You can ban players by Steam ID via the console tab.'}
+          </p>
+        ) : (
+          <>
+            {/* Ban input */}
+            <div className="flex gap-2 mb-4">
+              <input
+                className="input flex-1"
+                placeholder="Player name"
+                value={banInput}
+                onChange={e => setBanInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && banInput.trim() && banMutation.mutate({ player: banInput.trim(), reason: banReason.trim() })}
+              />
+              <input
+                className="input w-40"
+                placeholder="Reason (optional)"
+                value={banReason}
+                onChange={e => setBanReason(e.target.value)}
+              />
+              <button
+                className="btn-danger py-2"
+                disabled={!banInput.trim() || banMutation.isPending}
+                onClick={() => banMutation.mutate({ player: banInput.trim(), reason: banReason.trim() })}
+              >
+                Ban
+              </button>
+            </div>
+
+            {/* Banned players list */}
+            {banlistQuery.isLoading ? (
+              <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>Loading…</div>
+            ) : banlistQuery.isError ? (
+              <div className="text-sm" style={{ color: 'var(--danger)' }}>
+                Could not load ban list — server must be running with RCON enabled.
+              </div>
+            ) : banlistQuery.data?.players.length === 0 ? (
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No banned players.</p>
+            ) : (
+              <ul className="space-y-1">
+                {banlistQuery.data!.players.map(player => (
+                  <li key={player}
+                    className="flex items-center justify-between text-sm px-3 py-2 rounded-lg"
+                    style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)' }}>
+                    <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{player}</span>
+                    <button
+                      className="btn-ghost py-1 px-2 text-xs"
+                      style={{ color: 'var(--danger)' }}
+                      disabled={unbanMutation.isPending}
+                      onClick={() => unbanMutation.mutate(player)}
+                    >
+                      <X className="w-3 h-3 inline-block mr-1" />Unban
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Whitelist */}
+      <div className="card p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Check className="w-4 h-4" style={{ color: 'var(--success, #22c55e)' }} />
+          <h3 className="label">Whitelist</h3>
+        </div>
+
+        {!wlSupported ? (
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            Whitelist management via RCON is only supported for Minecraft servers.
+          </p>
+        ) : (
+          <>
+            {/* Add input */}
+            <div className="flex gap-2 mb-4">
+              <input
+                className="input flex-1"
+                placeholder="Player name"
+                value={wlInput}
+                onChange={e => setWlInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && wlInput.trim() && wlAddMutation.mutate(wlInput.trim())}
+              />
+              <button
+                className="btn-primary py-2"
+                disabled={!wlInput.trim() || wlAddMutation.isPending}
+                onClick={() => wlAddMutation.mutate(wlInput.trim())}
+              >
+                Add
+              </button>
+            </div>
+
+            {/* Whitelist */}
+            {whitelistQuery.isLoading ? (
+              <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>Loading…</div>
+            ) : whitelistQuery.isError ? (
+              <div className="text-sm" style={{ color: 'var(--danger)' }}>
+                Could not load whitelist — server must be running with RCON enabled.
+              </div>
+            ) : whitelistQuery.data?.players.length === 0 ? (
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Whitelist is empty — all players can join.</p>
+            ) : (
+              <ul className="space-y-1">
+                {whitelistQuery.data!.players.map(player => (
+                  <li key={player}
+                    className="flex items-center justify-between text-sm px-3 py-2 rounded-lg"
+                    style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)' }}>
+                    <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{player}</span>
+                    <button
+                      className="btn-ghost py-1 px-2 text-xs"
+                      style={{ color: 'var(--danger)' }}
+                      disabled={wlRemoveMutation.isPending}
+                      onClick={() => wlRemoveMutation.mutate(player)}
+                    >
+                      <X className="w-3 h-3 inline-block mr-1" />Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

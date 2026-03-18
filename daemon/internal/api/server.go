@@ -177,6 +177,14 @@ func (s *Server) registerRoutes() {
 	v1.POST("/servers/:id/files/upload", s.uploadFile)
 	v1.DELETE("/servers/:id/files", s.deleteFile)
 
+	// Ban list & whitelist
+	v1.GET("/servers/:id/banlist", s.listBannedPlayers)
+	v1.POST("/servers/:id/banlist", s.banPlayer)
+	v1.DELETE("/servers/:id/banlist/:player", s.unbanPlayer)
+	v1.GET("/servers/:id/whitelist", s.listWhitelistPlayers)
+	v1.POST("/servers/:id/whitelist", s.whitelistAddPlayer)
+	v1.DELETE("/servers/:id/whitelist/:player", s.whitelistRemovePlayer)
+
 	// Mods
 	v1.GET("/servers/:id/mods", s.listMods)
 	v1.POST("/servers/:id/mods", s.installMod)
