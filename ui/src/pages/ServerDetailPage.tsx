@@ -5,7 +5,7 @@ import {
   ArrowLeft, Play, Square, RotateCcw, HardDrive, Package,
   Download, Maximize2, Cpu, MemoryStick, Clock, Activity,
   FileText, RefreshCw, Save, FolderOpen, Share2, Copy, Check, X,
-  Wifi, WifiOff, Upload, Trash2, Folder, File, ChevronRight,
+  Wifi, WifiOff, Upload, Trash2, Folder, File, ChevronRight, Users,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { api, getWsUrl } from '../utils/api';
@@ -401,15 +401,24 @@ function ShareModal({ server, onClose }: { server: any; onClose: () => void }) {
 // ── Overview tab ─────────────────────────────────────────────────────────────
 
 function OverviewTab({ server }: { server: any }) {
+  const playerCount: number = server.player_count ?? -1;
+  const maxPlayers: number = server.max_players ?? 0;
+  const playerLabel = server.state !== 'running' || playerCount < 0
+    ? '—'
+    : maxPlayers > 0
+      ? `${playerCount} / ${maxPlayers}`
+      : String(playerCount);
+
   return (
     <div className="space-y-4">
       {/* Quick metrics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
           { icon: Cpu,         label: 'CPU Cores',  value: String(server.resources?.cpu_cores ?? '—')                         },
           { icon: MemoryStick, label: 'RAM',        value: server.resources?.ram_gb  ? `${server.resources.ram_gb} GB`  : '—' },
           { icon: HardDrive,   label: 'Disk',       value: server.resources?.disk_gb ? `${server.resources.disk_gb} GB` : '—' },
           { icon: Clock,       label: 'State',      value: server.state                                                        },
+          { icon: Users,       label: 'Players',    value: playerLabel                                                         },
         ].map(({ icon: Icon, label, value }) => (
           <div key={label} className="card p-4">
             <div className="flex items-center gap-2 mb-2">

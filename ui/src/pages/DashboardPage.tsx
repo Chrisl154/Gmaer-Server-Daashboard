@@ -522,7 +522,7 @@ function ResourceTable({ servers, isLoading }: { servers: any[]; isLoading: bool
         style={{
           color: 'var(--text-muted)',
           borderBottom: '1px solid var(--border)',
-          gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr',
+          gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr 1fr',
           background: 'var(--bg-elevated)',
         }}
       >
@@ -531,6 +531,7 @@ function ResourceTable({ servers, isLoading }: { servers: any[]; isLoading: bool
         <span>CPU</span>
         <span>RAM</span>
         <span>Disk</span>
+        <span>Players</span>
         <span>Allocated</span>
       </div>
 
@@ -546,12 +547,20 @@ function ResourceTable({ servers, isLoading }: { servers: any[]; isLoading: bool
         const ramColor = s.ram_pct >= 90 ? '#ef4444' : s.ram_pct >= 70 ? '#f97316' : '#3b82f6';
         const diskColor = s.disk_pct >= 95 ? '#ef4444' : s.disk_pct >= 85 ? '#f97316' : s.disk_pct >= 70 ? '#eab308' : '#22c55e';
 
+        const playerCount: number = s.player_count ?? -1;
+        const maxPlayers: number = s.max_players ?? 0;
+        const playerLabel = !isRunning || playerCount < 0
+          ? '—'
+          : maxPlayers > 0
+            ? `${playerCount} / ${maxPlayers}`
+            : String(playerCount);
+
         return (
           <div
             key={s.id}
             className="grid px-5 py-3 items-center cursor-pointer hover:bg-white/[0.02] transition-colors"
             style={{
-              gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr',
+              gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr 1fr',
               borderBottom: idx < servers.length - 1 ? '1px solid var(--border)' : 'none',
             }}
             onClick={() => navigate(`/servers/${s.id}`)}
@@ -592,6 +601,12 @@ function ResourceTable({ servers, isLoading }: { servers: any[]; isLoading: bool
             {/* Disk */}
             <div className="pr-4">
               <MiniBar pct={s.disk_pct ?? 0} color={diskColor} />
+            </div>
+
+            {/* Players */}
+            <div className="flex items-center gap-1.5" style={{ color: playerCount >= 0 && isRunning ? 'var(--text-primary)' : 'var(--text-muted)', opacity: playerCount < 0 || !isRunning ? 0.5 : 1 }}>
+              <Users className="w-3 h-3 shrink-0" />
+              <span className="text-xs font-medium">{playerLabel}</span>
             </div>
 
             {/* Allocated resources */}

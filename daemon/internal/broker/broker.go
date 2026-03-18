@@ -80,6 +80,11 @@ type Server struct {
 	CPUPct  float64 `json:"cpu_pct,omitempty"`
 	RAMPct  float64 `json:"ram_pct,omitempty"`
 	DiskPct float64 `json:"disk_pct,omitempty"`
+	// Player counts — updated alongside CPU/RAM/Disk every 15 s.
+	// PlayerCount == -1 means the adapter does not support player count queries
+	// or the RCON password is not set.  PlayerCount >= 0 is the live count.
+	PlayerCount int `json:"player_count"`
+	MaxPlayers  int `json:"max_players,omitempty"`
 }
 
 // PortMapping represents a port forwarding rule
@@ -448,24 +453,71 @@ func (b *Broker) Start(ctx context.Context) {
 }
 
 // collectMetrics samples CPU/RAM for running servers and disk usage for all servers.
+// It also queries player counts via RCON for games that support it.
 func (b *Broker) collectMetrics() {
 	b.mu.RLock()
 	type snap struct {
-		pid          int
-		containerID  string
-		deployMethod string
-		installDir   string
+		pid            int
+		containerID    string
+		deployMethod   string
+		installDir     string
+		state          ServerState
+		adapter        string
+		rconEnabled    bool
+		consoleType    string
+		rconPort       int
+		rconPassword   string
+		telnetPassword string
 	}
 	servers := make(map[string]snap, len(b.servers))
 	for id, s := range b.servers {
+		var rconEnabled bool
+		var consoleType string
+		var rconPort int
+		if m, ok := b.adapters.Get(s.Adapter); ok && m.Console.RCONEnabled {
+			rconEnabled = true
+			consoleType = m.Console.Type
+			rconPort = m.Console.RCONPort
+		}
+		rconPassword, _ := s.Config["rcon_password"].(string)
+		telnetPassword, _ := s.Config["telnet_password"].(string)
 		servers[id] = snap{
-			pid:          s.PID,
-			containerID:  s.ContainerID,
-			deployMethod: s.DeployMethod,
-			installDir:   s.InstallDir,
+			pid:            s.PID,
+			containerID:    s.ContainerID,
+			deployMethod:   s.DeployMethod,
+			installDir:     s.InstallDir,
+			state:          s.State,
+			adapter:        s.Adapter,
+			rconEnabled:    rconEnabled,
+			consoleType:    consoleType,
+			rconPort:       rconPort,
+			rconPassword:   rconPassword,
+			telnetPassword: telnetPassword,
 		}
 	}
 	b.mu.RUnlock()
+
+	// Concurrently query player counts for running RCON-enabled servers.
+	// Each query has a 2 s timeout; running them in parallel keeps total overhead ≤ 2 s.
+	type pcEntry struct{ current, max int }
+	pcMap := make(map[string]pcEntry, len(servers))
+	var pcMu sync.Mutex
+	var pcWg sync.WaitGroup
+	for id, s := range servers {
+		if s.state == StateRunning && s.rconEnabled && s.rconPort > 0 {
+			pcWg.Add(1)
+			go func(id string, s snap) {
+				defer pcWg.Done()
+				pc := queryPlayerCount(s.adapter, s.consoleType, s.rconPort, s.rconPassword, s.telnetPassword)
+				pcMu.Lock()
+				pcMap[id] = pcEntry{pc.current, pc.max}
+				pcMu.Unlock()
+			}(id, s)
+		} else {
+			pcMap[id] = pcEntry{-1, 0}
+		}
+	}
+	pcWg.Wait()
 
 	for id, s := range servers {
 		var cpu, ram float64
@@ -478,6 +530,8 @@ func (b *Broker) collectMetrics() {
 		// Disk usage applies to all servers regardless of running state.
 		disk := diskUsagePct(s.installDir)
 
+		pc := pcMap[id]
+
 		b.mu.RLock()
 		ring, ok := b.metricsData[id]
 		b.mu.RUnlock()
@@ -489,6 +543,7 @@ func (b *Broker) collectMetrics() {
 			CPUPercent:  cpu,
 			RAMPercent:  ram,
 			DiskPercent: disk,
+			PlayerCount: pc.current,
 		})
 
 		// Mirror latest values onto the Server object for direct API access
@@ -498,6 +553,10 @@ func (b *Broker) collectMetrics() {
 			sv.CPUPct = cpu
 			sv.RAMPct = ram
 			sv.DiskPct = disk
+			sv.PlayerCount = pc.current
+			if pc.max > 0 {
+				sv.MaxPlayers = pc.max
+			}
 		}
 		b.mu.Unlock()
 
