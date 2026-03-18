@@ -14,7 +14,9 @@ import (
 func (s *Server) getFirewallStatus(c *gin.Context) {
 	status, err := s.cfg.FirewallSvc.GetStatus(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read firewall status: " + err.Error()})
+		// ufw is present but returned an error (e.g. no sudo access).
+		// Return a structured not-available response so the UI degrades gracefully.
+		c.JSON(http.StatusOK, firewall.Status{Available: false})
 		return
 	}
 	c.JSON(http.StatusOK, status)

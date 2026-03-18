@@ -1502,13 +1502,13 @@ function PlayersTab({ serverId, adapter }: { serverId: string; adapter: string }
 
   const banlistQuery = useQuery({
     queryKey: ['banlist', serverId],
-    queryFn: () => api.get(`/api/v1/servers/${serverId}/banlist`).then(r => r.data as { players: string[]; supported: boolean }),
+    queryFn: () => api.get(`/api/v1/servers/${serverId}/banlist`).then(r => r.data as { players: string[]; supported: boolean; online: boolean; error?: string }),
     retry: false,
   });
 
   const whitelistQuery = useQuery({
     queryKey: ['whitelist', serverId],
-    queryFn: () => api.get(`/api/v1/servers/${serverId}/whitelist`).then(r => r.data as { players: string[]; supported: boolean }),
+    queryFn: () => api.get(`/api/v1/servers/${serverId}/whitelist`).then(r => r.data as { players: string[]; supported: boolean; online: boolean; error?: string }),
     retry: false,
   });
 
@@ -1606,9 +1606,13 @@ function PlayersTab({ serverId, adapter }: { serverId: string; adapter: string }
             {/* Banned players list */}
             {banlistQuery.isLoading ? (
               <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>Loading…</div>
+            ) : banlistQuery.data?.online === false ? (
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                Start the server to view and manage the ban list.
+              </p>
             ) : banlistQuery.isError ? (
               <div className="text-sm" style={{ color: 'var(--danger)' }}>
-                Could not load ban list — server must be running with RCON enabled.
+                Could not load ban list — check that RCON is enabled and the password is set.
               </div>
             ) : banlistQuery.data?.players.length === 0 ? (
               <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No banned players.</p>
@@ -1669,9 +1673,13 @@ function PlayersTab({ serverId, adapter }: { serverId: string; adapter: string }
             {/* Whitelist */}
             {whitelistQuery.isLoading ? (
               <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>Loading…</div>
+            ) : whitelistQuery.data?.online === false ? (
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                Start the server to view and manage the whitelist.
+              </p>
             ) : whitelistQuery.isError ? (
               <div className="text-sm" style={{ color: 'var(--danger)' }}>
-                Could not load whitelist — server must be running with RCON enabled.
+                Could not load whitelist — check that RCON is enabled and the password is set.
               </div>
             ) : whitelistQuery.data?.players.length === 0 ? (
               <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Whitelist is empty — all players can join.</p>

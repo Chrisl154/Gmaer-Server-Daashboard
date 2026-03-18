@@ -2526,6 +2526,9 @@ func (b *Broker) ListFiles(ctx context.Context, id, dirPath string) ([]FileEntry
 	}
 	entries, err := os.ReadDir(abs)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return []FileEntry{}, nil // server not yet deployed — return empty listing
+		}
 		return nil, fmt.Errorf("cannot list directory: %w", err)
 	}
 	installDir := filepath.Clean(s.InstallDir)

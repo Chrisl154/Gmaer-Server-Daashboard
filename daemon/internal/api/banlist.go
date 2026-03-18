@@ -14,13 +14,15 @@ func (s *Server) listBannedPlayers(c *gin.Context) {
 	players, err := s.cfg.Broker.ListBannedPlayers(c.Request.Context(), id)
 	if err != nil {
 		if errors.Is(err, broker.ErrBanlistNotSupported) {
-			c.JSON(http.StatusOK, gin.H{"players": []string{}, "supported": false})
+			c.JSON(http.StatusOK, gin.H{"players": []string{}, "supported": false, "online": false})
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		// Server not running or RCON unavailable — return structured response so
+		// the UI can show a targeted "start the server" message instead of an error.
+		c.JSON(http.StatusOK, gin.H{"players": []string{}, "supported": true, "online": false, "error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"players": players, "supported": true})
+	c.JSON(http.StatusOK, gin.H{"players": players, "supported": true, "online": true})
 }
 
 func (s *Server) banPlayer(c *gin.Context) {
@@ -69,13 +71,13 @@ func (s *Server) listWhitelistPlayers(c *gin.Context) {
 	players, err := s.cfg.Broker.ListWhitelistPlayers(c.Request.Context(), id)
 	if err != nil {
 		if errors.Is(err, broker.ErrBanlistNotSupported) {
-			c.JSON(http.StatusOK, gin.H{"players": []string{}, "supported": false})
+			c.JSON(http.StatusOK, gin.H{"players": []string{}, "supported": false, "online": false})
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusOK, gin.H{"players": []string{}, "supported": true, "online": false, "error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"players": players, "supported": true})
+	c.JSON(http.StatusOK, gin.H{"players": players, "supported": true, "online": true})
 }
 
 func (s *Server) whitelistAddPlayer(c *gin.Context) {
