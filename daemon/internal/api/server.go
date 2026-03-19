@@ -219,6 +219,9 @@ func (s *Server) registerRoutes() {
 	v1.POST("/auth/logout", s.logout)
 	v1.POST("/auth/totp/setup", s.setupTOTP)
 	v1.POST("/auth/totp/verify", s.verifyTOTP)
+	v1.GET("/auth/totp/recovery-codes", s.getRecoveryCodesCount)
+	v1.POST("/auth/totp/recovery-codes/regenerate", s.regenerateRecoveryCodes)
+	v1.GET("/auth/totp/recovery-codes/download", s.downloadRecoveryCodes)
 	v1.GET("/users/me", s.getMe)
 
 	// Cluster nodes
@@ -857,11 +860,53 @@ func (s *Server) verifyTOTP(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.cfg.AuthSvc.VerifyTOTP(c.Request.Context(), user, req.Code); err != nil {
+	resp, err := s.cfg.AuthSvc.VerifyTOTP(c.Request.Context(), user, req.Code)
+	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid TOTP code"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"verified": true})
+	c.JSON(http.StatusOK, resp)
+}
+
+func (s *Server) getRecoveryCodesCount(c *gin.Context) {
+	user := s.getUser(c)
+	count, err := s.cfg.AuthSvc.GetRecoveryCodesCount(c.Request.Context(), user)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"remaining": count})
+}
+
+func (s *Server) regenerateRecoveryCodes(c *gin.Context) {
+	user := s.getUser(c)
+	var req struct {
+		TOTPCode string `json:"totp_code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	resp, err := s.cfg.AuthSvc.RegenerateRecoveryCodes(c.Request.Context(), user, req.TOTPCode)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+func (s *Server) downloadRecoveryCodes(c *gin.Context) {
+	user := s.getUser(c)
+	// We need the raw codes — ask the service for a text representation
+	count, err := s.cfg.AuthSvc.GetRecoveryCodesCount(c.Request.Context(), user)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// The codes themselves are not retrievable after first display; this endpoint
+	// returns the count so the client knows TOTP is enabled. Actual code download
+	// is handled client-side from the enrollment/regenerate response.
+	c.JSON(http.StatusOK, gin.H{"remaining": count, "note": "recovery codes are only shown once at enrollment or regeneration"})
 }
 
 func (s *Server) oidcLogin(c *gin.Context) {

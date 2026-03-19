@@ -20,7 +20,7 @@ interface AuthState {
   logout: () => void;
   checkAuth: () => void;
   setupTOTP: () => Promise<{ secret: string; qr_code_url: string }>;
-  verifyTOTP: (code: string) => Promise<void>;
+  verifyTOTP: (code: string) => Promise<{ recovery_codes: string[] }>;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -83,8 +83,12 @@ export const useAuthStore = create<AuthState>()(
       },
 
       verifyTOTP: async (code) => {
-        await api.post('/api/v1/auth/totp/verify', { code });
-        set({ mfaRequired: false });
+        const response = await api.post('/api/v1/auth/totp/verify', { code });
+        set(state => ({
+          mfaRequired: false,
+          user: state.user ? { ...state.user, totp_enabled: true } : state.user,
+        }));
+        return response.data;
       },
     }),
     {

@@ -77,6 +77,7 @@ type User struct {
 	AllowedServers []string  `json:"allowed_servers,omitempty"` // nil/empty = all servers
 	TOTPEnabled    bool      `json:"totp_enabled"`
 	TOTPSecret     string    `json:"-"`
+	RecoveryCodes  []string  `json:"-"` // single-use backup codes, stored plaintext (in-memory)
 	CreatedAt      time.Time `json:"created_at"`
 	LastLogin      time.Time `json:"last_login"`
 }
@@ -101,9 +102,10 @@ func (c *Claims) HasRole(role string) bool {
 
 // LoginRequest is a login payload
 type LoginRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
-	TOTPCode string `json:"totp_code,omitempty"`
+	Username     string `json:"username" binding:"required"`
+	Password     string `json:"password" binding:"required"`
+	TOTPCode     string `json:"totp_code,omitempty"`
+	RecoveryCode string `json:"recovery_code,omitempty"`
 }
 
 // LoginResponse contains the JWT token
@@ -123,6 +125,12 @@ type TOTPSetupResponse struct {
 
 type TOTPVerifyRequest struct {
 	Code string `json:"code" binding:"required"`
+}
+
+// TOTPVerifyResponse is returned on successful TOTP enrollment.
+// RecoveryCodes must be shown to the user once — they are not retrievable later.
+type TOTPVerifyResponse struct {
+	RecoveryCodes []string `json:"recovery_codes"`
 }
 
 // CreateUserRequest is a user creation payload
@@ -217,13 +225,18 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 	mfaDone := false
 
 	if user.TOTPEnabled {
-		if req.TOTPCode == "" {
+		if req.TOTPCode == "" && req.RecoveryCode == "" {
 			return &LoginResponse{
 				MFARequired: true,
 				User:        sanitizeUser(user),
 			}, nil
 		}
-		if !totp.Validate(req.TOTPCode, user.TOTPSecret) {
+		if req.RecoveryCode != "" {
+			// Try to consume a single-use recovery code
+			if !consumeRecoveryCode(user, req.RecoveryCode) {
+				return nil, fmt.Errorf("invalid recovery code")
+			}
+		} else if !totp.Validate(req.TOTPCode, user.TOTPSecret) {
 			return nil, fmt.Errorf("invalid TOTP code")
 		}
 		mfaDone = true
@@ -320,23 +333,64 @@ func (s *Service) SetupTOTP(ctx context.Context, claims *Claims) (*TOTPSetupResp
 	}, nil
 }
 
-// VerifyTOTP verifies a TOTP code and enables TOTP for the user
-func (s *Service) VerifyTOTP(ctx context.Context, claims *Claims, code string) error {
+// VerifyTOTP verifies a TOTP code, enables TOTP for the user, and returns
+// fresh recovery codes. The codes are single-use backup codes that can be
+// used in place of a TOTP code when the user loses their device.
+func (s *Service) VerifyTOTP(ctx context.Context, claims *Claims, code string) (*TOTPVerifyResponse, error) {
 	if claims == nil {
-		return fmt.Errorf("not authenticated")
+		return nil, fmt.Errorf("not authenticated")
 	}
 
 	user, exists := s.getUserByID(claims.UserID)
 	if !exists {
-		return fmt.Errorf("user not found")
+		return nil, fmt.Errorf("user not found")
 	}
 
 	if !totp.Validate(code, user.TOTPSecret) {
-		return fmt.Errorf("invalid TOTP code")
+		return nil, fmt.Errorf("invalid TOTP code")
 	}
 
+	codes := generateRecoveryCodes(10)
 	user.TOTPEnabled = true
-	return nil
+	user.RecoveryCodes = codes
+
+	return &TOTPVerifyResponse{RecoveryCodes: codes}, nil
+}
+
+// GetRecoveryCodesCount returns how many unused recovery codes the user has left.
+func (s *Service) GetRecoveryCodesCount(ctx context.Context, claims *Claims) (int, error) {
+	if claims == nil {
+		return 0, fmt.Errorf("not authenticated")
+	}
+	user, exists := s.getUserByID(claims.UserID)
+	if !exists {
+		return 0, fmt.Errorf("user not found")
+	}
+	if !user.TOTPEnabled {
+		return 0, fmt.Errorf("TOTP not enabled")
+	}
+	return len(user.RecoveryCodes), nil
+}
+
+// RegenerateRecoveryCodes burns all existing recovery codes and issues 10 new ones.
+// Requires a valid TOTP code to authorize the regeneration.
+func (s *Service) RegenerateRecoveryCodes(ctx context.Context, claims *Claims, totpCode string) (*TOTPVerifyResponse, error) {
+	if claims == nil {
+		return nil, fmt.Errorf("not authenticated")
+	}
+	user, exists := s.getUserByID(claims.UserID)
+	if !exists {
+		return nil, fmt.Errorf("user not found")
+	}
+	if !user.TOTPEnabled {
+		return nil, fmt.Errorf("TOTP not enabled")
+	}
+	if !totp.Validate(totpCode, user.TOTPSecret) {
+		return nil, fmt.Errorf("invalid TOTP code")
+	}
+	codes := generateRecoveryCodes(10)
+	user.RecoveryCodes = codes
+	return &TOTPVerifyResponse{RecoveryCodes: codes}, nil
 }
 
 // initOIDC initializes the OIDC provider and OAuth2 config on first use.
@@ -654,6 +708,30 @@ func generateID() string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
+}
+
+// generateRecoveryCodes returns n single-use backup codes in the format
+// "xxxxxxxx-xxxxxxxx" (8 random hex bytes split into two groups of 4).
+func generateRecoveryCodes(n int) []string {
+	codes := make([]string, n)
+	for i := range codes {
+		b := make([]byte, 8)
+		rand.Read(b)
+		codes[i] = fmt.Sprintf("%x-%x", b[:4], b[4:])
+	}
+	return codes
+}
+
+// consumeRecoveryCode attempts to find and remove the given code from the
+// user's recovery code list. Returns true if the code was found and consumed.
+func consumeRecoveryCode(user *User, code string) bool {
+	for i, c := range user.RecoveryCodes {
+		if c == code {
+			user.RecoveryCodes = append(user.RecoveryCodes[:i], user.RecoveryCodes[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // GetSteamLoginURL returns the URL to redirect the browser to for Steam auth.
