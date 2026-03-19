@@ -9,7 +9,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **`daemon/Dockerfile`** — switched runtime base from `gcr.io/distroless/static-debian12:nonroot`
+  to `debian:bookworm-slim` and added a `docker:27-cli` build stage so the daemon can shell out
+  to the `docker` binary for container lifecycle management. The `nonroot` user is added to the
+  `docker` group (GID 999) and the entrypoint uses `USER nonroot` (not `USER nonroot:nonroot`) so
+  supplemental group membership is inherited by the process.
+
 ### Fixed
+- **Health check killed servers during slow startup** — game servers such as Minecraft JVM can take
+  60–90 s to bind their ports. `checkServerHealth` now skips TCP/UDP probes for the first 90 seconds
+  after `LastStarted` is set, preventing false-positive `error` transitions on slow-starting servers.
+  (`daemon/internal/broker/broker.go`)
+- **`POST /servers/:id/deploy` with no body returned `{"error":"EOF"}`** — `deployServer` now
+  treats an absent request body as "use the server's configured `deploy_method`", so a bare
+  `POST /deploy` works without a JSON body. (`daemon/internal/api/server.go`,
+  `daemon/internal/broker/broker.go`)
+- **`POST /servers/:id/stop` returned HTTP 500 for a non-running server** — "server not running" is a
+  client-side state conflict; the handler now returns HTTP 409 Conflict in that case instead of 500.
+  (`daemon/internal/api/server.go`)
 - **CLI: `gdash node token` returned 404** — `cli/cmd/main.go` was calling `POST /api/v1/nodes/token`
   but the API registers the route as `POST /api/v1/nodes/join-token`. The `gdash node token` command
   now calls the correct path.

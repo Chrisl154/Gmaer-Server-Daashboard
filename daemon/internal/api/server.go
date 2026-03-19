@@ -391,7 +391,12 @@ func (s *Server) stopServer(c *gin.Context) {
 	id := c.Param("id")
 	if err := s.cfg.Broker.StopServer(c.Request.Context(), id); err != nil {
 		s.recordEvent(c, "stop_server", id, false, gin.H{"error": err.Error()})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// "not running" is a client-side state conflict, not a server error.
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not running") {
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	s.recordEvent(c, "stop_server", id, true, nil)
@@ -412,9 +417,12 @@ func (s *Server) restartServer(c *gin.Context) {
 func (s *Server) deployServer(c *gin.Context) {
 	id := c.Param("id")
 	var req broker.DeployRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	// Body is optional — a bare POST with no body uses the server's existing deploy method.
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	job, err := s.cfg.Broker.DeployServer(c.Request.Context(), id, req)
 	if err != nil {

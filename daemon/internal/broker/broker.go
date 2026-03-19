@@ -697,11 +697,21 @@ func (b *Broker) healthCheckAll(ctx context.Context) {
 	}
 }
 
+// startupGracePeriod is how long after a server starts before health checks can
+// mark it as failed. Many game servers (e.g. Minecraft JVM) take 30–90 s to
+// bind their ports, so we skip health checks during this window.
+const startupGracePeriod = 90 * time.Second
+
 func (b *Broker) checkServerHealth(ctx context.Context, id string) {
 	b.mu.RLock()
 	server, ok := b.servers[id]
 	b.mu.RUnlock()
 	if !ok || server.State != StateRunning {
+		return
+	}
+
+	// Skip health check while the server is still in its startup grace window.
+	if server.LastStarted != nil && time.Since(*server.LastStarted) < startupGracePeriod {
 		return
 	}
 
@@ -1366,8 +1376,19 @@ func (b *Broker) doDeploy(ctx context.Context, id string, req DeployRequest, job
 
 	b.updateJob(job.ID, "running", 10, "Starting deployment...")
 
+	// If no method was specified in the request, fall back to the server's
+	// configured deploy_method so a bare POST /deploy with no body "just works".
+	method := req.Method
+	if method == "" {
+		b.mu.RLock()
+		if sv, ok := b.servers[id]; ok {
+			method = sv.DeployMethod
+		}
+		b.mu.RUnlock()
+	}
+
 	var deployErr error
-	switch req.Method {
+	switch method {
 	case "steamcmd":
 		deployErr = b.deploySteamCMD(ctx, id, req, job)
 	case "manual":
@@ -1375,7 +1396,7 @@ func (b *Broker) doDeploy(ctx context.Context, id string, req DeployRequest, job
 	case "docker":
 		deployErr = b.deployDocker(ctx, id, req, job)
 	default:
-		deployErr = fmt.Errorf("deploy method %q is not supported — valid options are: steamcmd, manual, docker", req.Method)
+		deployErr = fmt.Errorf("deploy method %q is not supported — valid options are: steamcmd, manual, docker", method)
 	}
 
 	b.mu.Lock()
