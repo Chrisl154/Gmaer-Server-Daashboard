@@ -11,6 +11,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+#### 2FA enrollment QR-code flow (`ui/src/pages/SettingsPage.tsx`)
+- TOTP setup step now renders an actual scannable QR code (`QRCodeSVG` from `qrcode.react`)
+  instead of the raw `otpauth://` URI string.
+- Manual-entry secret displayed below the QR code with 4-character groups and a one-click
+  copy button for users who cannot scan.
+- After `verifyTOTP` succeeds, a **Recovery Codes Modal** is shown with the 10 one-time codes:
+  - 2-column code grid in monospace with highlighted styling.
+  - "Copy all" button writes a formatted block (header + date + codes) to the clipboard.
+  - "Download .txt" saves `games-dashboard-recovery-codes.txt` — numbered list with instructions.
+  - "I've saved my recovery codes" button dismisses and refreshes the remaining-codes count.
+- Two-Factor Authentication card shows **remaining recovery code count** (red when ≤ 2).
+- **Regenerate recovery codes** flow: confirm with current TOTP code → inline form → generates
+  new codes → shows the same Recovery Codes Modal with fresh codes.
+
 #### Web Push notifications (`daemon/internal/notifications/push.go`, `daemon/internal/auth/service.go`, `daemon/internal/api/server.go`, `ui/src/sw.ts`, `ui/src/pages/SettingsPage.tsx`)
 - VAPID key pair generated automatically on first run and persisted to `{data_dir}/vapid_keys.json`.
 - `notifications.Service.SetPush(vapidKeys, getSubscriptions)` wires push sending into the existing

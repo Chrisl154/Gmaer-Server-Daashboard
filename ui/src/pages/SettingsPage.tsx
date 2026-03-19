@@ -4,7 +4,9 @@ import {
   Settings, Shield, Server, HardDrive, Network, Activity,
   Plus, Trash2, User, QrCode, Info, Loader2, Key, Save,
   Database, RefreshCw, Download, GitBranch, CheckCircle2, AlertCircle, Bell,
+  Copy, Check, X,
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { toast } from 'react-hot-toast';
 import { cn } from '../utils/cn';
 import { api } from '../utils/api';
@@ -110,6 +112,11 @@ function UsersSection() {
   const [totpSetup, setTotpSetup] = useState<{ secret: string; qr_code_url: string } | null>(null);
   const [totpCode, setTotpCode] = useState('');
   const [totpLoading, setTotpLoading] = useState(false);
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [regenCode, setRegenCode] = useState('');
+  const [regenLoading, setRegenLoading] = useState(false);
+  const [showRegen, setShowRegen] = useState(false);
+  const [secretCopied, setSecretCopied] = useState(false);
 
   const { data } = useQuery<{ users: any[] }>({
     queryKey: ['users'],
@@ -130,6 +137,12 @@ function UsersSection() {
   const users = data?.users ?? [];
   const allServers: any[] = serversData?.servers ?? [];
 
+  const { data: codesData, refetch: refetchCodes } = useQuery<{ remaining: number }>({
+    queryKey: ['totp-codes-count'],
+    queryFn: () => api.get('/api/v1/auth/totp/recovery-codes').then(r => r.data),
+    enabled: !!currentUser?.totp_enabled,
+  });
+
   const handleSetupTOTP = async () => {
     setTotpLoading(true);
     try {
@@ -144,13 +157,35 @@ function UsersSection() {
 
   const handleVerifyTOTP = async () => {
     try {
-      await verifyTOTP(totpCode);
-      toast.success('TOTP enabled successfully');
+      const resp = await verifyTOTP(totpCode);
       setTotpSetup(null);
       setTotpCode('');
+      setRecoveryCodes(resp.recovery_codes);
     } catch {
       toast.error('Invalid TOTP code');
     }
+  };
+
+  const handleRegen = async () => {
+    setRegenLoading(true);
+    try {
+      const { data } = await api.post('/api/v1/auth/totp/recovery-codes/regenerate', { totp_code: regenCode });
+      setRecoveryCodes(data.recovery_codes);
+      setShowRegen(false);
+      setRegenCode('');
+      refetchCodes();
+    } catch {
+      toast.error('Invalid TOTP code');
+    } finally {
+      setRegenLoading(false);
+    }
+  };
+
+  const copySecret = () => {
+    if (!totpSetup) return;
+    navigator.clipboard.writeText(totpSetup.secret);
+    setSecretCopied(true);
+    setTimeout(() => setSecretCopied(false), 2000);
   };
 
   return (
@@ -243,18 +278,72 @@ function UsersSection() {
       <div className="card p-5 space-y-4">
         <h3 className="label">Two-Factor Authentication</h3>
         {currentUser?.totp_enabled ? (
-          <div className="flex items-center gap-2 text-sm text-green-400">
-            <Shield className="w-4 h-4" /> TOTP is enabled for your account
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-green-400">
+              <Shield className="w-4 h-4" /> TOTP is enabled for your account
+            </div>
+            {codesData !== undefined && (
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                <span className="font-medium" style={{ color: codesData.remaining <= 2 ? 'var(--error)' : 'var(--text-primary)' }}>
+                  {codesData.remaining}
+                </span> recovery code{codesData.remaining !== 1 ? 's' : ''} remaining
+              </p>
+            )}
+            {!showRegen ? (
+              <button onClick={() => setShowRegen(true)} className="btn-ghost text-sm">
+                <RefreshCw className="w-3.5 h-3.5" /> Regenerate recovery codes
+              </button>
+            ) : (
+              <div className="space-y-3 p-4 rounded-lg" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                <p className="text-sm font-medium">Confirm with your current TOTP code</p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="text"
+                    value={regenCode}
+                    onChange={e => setRegenCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="000000"
+                    maxLength={6}
+                    className="input w-32 font-mono text-center tracking-widest"
+                  />
+                  <button onClick={handleRegen} disabled={regenCode.length !== 6 || regenLoading} className="btn-blue">
+                    {regenLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Generate'}
+                  </button>
+                  <button onClick={() => { setShowRegen(false); setRegenCode(''); }} className="btn-ghost">Cancel</button>
+                </div>
+              </div>
+            )}
           </div>
         ) : totpSetup ? (
-          <div className="space-y-4">
+          <div className="space-y-5">
             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-              Scan this QR code with your authenticator app, then enter the 6-digit code:
+              Scan the QR code with your authenticator app (Google Authenticator, Authy, 1Password, etc.)
+              then enter the 6-digit code to confirm.
             </p>
-            <div className="rounded-lg p-3 font-mono text-xs break-all"
-              style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
-              {totpSetup.qr_code_url}
+
+            {/* QR code */}
+            <div className="flex gap-6 items-start flex-wrap">
+              <div className="rounded-xl p-3" style={{ background: '#fff', display: 'inline-block' }}>
+                <QRCodeSVG value={totpSetup.qr_code_url} size={180} level="M" />
+              </div>
+              <div className="space-y-2 flex-1 min-w-0">
+                <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  Can't scan? Enter this key manually:
+                </p>
+                <div className="flex items-center gap-2">
+                  <code className="text-sm font-mono px-2 py-1 rounded break-all"
+                    style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
+                    {totpSetup.secret.match(/.{1,4}/g)?.join(' ')}
+                  </code>
+                  <button onClick={copySecret} className="p-1.5 rounded-lg shrink-0"
+                    style={{ color: secretCopied ? '#4ade80' : 'var(--text-muted)' }}
+                    title="Copy secret key">
+                    {secretCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
             </div>
+
+            {/* Verify */}
             <div className="flex items-center gap-3">
               <input
                 type="text"
@@ -263,33 +352,31 @@ function UsersSection() {
                 placeholder="000000"
                 maxLength={6}
                 className="input w-32 font-mono text-center tracking-widest"
+                autoFocus
               />
-              <button
-                onClick={handleVerifyTOTP}
-                disabled={totpCode.length !== 6}
-                className="btn-blue"
-              >
+              <button onClick={handleVerifyTOTP} disabled={totpCode.length !== 6} className="btn-blue">
                 Verify & Enable
               </button>
-              <button
-                onClick={() => { setTotpSetup(null); setTotpCode(''); }}
-                className="btn-ghost"
-              >
+              <button onClick={() => { setTotpSetup(null); setTotpCode(''); }} className="btn-ghost">
                 Cancel
               </button>
             </div>
           </div>
         ) : (
-          <button
-            onClick={handleSetupTOTP}
-            disabled={totpLoading}
-            className="btn-ghost"
-          >
+          <button onClick={handleSetupTOTP} disabled={totpLoading} className="btn-ghost">
             {totpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <QrCode className="w-4 h-4" />}
             Set up TOTP
           </button>
         )}
       </div>
+
+      {/* Recovery codes modal */}
+      {recoveryCodes && (
+        <RecoveryCodesModal
+          codes={recoveryCodes}
+          onClose={() => { setRecoveryCodes(null); refetchCodes(); }}
+        />
+      )}
 
       {showCreate && (
         <CreateUserModal
@@ -354,6 +441,102 @@ function ServerAccessPicker({ servers, selected, onChange }: {
           Clear (grant all-server access)
         </button>
       )}
+    </div>
+  );
+}
+
+// ── Recovery Codes Modal ──────────────────────────────────────────────────────
+
+function RecoveryCodesModal({ codes, onClose }: { codes: string[]; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+
+  const copyAll = () => {
+    const text = [
+      'Games Dashboard — Recovery Codes',
+      `Generated: ${new Date().toLocaleString()}`,
+      '',
+      'Keep these codes in a safe place. Each code can only be used once.',
+      '',
+      ...codes,
+    ].join('\n');
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const download = () => {
+    const text = [
+      'Games Dashboard — Two-Factor Authentication Recovery Codes',
+      `Generated: ${new Date().toLocaleString()}`,
+      '',
+      'Keep these codes in a secure location.',
+      'Each code can only be used once to sign in if you lose access to your authenticator app.',
+      '',
+      ...codes.map((c, i) => `${(i + 1).toString().padStart(2, ' ')}. ${c}`),
+      '',
+      'After using a code, regenerate new ones in Settings → Users & Auth.',
+    ].join('\n');
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'games-dashboard-recovery-codes.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.7)' }}>
+      <div className="w-full max-w-md rounded-2xl p-6 space-y-5"
+        style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Recovery Codes</h2>
+            <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+              Save these codes now. Each can be used once to sign in if you lose your authenticator.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg shrink-0"
+            style={{ color: 'var(--text-muted)' }}
+            onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
+            onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}>
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Warning banner */}
+        <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg text-sm"
+          style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171' }}>
+          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          These codes will not be shown again. Store them somewhere safe before closing this dialog.
+        </div>
+
+        {/* Codes grid */}
+        <div className="grid grid-cols-2 gap-2">
+          {codes.map((code) => (
+            <code key={code} className="px-3 py-2 rounded-lg text-sm font-mono text-center"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
+              {code}
+            </code>
+          ))}
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-2">
+          <button onClick={copyAll} className="btn-ghost flex-1 justify-center">
+            {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+            {copied ? 'Copied!' : 'Copy all'}
+          </button>
+          <button onClick={download} className="btn-ghost flex-1 justify-center">
+            <Download className="w-4 h-4" /> Download .txt
+          </button>
+        </div>
+        <button onClick={onClose} className="btn-primary w-full justify-center">
+          <CheckCircle2 className="w-4 h-4" /> I've saved my recovery codes
+        </button>
+      </div>
     </div>
   );
 }
