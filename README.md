@@ -450,19 +450,33 @@ What's coming next — loosely ordered by impact. See [ROADMAP.md](docs/ROADMAP.
 | **Discord/Slack/webhook alerts** | Crash, restart, backup, disk-full notifications |
 | **Onboarding wizard** | Getting Started checklist guides new users from first login to running server |
 | **Live player count** | Current/max players via RCON/WebRCON/Telnet for 13 games; shown on dashboard table and server detail |
-
-### Up Next
-| Feature | Description |
-|---|---|
 | **Allowlist/banlist UI** | Manage server allowlists and banlists from the dashboard |
 | **Game server auto-update** | Daily SteamCMD / Docker pull update with automatic pre-update backup |
 | **Log rotation** | Configurable size/age-based rotation for server logs |
 | **TLS auto-renewal** | Automatic Let's Encrypt cert renewal (when FQDN is configured) |
 | **Per-user ACLs** | Grant specific users access to specific servers only |
-| **Steam account auth** | Sign in with Steam for player-facing server management |
+| **Sign in with Steam** | OpenID 2.0 Steam authentication for player-facing server management |
+| **Email notifications** | SMTP alerts (STARTTLS + implicit TLS) alongside existing Discord/webhook support |
+| **Network I/O monitoring** | Per-server TX/RX kbps on the metrics tab and dashboard resource table |
+| **Server cloning** | One-click deep-copy of a server config with a new name |
+| **TOTP recovery codes** | 10 one-use recovery codes generated at 2FA enrollment; regenerate from Security settings |
+| **In-app guided diagnostics** | 7-check "Diagnose" modal per server — finds port conflicts, missing deploys, disk issues, and more |
+| **System pre-flight check** | Before deploying a game, warns if free RAM/disk/CPU is below requirements |
+| **PWA — installable web app** | Installable progressive web app with offline shell and API caching via service worker |
+| **CI/CD pipeline** | GitHub Actions: unit tests, lint, multi-arch binaries, Docker images to GHCR, Trivy CVE scan, CycloneDX SBOM, Helm packaging, cosign signing, GitHub Release |
+
+### Up Next
+| Feature | Description |
+|---|---|
+| **Web Push notifications** | Device push alerts for crash/restart events (complement to PWA install) |
+| **2FA enrollment QR-code flow** | Full in-UI TOTP enrollment with QR code scan and downloadable recovery PDF |
+| **API keys / personal access tokens** | Long-lived tokens for external automation, CI pipelines, and monitoring integrations |
+| **Server scheduling** | Cron-based automatic start/stop per server — e.g. start at 6 PM, stop at midnight |
+| **Integrated DDNS** | Auto-update DuckDNS or Cloudflare when the host's public IP changes |
+| **Community adapter marketplace** | Pull additional game manifests from a curated registry; one-click install from the UI |
 
 ### Long-term / Stretch
-Mobile PWA · Community adapter marketplace · Multi-region WireGuard cluster · Integrated DDNS · In-app guided diagnostics · 2FA enrollment UI
+Multi-region WireGuard cluster · Helm chart for master stack · Server templates · Backup cross-server migration · Kubernetes operator status UI · Audit log export (CSV/JSON)
 
 ---
 
