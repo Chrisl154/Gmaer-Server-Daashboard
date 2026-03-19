@@ -7,7 +7,7 @@ import {
   Download, Maximize2, Cpu, MemoryStick, Clock, Activity,
   FileText, RefreshCw, Save, FolderOpen, Share2, Copy, Check, X,
   Wifi, WifiOff, Upload, Trash2, Folder, File, ChevronRight, Users,
-  ArrowDownToLine, Loader2, QrCode, AlertCircle,
+  ArrowDownToLine, Loader2, QrCode, AlertCircle, Stethoscope, CheckCircle, AlertTriangle,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { api, getWsUrl } from '../utils/api';
@@ -482,10 +482,102 @@ function ShareModal({ server, onClose }: { server: any; onClose: () => void }) {
   );
 }
 
+// ── Diagnostics modal ─────────────────────────────────────────────────────────
+
+const SEVERITY_STYLE: Record<string, { icon: React.ElementType; color: string; bg: string; border: string }> = {
+  ok:      { icon: CheckCircle,   color: '#4ade80', bg: 'rgba(34,197,94,0.08)',   border: 'rgba(34,197,94,0.2)'  },
+  warning: { icon: AlertTriangle, color: '#fbbf24', bg: 'rgba(251,191,36,0.08)',  border: 'rgba(251,191,36,0.2)' },
+  error:   { icon: AlertCircle,   color: '#f87171', bg: 'rgba(239,68,68,0.08)',   border: 'rgba(239,68,68,0.2)'  },
+};
+
+function DiagnosticsModal({ serverId, onClose }: { serverId: string; onClose: () => void }) {
+  const { data, isLoading, refetch, isRefetching } = useQuery({
+    queryKey: ['diagnose', serverId],
+    queryFn: () => api.get(`/api/v1/servers/${serverId}/diagnose`).then(r => r.data),
+    staleTime: 0,
+    gcTime: 0,
+  });
+
+  const findings: Array<{ severity: string; title: string; detail?: string; fix?: string }> = data?.findings ?? [];
+  const hasErrors = findings.some(f => f.severity === 'error');
+  const hasWarnings = findings.some(f => f.severity === 'warning');
+  const summary = hasErrors ? 'Issues found' : hasWarnings ? 'Warnings found' : 'All checks passed';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="card w-full max-w-lg p-6 space-y-5" style={{ maxHeight: '90vh', overflowY: 'auto' }}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Stethoscope className="w-4 h-4" style={{ color: 'var(--primary)' }} />
+            <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>Server Diagnostics</h2>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => refetch()}
+              disabled={isLoading || isRefetching}
+              className="btn-ghost p-1.5 text-xs"
+              title="Re-run diagnostics"
+            >
+              <RefreshCw className={cn('w-4 h-4', (isLoading || isRefetching) && 'animate-spin')} />
+            </button>
+            <button onClick={onClose} className="btn-ghost p-1.5"><X className="w-4 h-4" /></button>
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="flex flex-col items-center py-10 gap-3">
+            <Loader2 className="w-6 h-6 animate-spin" style={{ color: 'var(--primary)' }} />
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Running diagnostics…</p>
+          </div>
+        ) : (
+          <>
+            <p className="text-sm font-medium" style={{ color: hasErrors ? '#f87171' : hasWarnings ? '#fbbf24' : '#4ade80' }}>
+              {summary}
+            </p>
+
+            <div className="space-y-2">
+              {findings.map((f, i) => {
+                const style = SEVERITY_STYLE[f.severity] ?? SEVERITY_STYLE.warning;
+                const Icon = style.icon;
+                return (
+                  <div key={i} className="rounded-xl p-4 space-y-1" style={{ background: style.bg, border: `1px solid ${style.border}` }}>
+                    <div className="flex items-center gap-2">
+                      <Icon className="w-4 h-4 shrink-0" style={{ color: style.color }} />
+                      <span className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>{f.title}</span>
+                    </div>
+                    {f.detail && (
+                      <p className="text-xs ml-6" style={{ color: 'var(--text-secondary)' }}>{f.detail}</p>
+                    )}
+                    {f.fix && (
+                      <p className="text-xs ml-6 mt-1" style={{ color: style.color }}>
+                        <span className="font-semibold">Fix: </span>{f.fix}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {findings.length === 0 && (
+              <div className="text-center py-6 text-sm" style={{ color: 'var(--text-muted)' }}>
+                No findings returned.
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Overview tab ─────────────────────────────────────────────────────────────
 
 function OverviewTab({ server }: { server: any }) {
   const queryClient = useQueryClient();
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const playerCount: number = server.player_count ?? -1;
   const maxPlayers: number = server.max_players ?? 0;
   const playerLabel = server.state !== 'running' || playerCount < 0
@@ -513,6 +605,30 @@ function OverviewTab({ server }: { server: any }) {
 
   return (
     <div className="space-y-4">
+      {showDiagnostics && (
+        <DiagnosticsModal serverId={server.id} onClose={() => setShowDiagnostics(false)} />
+      )}
+
+      {/* Error state banner with diagnose CTA */}
+      {server.state === 'error' && (
+        <div className="rounded-xl px-4 py-3 flex items-center justify-between gap-3"
+          style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)' }}>
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+            <span className="text-sm text-red-400 truncate">
+              {server.last_error || 'Server stopped with an error.'}
+            </span>
+          </div>
+          <button
+            onClick={() => setShowDiagnostics(true)}
+            className="btn-ghost shrink-0 text-xs py-1.5 px-3 text-red-400"
+            style={{ borderColor: 'rgba(239,68,68,0.3)' }}
+          >
+            <Stethoscope className="w-3.5 h-3.5" /> Diagnose
+          </button>
+        </div>
+      )}
+
       {/* Quick metrics */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
@@ -606,6 +722,17 @@ function OverviewTab({ server }: { server: any }) {
 
         <div className="md:col-span-2">
           <MetricsChart serverId={server.id} />
+        </div>
+
+        {/* Diagnostics card */}
+        <div className="card p-5">
+          <h3 className="label mb-3">Troubleshoot</h3>
+          <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
+            Run a self-diagnosis check — Docker status, disk space, port conflicts, memory, and crash history.
+          </p>
+          <button onClick={() => setShowDiagnostics(true)} className="btn-ghost w-full justify-center">
+            <Stethoscope className="w-4 h-4" /> Run Diagnostics
+          </button>
         </div>
       </div>
     </div>

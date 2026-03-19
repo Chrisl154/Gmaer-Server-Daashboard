@@ -208,6 +208,7 @@ func (s *Server) registerRoutes() {
 	srv.DELETE("/mods/:modId", s.requireOperator(), s.uninstallMod)
 	srv.POST("/mods/test", s.requireOperator(), s.testMods)
 	srv.POST("/mods/rollback", s.requireOperator(), s.rollbackMods)
+	srv.GET("/diagnose", s.diagnoseServer)
 
 	// SBOM & CVE
 	v1.GET("/sbom", s.getSBOM)
@@ -1348,6 +1349,158 @@ func readHostDisk(path string) (totalGB, freeGB float64) {
 	totalGB = float64(st.Blocks) * blockSize * b2gb
 	freeGB = float64(st.Bavail) * blockSize * b2gb
 	return
+}
+
+// ─────────────────────────────────────────────── Server diagnostics ──
+
+// DiagnosticFinding is a single discovered issue or OK signal.
+type DiagnosticFinding struct {
+	Severity string `json:"severity"` // "ok" | "warning" | "error"
+	Title    string `json:"title"`
+	Detail   string `json:"detail,omitempty"`
+	Fix      string `json:"fix,omitempty"`
+}
+
+// DiagnosticReport is the structured result of a server self-diagnosis run.
+type DiagnosticReport struct {
+	ServerID string               `json:"server_id"`
+	RunAt    time.Time            `json:"run_at"`
+	Findings []DiagnosticFinding  `json:"findings"`
+}
+
+// diagnoseServer runs a set of heuristic checks against a server and returns
+// a structured report with plain-English explanations and actionable fixes.
+// It never blocks — each check has a short timeout.
+func (s *Server) diagnoseServer(c *gin.Context) {
+	id := c.Param("id")
+	sv, err := s.cfg.Broker.GetServer(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "server not found"})
+		return
+	}
+
+	report := DiagnosticReport{
+		ServerID: id,
+		RunAt:    time.Now(),
+	}
+	add := func(f DiagnosticFinding) { report.Findings = append(report.Findings, f) }
+
+	// 1. Docker daemon availability
+	ctx5 := func() context.Context { c2, _ := context.WithTimeout(c.Request.Context(), 3*time.Second); return c2 } //nolint:govet
+	dockerOK := false
+	if out, err2 := exec.CommandContext(ctx5(), "docker", "info", "--format", "{{.ServerVersion}}").Output(); err2 == nil && len(out) > 0 {
+		dockerOK = true
+		add(DiagnosticFinding{Severity: "ok", Title: "Docker is running", Detail: "Docker daemon responded successfully."})
+	} else {
+		add(DiagnosticFinding{
+			Severity: "error",
+			Title:    "Docker is not running",
+			Detail:   "The Docker daemon did not respond. Without Docker, no game server can start.",
+			Fix:      "Run: sudo systemctl start docker  (or reboot the machine)",
+		})
+	}
+
+	// 2. Last error message
+	if sv.LastError != "" {
+		add(DiagnosticFinding{
+			Severity: "error",
+			Title:    "Previous start error",
+			Detail:   sv.LastError,
+			Fix:      "Check the Console tab for the full log output near the time of the error.",
+		})
+	} else if sv.State == broker.StateError {
+		add(DiagnosticFinding{
+			Severity: "error",
+			Title:    "Server is in error state",
+			Detail:   "The server stopped unexpectedly but no error message was captured.",
+			Fix:      "Open the Console tab and look for recent error output.",
+		})
+	}
+
+	// 3. Crash loop detection
+	if sv.RestartCount > 0 {
+		severity := "warning"
+		fix := "Check the Console tab for error messages. Consider increasing server RAM or disk space."
+		if sv.RestartCount >= 3 {
+			severity = "error"
+			fix = "The server has crashed repeatedly. Check the Console tab and disable auto-restart to investigate."
+		}
+		add(DiagnosticFinding{
+			Severity: severity,
+			Title:    "Server has crashed and restarted",
+			Detail:   strings.ReplaceAll("The server has restarted %d time(s) since its last clean run.", "%d", strconv.Itoa(sv.RestartCount)),
+			Fix:      fix,
+		})
+	}
+
+	// 4. Disk space
+	_, freeGB := readHostDisk("/")
+	if freeGB < 1.0 {
+		add(DiagnosticFinding{
+			Severity: "error",
+			Title:    "Disk is nearly full",
+			Detail:   strings.ReplaceAll("Only %.1f GB free on the root filesystem.", "%.1f", strconv.FormatFloat(freeGB, 'f', 1, 64)),
+			Fix:      "Free up disk space by deleting old backups, log files, or unused Docker images (docker system prune).",
+		})
+	} else if freeGB < 5.0 {
+		add(DiagnosticFinding{
+			Severity: "warning",
+			Title:    "Low disk space",
+			Detail:   strings.ReplaceAll("%.1f GB free on the root filesystem.", "%.1f", strconv.FormatFloat(freeGB, 'f', 1, 64)),
+			Fix:      "Consider freeing up disk space before the server runs out.",
+		})
+	} else {
+		add(DiagnosticFinding{Severity: "ok", Title: "Disk space is adequate", Detail: strconv.FormatFloat(freeGB, 'f', 1, 64) + " GB free."})
+	}
+
+	// 5. Port conflicts — check each configured port
+	if dockerOK && len(sv.Ports) > 0 {
+		for _, p := range sv.Ports {
+			if p.External <= 0 {
+				continue
+			}
+			addr := ":" + strconv.Itoa(p.External)
+			conn, dialErr := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+			if dialErr == nil {
+				conn.Close()
+				if sv.State != broker.StateRunning {
+					add(DiagnosticFinding{
+						Severity: "error",
+						Title:    "Port " + strconv.Itoa(p.External) + " is already in use",
+						Detail:   "Something else on this machine is listening on port " + strconv.Itoa(p.External) + " (" + p.Protocol + "). The game server cannot bind to it.",
+						Fix:      "Find what is using the port: sudo ss -tlnp | grep :" + strconv.Itoa(p.External) + " — then stop it or change the server port in the Ports tab.",
+					})
+				}
+			}
+		}
+	}
+
+	// 6. Memory availability
+	_, freeRAM := readHostMemInfo()
+	if freeRAM < 0.5 {
+		add(DiagnosticFinding{
+			Severity: "error",
+			Title:    "Very low available RAM",
+			Detail:   strconv.FormatFloat(freeRAM, 'f', 2, 64) + " GB free. The server process may be killed by the OS.",
+			Fix:      "Stop other running servers or applications to free up memory.",
+		})
+	} else if freeRAM < 2.0 {
+		add(DiagnosticFinding{
+			Severity: "warning",
+			Title:    "Low available RAM",
+			Detail:   strconv.FormatFloat(freeRAM, 'f', 1, 64) + " GB free. Some game servers require 2–4 GB.",
+			Fix:      "Stop other running servers to free up memory before starting this one.",
+		})
+	} else {
+		add(DiagnosticFinding{Severity: "ok", Title: "Memory is adequate", Detail: strconv.FormatFloat(freeRAM, 'f', 1, 64) + " GB free."})
+	}
+
+	// 7. State summary — if running, everything looks fine
+	if sv.State == broker.StateRunning {
+		add(DiagnosticFinding{Severity: "ok", Title: "Server is running", Detail: "The server is currently online and accepting connections."})
+	}
+
+	c.JSON(http.StatusOK, report)
 }
 
 // fetchPublicIP tries several well-known plain-text IP services.
