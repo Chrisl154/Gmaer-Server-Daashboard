@@ -94,6 +94,9 @@ type Server struct {
 	AutoUpdate         bool       `json:"auto_update,omitempty"`
 	AutoUpdateSchedule string     `json:"auto_update_schedule,omitempty"` // cron expr; default "0 4 * * *"
 	LastUpdateCheck    *time.Time `json:"last_update_check,omitempty"`
+	// Scheduled start/stop — cron expressions; empty = disabled.
+	StartSchedule string `json:"start_schedule,omitempty"`
+	StopSchedule  string `json:"stop_schedule,omitempty"`
 }
 
 // PortMapping represents a port forwarding rule
@@ -190,6 +193,8 @@ type UpdateServerRequest struct {
 	RestartDelaySecs   *int           `json:"restart_delay_secs,omitempty"`
 	AutoUpdate         *bool          `json:"auto_update,omitempty"`
 	AutoUpdateSchedule *string        `json:"auto_update_schedule,omitempty"`
+	StartSchedule      *string        `json:"start_schedule,omitempty"` // cron expr or "" to disable
+	StopSchedule       *string        `json:"stop_schedule,omitempty"`  // cron expr or "" to disable
 }
 
 type DeployRequest struct {
@@ -285,6 +290,10 @@ type Broker struct {
 	updateCron    *cron.Cron
 	updateEntries map[string]cron.EntryID
 	updateMu      sync.Mutex
+	// start/stop scheduler — separate cron instance, same lock-ordering discipline.
+	schedCron    *cron.Cron
+	schedEntries map[string][2]cron.EntryID // [startEntryID, stopEntryID]; zero value = not scheduled
+	schedMu      sync.Mutex
 	// per-server rotating log writers
 	logWriters map[string]*rotatingWriter
 	logWriteMu sync.Mutex // protects logWriters map
@@ -471,6 +480,8 @@ func (b *Broker) Start(ctx context.Context) {
 
 	// Auto-update cron scheduler.
 	b.initAutoUpdateScheduler(ctx)
+	// Start/stop cron scheduler.
+	b.initScheduler(ctx)
 
 	// Metrics sampling goroutine — collects per-server CPU/RAM every 15 s.
 	go func() {
@@ -941,21 +952,33 @@ func (b *Broker) UpdateServer(ctx context.Context, id string, req UpdateServerRe
 	if req.AutoUpdateSchedule != nil {
 		s.AutoUpdateSchedule = *req.AutoUpdateSchedule
 	}
-	// Capture auto-update state before releasing lock.
+	if req.StartSchedule != nil {
+		s.StartSchedule = *req.StartSchedule
+	}
+	if req.StopSchedule != nil {
+		s.StopSchedule = *req.StopSchedule
+	}
+	// Capture state before releasing lock.
 	autoUpdate := s.AutoUpdate
 	autoUpdateSchedule := s.AutoUpdateSchedule
 	autoUpdateChanged := req.AutoUpdate != nil || req.AutoUpdateSchedule != nil
+	startSchedule := s.StartSchedule
+	stopSchedule := s.StopSchedule
+	schedChanged := req.StartSchedule != nil || req.StopSchedule != nil
 	s.UpdatedAt = time.Now()
 	b.saveServersLocked()
 	b.mu.Unlock()
 
-	// Re-schedule (or remove) the cron job outside b.mu to avoid lock ordering issues.
+	// Re-schedule cron jobs outside b.mu to avoid lock ordering issues.
 	if autoUpdateChanged {
 		if autoUpdate {
 			b.scheduleAutoUpdate(id, autoUpdateSchedule)
 		} else {
 			b.unscheduleAutoUpdate(id)
 		}
+	}
+	if schedChanged {
+		b.scheduleStartStop(id, startSchedule, stopSchedule)
 	}
 	b.mu.RLock()
 	result := b.servers[id]
@@ -987,6 +1010,10 @@ func (b *Broker) DeleteServer(ctx context.Context, id string) error {
 	}
 	delete(b.metricsData, id)
 	b.mu.Unlock()
+
+	// Remove any cron schedules for this server.
+	b.unscheduleAutoUpdate(id)
+	b.unscheduleStartStop(id)
 
 	// Best-effort: remove the Docker container on deletion.
 	if deployMethod == "docker" && containerID != "" {

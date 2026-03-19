@@ -11,6 +11,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+#### Server scheduling (`daemon/internal/broker/schedule.go`, `broker.go`, `ui/src/pages/ServerDetailPage.tsx`)
+- `StartSchedule` and `StopSchedule` cron fields added to the `Server` struct and
+  `UpdateServerRequest`; persisted in servers.json and survives daemon restarts.
+- New `broker/schedule.go` mirrors the existing auto-update cron pattern — dedicated
+  `schedCron` instance with `schedEntries map[string][2]cron.EntryID` and `schedMu` mutex to
+  avoid lock-ordering issues with `b.mu`.
+- `initScheduler` re-registers all existing server schedules at startup.
+- `scheduleStartStop` / `unscheduleStartStop` called from `UpdateServer` and `DeleteServer`.
+- New **Schedule** tab in Server Detail page:
+  - Separate Auto-start and Auto-stop cards, each with a monospace cron input, live
+    human-readable preview (e.g. "Every weekday at 18:00"), and quick-pick preset buttons.
+  - Save wires to `PUT /servers/:id` with the two schedule fields.
+
 #### API keys / personal access tokens (`daemon/internal/auth/service.go`, `daemon/internal/api/server.go`, `ui/src/pages/SettingsPage.tsx`)
 - New `APIKey` struct stored per-user on `auth.User`; each key carries a name, 12-char display
   prefix, SHA-256 hash (raw token never stored), scoped roles, created-at, optional expiry,

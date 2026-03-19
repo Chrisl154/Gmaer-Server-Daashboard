@@ -17,7 +17,7 @@ import {
 } from 'recharts';
 import type { ServerMetricSample } from '../types';
 
-type Tab = 'overview' | 'console' | 'logs' | 'backups' | 'mods' | 'ports' | 'config' | 'files' | 'players';
+type Tab = 'overview' | 'console' | 'logs' | 'backups' | 'mods' | 'ports' | 'config' | 'files' | 'players' | 'schedule';
 
 const STATE_CLASS: Record<string, string> = {
   running:   'status-running',
@@ -87,6 +87,7 @@ export function ServerDetailPage() {
     { id: 'mods',     label: 'Mods'      },
     { id: 'ports',    label: 'Ports'     },
     { id: 'config',   label: 'Config'    },
+    { id: 'schedule', label: 'Schedule'  },
     { id: 'files',    label: 'Files'     },
     { id: 'players',  label: 'Players'   },
   ];
@@ -203,6 +204,7 @@ export function ServerDetailPage() {
         {activeTab === 'mods'     && <ModsTab serverId={id!} />}
         {activeTab === 'ports'    && <PortsTab server={server} />}
         {activeTab === 'config'   && <ConfigTab server={server} />}
+        {activeTab === 'schedule' && <ScheduleTab server={server} />}
         {activeTab === 'files'    && <FilesTab serverId={id!} />}
         {activeTab === 'players'  && <PlayersTab serverId={id!} adapter={server.adapter} />}
       </div>
@@ -1568,6 +1570,144 @@ function ConfigTab({ server }: { server: any }) {
           <span>{selectedPath?.split('/').pop() ?? ''}</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Schedule tab ──────────────────────────────────────────────────────────────
+
+// Minimal cron expression human-readable label (covers the common cases).
+function describeCron(expr: string): string {
+  if (!expr) return '';
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return expr;
+  const [min, hour, dom, , dow] = parts;
+  const days: Record<string, string> = { '0': 'Sun', '1': 'Mon', '2': 'Tue', '3': 'Wed', '4': 'Thu', '5': 'Fri', '6': 'Sat' };
+  const pad = (n: string) => n.padStart(2, '0');
+  const time = (h: string, m: string) => `${pad(h)}:${pad(m)}`;
+
+  if (dom === '*' && dow === '*') return `Every day at ${time(hour, min)}`;
+  if (dom === '*' && dow !== '*') {
+    const dayNames = dow.split(',').map(d => days[d] ?? d).join(', ');
+    return `Every ${dayNames} at ${time(hour, min)}`;
+  }
+  return expr;
+}
+
+function ScheduleTab({ server }: { server: any }) {
+  const qc = useQueryClient();
+  const [startExpr, setStartExpr] = useState<string>(server.start_schedule ?? '');
+  const [stopExpr, setStopExpr]   = useState<string>(server.stop_schedule  ?? '');
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.put(`/api/v1/servers/${server.id}`, {
+        start_schedule: startExpr,
+        stop_schedule:  stopExpr,
+      });
+      qc.invalidateQueries({ queryKey: ['server', server.id] });
+      toast.success('Schedule saved');
+    } catch {
+      toast.error('Failed to save schedule');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const startDesc = describeCron(startExpr);
+  const stopDesc  = describeCron(stopExpr);
+
+  return (
+    <div className="space-y-6 max-w-xl">
+      <div>
+        <h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Scheduled Start / Stop</h3>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+          Automatically start and stop this server on a cron schedule.
+          Uses standard 5-field cron syntax: <code className="font-mono text-xs px-1 rounded" style={{ background: 'var(--bg-elevated)' }}>minute hour day month weekday</code>
+        </p>
+      </div>
+
+      {/* Start schedule */}
+      <div className="card p-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <Play className="w-4 h-4" style={{ color: '#4ade80' }} />
+          <span className="font-medium text-sm">Auto-start</span>
+        </div>
+        <input
+          value={startExpr}
+          onChange={e => setStartExpr(e.target.value)}
+          placeholder="e.g. 0 18 * * 1-5  (weekdays at 18:00)"
+          className="input w-full font-mono text-sm"
+        />
+        {startDesc && (
+          <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+            → {startDesc}
+          </p>
+        )}
+        {startExpr && !startDesc && (
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Custom expression — verify with <code className="font-mono">crontab.guru</code>
+          </p>
+        )}
+        <div className="flex gap-2 flex-wrap">
+          {[
+            { label: 'Daily 6 PM',       value: '0 18 * * *'   },
+            { label: 'Weekdays 6 PM',    value: '0 18 * * 1-5' },
+            { label: 'Daily 8 AM',       value: '0 8 * * *'    },
+            { label: 'Clear',            value: ''              },
+          ].map(p => (
+            <button key={p.label} onClick={() => setStartExpr(p.value)}
+              className="text-xs px-2 py-1 rounded-md transition-colors"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+              onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
+              onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-secondary)')}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Stop schedule */}
+      <div className="card p-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <Square className="w-4 h-4" style={{ color: '#f87171' }} />
+          <span className="font-medium text-sm">Auto-stop</span>
+        </div>
+        <input
+          value={stopExpr}
+          onChange={e => setStopExpr(e.target.value)}
+          placeholder="e.g. 0 23 * * 1-5  (weekdays at 23:00)"
+          className="input w-full font-mono text-sm"
+        />
+        {stopDesc && (
+          <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+            → {stopDesc}
+          </p>
+        )}
+        <div className="flex gap-2 flex-wrap">
+          {[
+            { label: 'Daily 11 PM',      value: '0 23 * * *'   },
+            { label: 'Weekdays 11 PM',   value: '0 23 * * 1-5' },
+            { label: 'Daily 6 AM',       value: '0 6 * * *'    },
+            { label: 'Clear',            value: ''              },
+          ].map(p => (
+            <button key={p.label} onClick={() => setStopExpr(p.value)}
+              className="text-xs px-2 py-1 rounded-md transition-colors"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+              onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
+              onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-secondary)')}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <button onClick={save} disabled={saving} className="btn-primary">
+        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+        {saving ? 'Saving…' : 'Save schedule'}
+      </button>
     </div>
   );
 }
