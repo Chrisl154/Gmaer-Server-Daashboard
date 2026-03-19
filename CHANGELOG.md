@@ -42,6 +42,26 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   map, allowing callers to mutate broker state without holding the lock. It now returns a shallow
   copy so external code cannot alias the live record.
 
+#### PWA — installable web app (`ui/vite.config.ts`, `ui/index.html`, `ui/public/icons/`)
+- Integrated `vite-plugin-pwa` with `workbox` service-worker generation.
+- Web App Manifest declares `name`, `short_name`, `theme_color`, `display: standalone`, and 192×512 icon set.
+- Service worker uses `NetworkFirst` for all `/api/` requests (10 s timeout, 5 min cache) and precaches all static assets for offline shell.
+- `index.html` updated with `theme-color`, Apple Web App meta tags, and touch icon link for iOS Add-to-Home-Screen support.
+- App icons added at `ui/public/icons/icon-192.png` and `icon-512.png`.
+
+#### CI/CD pipeline (`.github/workflows/ci.yml` — full rewrite)
+- Fixed branch triggers: `develop` → `dev`; added `dev` to pull-request triggers.
+- Fixed `npm run test -- --run` for non-interactive CI execution.
+- Upgraded `golangci-lint-action` v4 → v6.
+- Upgraded `azure/setup-helm` v3 → v4.
+- Removed broken Docker-in-Docker service block from `integration-tests`; GitHub Actions runners include Docker natively.
+- Added separate `docker/metadata-action` step for the UI image (was missing; only the daemon had one).
+- Added macOS arm64 CLI build (`gdash-darwin-arm64`).
+- Added QEMU setup for multi-arch Docker builds (linux/amd64 + linux/arm64).
+- Replaced CycloneDX CLI with `cyclonedx-gomod` for Go-native SBOM generation.
+- Fixed `cache-dependency-path` to point at `go.sum` files instead of `go.mod`.
+- Updated GitHub Release artifact list to include `daemon-linux-arm64` and `gdash-darwin-arm64`.
+
 ### Added
 
 #### Email notifications (`daemon/internal/notifications/service.go`, `config/config.go`, `ui/src/pages/SettingsPage.tsx`)

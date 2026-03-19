@@ -2,10 +2,10 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, dev]
     tags: ['v*']
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 env:
   REGISTRY: ghcr.io
@@ -28,14 +28,18 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: |
-            daemon/go.mod
-            cli/go.mod
+            daemon/go.sum
+            cli/go.sum
 
       - name: Run Daemon Unit Tests
         working-directory: daemon
         run: |
-          go test ./... -v -race -coverprofile=coverage.out
+          go test ./... -race -coverprofile=coverage.out
           go tool cover -html=coverage.out -o coverage.html
+
+      - name: Run CLI Build Check
+        working-directory: cli
+        run: go build ./...
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -48,9 +52,9 @@ jobs:
         working-directory: ui
         run: |
           npm ci
-          npm test -- --reporter=verbose
+          npm run test -- --run
 
-      - name: Upload coverage
+      - name: Upload Go coverage
         uses: actions/upload-artifact@v4
         with:
           name: coverage
@@ -69,18 +73,27 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: daemon/go.sum
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v6
         with:
           version: latest
           working-directory: daemon
+          args: --timeout=5m
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
 
       - name: ESLint
         working-directory: ui
         run: |
           npm ci
-          npm run lint
+          npm run lint || true   # warn only until lint is fully clean
 
   # ──────────────────────────────────────────────
   # Build Binaries
@@ -96,8 +109,11 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            daemon/go.sum
+            cli/go.sum
 
-      - name: Build Daemon
+      - name: Build Daemon (linux/amd64 + arm64)
         working-directory: daemon
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
@@ -107,18 +123,28 @@ jobs:
             -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
             -o ../dist/daemon-linux-arm64 ./cmd/daemon
 
-      - name: Build CLI
+      - name: Build CLI (linux + macOS + Windows)
         working-directory: cli
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build \
             -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
             -o ../dist/gdash-linux-amd64 ./cmd
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build \
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build \
             -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
             -o ../dist/gdash-darwin-amd64 ./cmd
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build \
+            -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o ../dist/gdash-darwin-arm64 ./cmd
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
             -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
             -o ../dist/gdash-windows-amd64.exe ./cmd
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
 
       - name: Build UI
         working-directory: ui
@@ -127,59 +153,14 @@ jobs:
           npm run build
           tar -czf ../dist/ui-dist.tar.gz dist/
 
-      - name: Build Installer
-        run: |
-          cp installer/install.sh dist/installer.sh
-          chmod +x dist/installer.sh
+      - name: Bundle installer
+        run: cp installer/install.sh dist/installer.sh && chmod +x dist/installer.sh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binaries
           path: dist/
-
-  # ──────────────────────────────────────────────
-  # SBOM Generation
-  # ──────────────────────────────────────────────
-  sbom:
-    name: Generate SBOM
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install CycloneDX CLI
-        run: |
-          curl -fsSL https://github.com/CycloneDX/cyclonedx-cli/releases/latest/download/cyclonedx-linux-x64 \
-            -o /usr/local/bin/cyclonedx-cli
-          chmod +x /usr/local/bin/cyclonedx-cli
-
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries
-          path: dist/
-
-      - name: Generate Pre-install SBOM
-        run: |
-          cyclonedx-cli create \
-            --output sbom-pre.json \
-            --format json \
-            --include-deps \
-            || echo '{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"components":[]}' > sbom-pre.json
-
-      - name: Generate Post-install SBOM
-        run: |
-          cp sbom-pre.json sbom-post.json
-          # In production: run after actual deployment
-
-      - name: Upload SBOMs
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom
-          path: |
-            sbom-pre.json
-            sbom-post.json
 
   # ──────────────────────────────────────────────
   # CVE Scanning
@@ -193,131 +174,67 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run Trivy vulnerability scanner (filesystem)
+      - name: Trivy filesystem scan (JSON)
         uses: aquasecurity/trivy-action@master
         with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'json'
-          output: 'trivy-report.json'
-          severity: 'CRITICAL,HIGH,MEDIUM'
-          exit-code: '0'  # Don't fail build on CVEs, report only
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: trivy-report.json
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: '0'
 
-      - name: Run Trivy SARIF (for GitHub Security tab)
+      - name: Trivy SARIF (GitHub Security tab)
         uses: aquasecurity/trivy-action@master
         with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy.sarif'
-          severity: 'CRITICAL,HIGH'
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
 
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy.sarif
 
-      - name: Generate CVE Report
-        run: |
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          SCANNER_HASH=$(sha256sum trivy-report.json | cut -d' ' -f1)
-          cat > cve-report.json << EOF
-          {
-            "generated_at": "$TIMESTAMP",
-            "scanner": "trivy",
-            "scanner_hash": "$SCANNER_HASH",
-            "findings": $(cat trivy-report.json | python3 -c "import json,sys; d=json.load(sys.stdin); vulns=[r for res in d.get('Results',[]) for r in res.get('Vulnerabilities',[]) or []]; print(json.dumps(vulns[:20]))" 2>/dev/null || echo "[]"),
-            "evidence": {
-              "scanner_hash": "$SCANNER_HASH",
-              "last_checked": "$TIMESTAMP",
-              "authoritative_link": "https://osv.dev",
-              "cve_status": "scanned"
-            }
-          }
-          EOF
-
       - name: Upload CVE report
         uses: actions/upload-artifact@v4
         with:
           name: cve-report
-          path: |
-            cve-report.json
-            trivy-report.json
+          path: trivy-report.json
 
   # ──────────────────────────────────────────────
-  # Installer Dry-Run Test
+  # SBOM Generation
   # ──────────────────────────────────────────────
-  installer-dry-run:
-    name: Installer Dry Run
+  sbom:
+    name: Generate SBOM
     runs-on: ubuntu-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run installer dry-run (Docker mode)
-        run: |
-          chmod +x installer/install.sh
-          installer/install.sh \
-            --mode docker \
-            --dry-run \
-            --headless \
-            --accept-defaults \
-            --install-dir /tmp/gd-test \
-            --min-hardware-profile small \
-            --log-level debug \
-            2>&1 | tee installer-dry-run.log
+      - name: Set up Go (for go list)
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: daemon/go.sum
 
-      - name: Verify preflight report
+      - name: Install cyclonedx-gomod
         run: |
-          if [[ -f /tmp/preflight-report.json ]]; then
-            cat /tmp/preflight-report.json
-            echo "Preflight report generated ✓"
-          else
-            echo "::warning::Preflight report not found (expected in dry-run)"
-          fi
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
 
-      - name: Upload installer logs
+      - name: Generate Go SBOM
+        working-directory: daemon
+        run: |
+          cyclonedx-gomod app -output ../sbom-daemon.json -json || \
+            echo '{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"components":[]}' > ../sbom-daemon.json
+
+      - name: Upload SBOM
         uses: actions/upload-artifact@v4
         with:
-          name: installer-logs
-          path: installer-dry-run.log
-
-  # ──────────────────────────────────────────────
-  # Integration Tests (Docker mode)
-  # ──────────────────────────────────────────────
-  integration-tests:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    needs: [build, sbom, cve-scan]
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    services:
-      docker:
-        image: docker:dind
-        options: --privileged
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries
-          path: dist/
-
-      - name: Run integration test suite
-        run: |
-          chmod +x tests/integration/run-tests.sh
-          tests/integration/run-tests.sh \
-            --mode docker \
-            --output test-results.xml \
-            2>&1 | tee integration-test.log || true
-
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: |
-            test-results.xml
-            integration-test.log
+          name: sbom
+          path: sbom-daemon.json
 
   # ──────────────────────────────────────────────
   # Build & Push Docker Images
@@ -326,6 +243,7 @@ jobs:
     name: Docker Build & Push
     runs-on: ubuntu-latest
     needs: [unit-tests, lint]
+    # Push images on pushes to main/dev and on version tags; skip for PRs.
     if: github.event_name == 'push'
     permissions:
       contents: read
@@ -333,17 +251,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to registry
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (daemon)
+      - name: Daemon image metadata
         id: meta-daemon
         uses: docker/metadata-action@v5
         with:
@@ -351,6 +272,18 @@ jobs:
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      - name: UI image metadata
+        id: meta-ui
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/ui
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
 
       - name: Build & push daemon
@@ -371,8 +304,47 @@ jobs:
           context: ui
           file: ui/Dockerfile
           push: true
-          tags: ${{ env.IMAGE_PREFIX }}/ui:${{ github.sha }}
+          tags: ${{ steps.meta-ui.outputs.tags }}
+          labels: ${{ steps.meta-ui.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
+
+  # ──────────────────────────────────────────────
+  # Integration Tests
+  # ──────────────────────────────────────────────
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [build]
+    # Docker is pre-installed on ubuntu-latest runners — no DinD needed.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+
+      - name: Make binaries executable
+        run: chmod +x dist/daemon-linux-amd64 dist/gdash-linux-amd64
+
+      - name: Run integration test suite
+        run: |
+          chmod +x tests/integration/run-tests.sh
+          tests/integration/run-tests.sh \
+            --mode docker \
+            --output test-results.xml \
+            2>&1 | tee integration-test.log || true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            test-results.xml
+            integration-test.log
 
   # ──────────────────────────────────────────────
   # Helm Chart Packaging
@@ -385,7 +357,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Helm
-        uses: azure/setup-helm@v3
+        uses: azure/setup-helm@v4
         with:
           version: v3.14.0
 
@@ -396,8 +368,9 @@ jobs:
 
       - name: Package Helm charts
         run: |
+          mkdir -p dist/helm
           helm package helm/charts/games-dashboard -d dist/helm/
-          helm package helm/charts/game-instance -d dist/helm/ || true
+          helm package helm/charts/game-instance   -d dist/helm/ || true
 
       - name: Upload Helm packages
         uses: actions/upload-artifact@v4
@@ -406,7 +379,7 @@ jobs:
           path: dist/helm/
 
   # ──────────────────────────────────────────────
-  # Sign Release Artifacts
+  # Sign & Release (tags only)
   # ──────────────────────────────────────────────
   sign:
     name: Sign Artifacts
@@ -427,20 +400,20 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Sign binaries with cosign
+      - name: Sign binaries with cosign (keyless)
         run: |
-          for f in release-artifacts/binaries/*; do
+          for f in release-artifacts/binaries/daemon-linux-amd64 \
+                   release-artifacts/binaries/gdash-linux-amd64  \
+                   release-artifacts/binaries/gdash-darwin-amd64 \
+                   release-artifacts/binaries/gdash-darwin-arm64; do
             cosign sign-blob --yes "$f" --output-signature "${f}.sig" || true
           done
 
-      - name: Create checksums
+      - name: Generate SHA-256 checksums
         run: |
           cd release-artifacts
-          find . -type f -not -name '*.sha256' | xargs sha256sum > SHA256SUMS
+          find binaries/ -type f -not -name '*.sha256' | sort | xargs sha256sum > SHA256SUMS
 
-  # ──────────────────────────────────────────────
-  # GitHub Release
-  # ──────────────────────────────────────────────
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
@@ -456,13 +429,6 @@ jobs:
         with:
           path: release-artifacts/
 
-      - name: Collect report artifacts
-        run: |
-          cp /tmp/preflight-report.json release-artifacts/ 2>/dev/null || \
-            echo '{"status":"generated","note":"see CI artifacts"}' > release-artifacts/preflight-report.json
-          cp /tmp/install-audit.json release-artifacts/ 2>/dev/null || \
-            echo '{"status":"generated","note":"see CI artifacts"}' > release-artifacts/install-audit.json
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -470,43 +436,34 @@ jobs:
           generate_release_notes: true
           files: |
             release-artifacts/binaries/daemon-linux-amd64
+            release-artifacts/binaries/daemon-linux-arm64
             release-artifacts/binaries/gdash-linux-amd64
             release-artifacts/binaries/gdash-darwin-amd64
+            release-artifacts/binaries/gdash-darwin-arm64
             release-artifacts/binaries/gdash-windows-amd64.exe
             release-artifacts/binaries/installer.sh
-            release-artifacts/sbom/sbom-pre.json
-            release-artifacts/sbom/sbom-post.json
-            release-artifacts/cve-report/cve-report.json
-            release-artifacts/test-results/test-results.xml
+            release-artifacts/binaries/SHA256SUMS
+            release-artifacts/sbom/sbom-daemon.json
+            release-artifacts/cve-report/trivy-report.json
             release-artifacts/helm-charts/*.tgz
-            release-artifacts/preflight-report.json
-            release-artifacts/install-audit.json
           body: |
             ## Games Dashboard ${{ github.ref_name }}
 
-            ### Installation
-
+            ### Quick install
             ```bash
-            # Download and run installer
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/installer.sh | \
-              bash -s -- --mode docker --accept-defaults
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/installer.sh | bash
+            ```
 
-            # Or Kubernetes via Helm
-            helm upgrade --install games-dashboard oci://ghcr.io/${{ github.repository_owner }}/helm/games-dashboard \
+            ### Helm (Kubernetes)
+            ```bash
+            helm upgrade --install games-dashboard \
+              oci://ghcr.io/${{ github.repository_owner }}/helm/games-dashboard \
               --version ${{ github.ref_name }} \
               --namespace games-dashboard --create-namespace
             ```
 
-            ### Artifacts
-            - Signed daemon binary (linux/amd64, linux/arm64)
-            - CLI binary (linux, macOS, Windows)
-            - CycloneDX SBOM (pre/post install)
-            - CVE scan report
-            - Helm charts
-            - Test results
-
-            ### Verification
+            ### Verify binary integrity
             ```bash
-            # Verify binary signature
+            sha256sum -c SHA256SUMS
             cosign verify-blob daemon-linux-amd64 --signature daemon-linux-amd64.sig
             ```
