@@ -221,7 +221,6 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
-	mfaRequired := user.TOTPEnabled && s.cfg.MFARequired
 	mfaDone := false
 
 	if user.TOTPEnabled {
@@ -270,7 +269,6 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 	user.LastLogin = time.Now()
 
 	s.audit(user.ID, user.Username, "login", "auth", "", true, nil)
-	_ = mfaRequired
 
 	return &LoginResponse{
 		Token:     tokenStr,

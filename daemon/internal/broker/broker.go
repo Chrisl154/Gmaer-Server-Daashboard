@@ -836,7 +836,8 @@ func (b *Broker) GetServer(ctx context.Context, id string) (*Server, error) {
 	if !ok {
 		return nil, fmt.Errorf("server not found: %s", id)
 	}
-	return s, nil
+	copy := *s
+	return &copy, nil
 }
 
 // CloneServer creates a copy of an existing server with a new name.

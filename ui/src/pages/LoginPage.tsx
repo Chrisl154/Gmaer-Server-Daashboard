@@ -32,6 +32,8 @@ export function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [totpCode, setTotpCode] = useState('');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -42,7 +44,11 @@ export function LoginPage() {
     setLoading(true);
 
     try {
-      await login(username, password, mfaRequired ? totpCode : undefined);
+      if (mfaRequired) {
+        await login(username, password, useRecoveryCode ? undefined : totpCode, useRecoveryCode ? recoveryCode : undefined);
+      } else {
+        await login(username, password);
+      }
     } catch (err: any) {
       toast.error(err.response?.data?.error ?? 'Login failed');
     } finally {
@@ -129,20 +135,45 @@ export function LoginPage() {
                 >
                   <Shield className="w-4 h-4 shrink-0" style={{ color: '#fb923c' }} />
                   <span className="text-sm" style={{ color: '#fb923c' }}>
-                    Enter your 6-digit authenticator code
+                    {useRecoveryCode ? 'Enter one of your recovery codes' : 'Enter your 6-digit authenticator code'}
                   </span>
                 </div>
-                <label className="label">TOTP Code</label>
-                <input
-                  type="text"
-                  value={totpCode}
-                  onChange={e => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  required
-                  autoFocus
-                  placeholder="000000"
-                  maxLength={6}
-                  className="input font-mono tracking-[0.5em] text-center text-xl"
-                />
+                {useRecoveryCode ? (
+                  <>
+                    <label className="label">Recovery Code</label>
+                    <input
+                      type="text"
+                      value={recoveryCode}
+                      onChange={e => setRecoveryCode(e.target.value.trim())}
+                      required
+                      autoFocus
+                      placeholder="xxxxxxxx-xxxxxxxx"
+                      className="input font-mono"
+                    />
+                  </>
+                ) : (
+                  <>
+                    <label className="label">TOTP Code</label>
+                    <input
+                      type="text"
+                      value={totpCode}
+                      onChange={e => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      required
+                      autoFocus
+                      placeholder="000000"
+                      maxLength={6}
+                      className="input font-mono tracking-[0.5em] text-center text-xl"
+                    />
+                  </>
+                )}
+                <button
+                  type="button"
+                  className="mt-3 text-xs underline"
+                  style={{ color: 'var(--text-muted)' }}
+                  onClick={() => { setUseRecoveryCode(v => !v); setTotpCode(''); setRecoveryCode(''); }}
+                >
+                  {useRecoveryCode ? 'Use authenticator app instead' : 'Use a recovery code instead'}
+                </button>
               </div>
             )}
 

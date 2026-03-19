@@ -836,7 +836,7 @@ func nodeTokenCmd() *cobra.Command {
 		Use:   "token",
 		Short: "Generate a single-use join token for registering a new node",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := apiPost("/api/v1/nodes/token", nil)
+			resp, err := apiPost("/api/v1/nodes/join-token", nil)
 			if err != nil {
 				return err
 			}

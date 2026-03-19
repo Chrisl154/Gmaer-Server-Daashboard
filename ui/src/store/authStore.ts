@@ -15,7 +15,7 @@ interface AuthState {
   token: string | null;
   isAuthenticated: boolean;
   mfaRequired: boolean;
-  login: (username: string, password: string, totpCode?: string) => Promise<{ mfaRequired?: boolean }>;
+  login: (username: string, password: string, totpCode?: string, recoveryCode?: string) => Promise<{ mfaRequired?: boolean }>;
   loginWithToken: (token: string, user: User) => void;
   logout: () => void;
   checkAuth: () => void;
@@ -31,12 +31,13 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
       mfaRequired: false,
 
-      login: async (username, password, totpCode) => {
+      login: async (username, password, totpCode, recoveryCode) => {
         try {
           const response = await api.post('/api/v1/auth/login', {
             username,
             password,
             totp_code: totpCode,
+            recovery_code: recoveryCode,
           });
 
           const { token, user, mfa_required } = response.data;

@@ -9,7 +9,80 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **CLI: `gdash node token` returned 404** — `cli/cmd/main.go` was calling `POST /api/v1/nodes/token`
+  but the API registers the route as `POST /api/v1/nodes/join-token`. The `gdash node token` command
+  now calls the correct path.
+- **MFA login: no way to use a recovery code** — the login page only showed a TOTP code input when
+  MFA was required. Added a "Use a recovery code instead" toggle in `LoginPage.tsx` that switches to
+  a free-text recovery code input and sends `recovery_code` to the backend. `authStore.ts` updated
+  to forward the field.
+- **Auth: unused `mfaRequired` variable** — `auth/service.go` computed
+  `mfaRequired := user.TOTPEnabled && s.cfg.MFARequired` and then discarded it with
+  `_ = mfaRequired`. Both the declaration and the dead-code line have been removed.
+- **Broker: `GetServer` data race** — `GetServer` returned a pointer directly into the live server
+  map, allowing callers to mutate broker state without holding the lock. It now returns a shallow
+  copy so external code cannot alias the live record.
+
 ### Added
+
+#### Email notifications (`daemon/internal/notifications/service.go`, `config/config.go`, `ui/src/pages/SettingsPage.tsx`)
+- `EmailConfig` in config: SMTP host/port, username, password, from address, to list, implicit-TLS flag.
+- `notifications.Send()` fires email in a separate goroutine alongside webhooks; `Test()` checks both.
+- Two SMTP paths: STARTTLS (`smtp.SendMail`, port 587) and implicit TLS (`tls.DialWithDialer` +
+  `smtp.NewClient`, port 465).
+- Settings page: full SMTP card with show/hide password and comma-separated recipient list; test
+  button enabled when either webhook URL or email is configured.
+
+#### Network I/O monitoring (`daemon/internal/broker/metrics.go`, `broker.go`, `ui/src/pages/DashboardPage.tsx`, `ServerDetailPage.tsx`, `ui/src/types/index.ts`)
+- `NetInKbps` / `NetOutKbps float64` on `Server` and `ServerMetricSample`.
+- Docker stats format extended with `{{.NetInput}}`/`{{.NetOutput}}`; `parseDockerBytes` handles `B`,
+  `kB`, `MB`, `GB` suffixes.
+- Cumulative byte totals tracked in `prevNetBytes` / `prevNetTime`; kbps rate computed each 15 s cycle.
+- Dashboard resource table: "Network" column with auto-scaled ↓/↑ Kbps/Mbps display.
+- Server detail metrics tab: second `LineChart` for net in/out in Mbps (hidden until data arrives).
+
+#### Server cloning (`daemon/internal/broker/broker.go`, `daemon/internal/api/server.go`, `ui/src/pages/ServerDetailPage.tsx`)
+- `POST /api/v1/servers/:id/clone` body `{"name":"…"}` — deep-copies config, ports, and resources
+  into a new server with a `crypto/rand` 6-byte hex ID; clone starts in `stopped` state.
+- UI: "Clone" button in server header; `CloneModal` navigates to the new server on success.
+
+#### In-app guided diagnostics (`daemon/internal/api/server.go`, `ui/src/pages/ServerDetailPage.tsx`)
+- `GET /api/v1/servers/:id/diagnose` — 7 heuristic checks: Docker reachable, last error present,
+  crash-loop detection, disk ≥ 90 %, port conflicts, RAM headroom, running-state verification.
+  Returns `[]DiagnosticFinding{Severity, Title, Detail, Fix}`.
+- UI: "Diagnose" button in Overview tab; `DiagnosticsModal` with severity-coloured finding cards and
+  a re-run button. Red error banner when state = `error` includes a "Diagnose" CTA.
+
+#### TOTP recovery codes (`daemon/internal/auth/service.go`, `daemon/internal/api/server.go`, `ui/src/pages/SecurityPage.tsx`, `ui/src/store/authStore.ts`)
+- 10 single-use codes generated at enrollment; `consumeRecoveryCode` burns a code atomically.
+- `Login` accepts `recovery_code` as an alternative to `totp_code`.
+- `RegenerateRecoveryCodes` requires TOTP re-auth before issuing a fresh set.
+- API: `GET /auth/totp/recovery-codes` (returns count), `POST /auth/totp/recovery-codes/regenerate`.
+- UI: `RecoveryCodesModal` with downloadable `.txt`; TOTP card shows remaining count + regenerate flow.
+
+#### System resource pre-flight check (`daemon/internal/api/server.go`, `ui/src/components/CreateServerWizard.tsx`)
+- `GET /api/v1/system/resources` — reads `/proc/meminfo` (RAM) and `syscall.Statfs` (disk); returns
+  `cpu_cores`, `total_ram_gb`, `free_ram_gb`, `total_disk_gb`, `free_disk_gb`.
+- `ResourceWarning` amber banner in the Create Server wizard when free RAM/disk/CPU falls below the
+  selected game's minimum requirements (non-blocking advisory only).
+
+#### Per-user ACLs (`daemon/internal/broker/broker.go`, `daemon/internal/api/server.go`, `ui/src/pages/SettingsPage.tsx`)
+- `AllowedServers []string` per user; empty = unrestricted (admin behaviour).
+- Role-based route enforcement: non-admin requests to server routes are filtered by `AllowedServers`.
+- ACL management UI in Settings → Users.
+
+#### Steam account authentication (`daemon/internal/auth/steam.go`, `service.go`, `daemon/internal/api/server.go`, `ui/src/pages/LoginPage.tsx`, `ui/src/store/authStore.ts`)
+- OpenID 2.0 `check_authentication` verify; replay nonce map (`steamStates sync.Map`).
+- API: `GET /auth/steam/login` → redirect; `GET /auth/steam/callback` → JWT + redirect to frontend.
+- Login page: "Sign in with Steam" button; `loginWithToken` authStore action for token-in-URL flow.
+- 18 unit tests; all pass without network access.
+
+#### Node-install mode (`install.sh`, `cli/cmd/main.go`)
+- `install.sh --mode=node`: worker-only install — Docker + SteamCMD + daemon; no Node.js, UI, nginx,
+  or admin wizard. Daemon binds `0.0.0.0:<port>` for master reachability.
+- `gdash node token`: calls `POST /api/v1/nodes/join-token`, prints token + usage hint.
+- `gdash node add --token <tok>`: sends `join_token` in body for cluster validation.
 
 #### Automatic Crash Recovery
 - **`auto_restart` per-server flag** — When enabled, the broker automatically restarts a game server process if it exits unexpectedly. Configurable: `auto_restart` (bool), `max_restarts` (default 3), `restart_delay_secs` (default 10).
