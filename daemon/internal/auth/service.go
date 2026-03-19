@@ -3,9 +3,13 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +17,7 @@ import (
 	"github.com/games-dashboard/daemon/internal/notifications"
 	"github.com/games-dashboard/daemon/internal/secrets"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
@@ -69,6 +74,20 @@ type SteamConfig struct {
 	FrontendURL string `yaml:"frontend_url" json:"frontend_url"`
 }
 
+// APIKey is a long-lived personal access token for scripting / external automation.
+// The raw token (gdash_<base64url>) is shown once at creation and never stored —
+// only its SHA-256 hash is kept.
+type APIKey struct {
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Prefix    string     `json:"prefix"`               // first 12 chars of raw token (for display)
+	Hash      string     `json:"-"`                     // hex-encoded SHA-256 of raw token
+	Roles     []string   `json:"roles"`                 // scoped roles (subset of user roles)
+	CreatedAt time.Time  `json:"created_at"`
+	LastUsed  *time.Time `json:"last_used,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"` // nil = never expires
+}
+
 // PushSubscription holds a Web Push endpoint and its encryption keys.
 type PushSubscription struct {
 	Endpoint string `json:"endpoint"`
@@ -89,6 +108,7 @@ type User struct {
 	TOTPSecret        string             `json:"-"`
 	RecoveryCodes     []string           `json:"-"` // single-use backup codes, stored plaintext (in-memory)
 	PushSubscriptions []PushSubscription `json:"push_subscriptions,omitempty"`
+	APIKeys           []APIKey           `json:"api_keys,omitempty"`
 	CreatedAt         time.Time          `json:"created_at"`
 	LastLogin         time.Time          `json:"last_login"`
 }
@@ -193,6 +213,9 @@ type Service struct {
 
 	// Push subscription management
 	subsMu sync.RWMutex
+
+	// API key management
+	apiKeysMu sync.RWMutex
 }
 
 // NewService creates a new auth service
@@ -304,6 +327,11 @@ func (s *Service) ValidateToken(ctx context.Context, tokenStr string) (*Claims, 
 		tokenStr = tokenStr[7:]
 	}
 
+	// API key path — tokens start with "gdash_"
+	if strings.HasPrefix(tokenStr, "gdash_") {
+		return s.validateAPIKey(tokenStr)
+	}
+
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method")
@@ -320,6 +348,35 @@ func (s *Service) ValidateToken(ctx context.Context, tokenStr string) (*Claims, 
 	}
 
 	return claims, nil
+}
+
+// validateAPIKey looks up a gdash_ API key by its SHA-256 hash across all users.
+func (s *Service) validateAPIKey(raw string) (*Claims, error) {
+	hash := hashAPIKey(raw)
+	now := time.Now()
+
+	s.apiKeysMu.Lock()
+	defer s.apiKeysMu.Unlock()
+
+	for _, u := range s.users {
+		for i, key := range u.APIKeys {
+			if key.Hash != hash {
+				continue
+			}
+			if key.ExpiresAt != nil && now.After(*key.ExpiresAt) {
+				return nil, fmt.Errorf("API key expired")
+			}
+			// Update last-used timestamp.
+			u.APIKeys[i].LastUsed = &now
+			return &Claims{
+				UserID:   u.ID,
+				Username: u.Username,
+				Roles:    key.Roles,
+				MFADone:  true,
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid API key")
 }
 
 // SetupTOTP initializes TOTP for a user
@@ -937,4 +994,123 @@ func (s *Service) GetAllWebPushSubs() []notifications.WebPushSub {
 		}
 	}
 	return all
+}
+
+// --- API key management ---
+
+// hashAPIKey returns a hex-encoded SHA-256 hash of the raw token.
+func hashAPIKey(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+// generateAPIKeyToken creates a new random gdash_ prefixed token.
+func generateAPIKeyToken() (string, error) {
+	b := make([]byte, 24) // 24 bytes → 32-char base64url
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return "gdash_" + base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// CreateAPIKeyRequest is the request body for creating an API key.
+type CreateAPIKeyRequest struct {
+	Name      string     `json:"name" binding:"required"`
+	Roles     []string   `json:"roles"` // if empty, inherits caller's roles
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// CreateAPIKeyResponse includes the key metadata and the raw token (shown once).
+type CreateAPIKeyResponse struct {
+	Key   APIKey `json:"key"`
+	Token string `json:"token"` // raw token — show to the user once and discard
+}
+
+// CreateAPIKey mints a new personal access token for the given user.
+func (s *Service) CreateAPIKey(ctx context.Context, callerClaims *Claims, req CreateAPIKeyRequest) (*CreateAPIKeyResponse, error) {
+	raw, err := generateAPIKeyToken()
+	if err != nil {
+		return nil, fmt.Errorf("generate token: %w", err)
+	}
+
+	// Scope roles to caller's roles (can't escalate).
+	roles := req.Roles
+	if len(roles) == 0 {
+		roles = callerClaims.Roles
+	} else {
+		// Filter to only roles the caller actually has.
+		allowed := make(map[string]bool)
+		for _, r := range callerClaims.Roles {
+			allowed[r] = true
+		}
+		var scoped []string
+		for _, r := range roles {
+			if allowed[r] || allowed["admin"] {
+				scoped = append(scoped, r)
+			}
+		}
+		if len(scoped) == 0 {
+			return nil, fmt.Errorf("no valid roles — caller has %v", callerClaims.Roles)
+		}
+		roles = scoped
+	}
+
+	key := APIKey{
+		ID:        uuid.New().String(),
+		Name:      req.Name,
+		Prefix:    raw[:12],
+		Hash:      hashAPIKey(raw),
+		Roles:     roles,
+		CreatedAt: time.Now(),
+		ExpiresAt: req.ExpiresAt,
+	}
+
+	s.apiKeysMu.Lock()
+	defer s.apiKeysMu.Unlock()
+	for _, u := range s.users {
+		if u.ID == callerClaims.UserID {
+			u.APIKeys = append(u.APIKeys, key)
+			s.audit(u.ID, u.Username, "api_key.create", "auth", "", true, map[string]any{"key_name": key.Name})
+			return &CreateAPIKeyResponse{Key: key, Token: raw}, nil
+		}
+	}
+	return nil, fmt.Errorf("user not found")
+}
+
+// ListAPIKeys returns the API keys for the given user (hashes omitted).
+func (s *Service) ListAPIKeys(userID string) ([]APIKey, error) {
+	s.apiKeysMu.RLock()
+	defer s.apiKeysMu.RUnlock()
+	for _, u := range s.users {
+		if u.ID == userID {
+			out := make([]APIKey, len(u.APIKeys))
+			copy(out, u.APIKeys)
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("user not found")
+}
+
+// RevokeAPIKey removes an API key by ID for the given user.
+func (s *Service) RevokeAPIKey(ctx context.Context, userID, keyID string) error {
+	s.apiKeysMu.Lock()
+	defer s.apiKeysMu.Unlock()
+	for _, u := range s.users {
+		if u.ID == userID {
+			orig := len(u.APIKeys)
+			keys := u.APIKeys[:0]
+			for _, k := range u.APIKeys {
+				if k.ID != keyID {
+					keys = append(keys, k)
+				}
+			}
+			if len(keys) == orig {
+				return fmt.Errorf("API key not found")
+			}
+			u.APIKeys = keys
+			s.audit(u.ID, u.Username, "api_key.revoke", "auth", "", true, map[string]any{"key_id": keyID})
+			return nil
+		}
+	}
+	return fmt.Errorf("user not found")
 }

@@ -11,6 +11,24 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+#### API keys / personal access tokens (`daemon/internal/auth/service.go`, `daemon/internal/api/server.go`, `ui/src/pages/SettingsPage.tsx`)
+- New `APIKey` struct stored per-user on `auth.User`; each key carries a name, 12-char display
+  prefix, SHA-256 hash (raw token never stored), scoped roles, created-at, optional expiry,
+  and a last-used timestamp updated on every authenticated request.
+- Token format: `gdash_<24-byte base64url>` (32 chars after prefix) — clearly identifiable as a
+  Games Dashboard token and safe to search for in logs.
+- `ValidateToken` now branches on the `gdash_` prefix — API keys are validated via SHA-256 hash
+  lookup across all users; JWTs follow the existing path unchanged.
+- New service methods: `CreateAPIKey`, `ListAPIKeys`, `RevokeAPIKey`; role scoping prevents
+  privilege escalation (key roles are capped to the creator's roles).
+- New API routes (any authenticated user, own keys only):
+  - `GET    /api/v1/auth/api-keys`          — list my keys (hash omitted)
+  - `POST   /api/v1/auth/api-keys`          — create key (raw token returned once)
+  - `DELETE /api/v1/auth/api-keys/:keyId`   — revoke key
+- Settings → Users & Auth → **API Keys** card: table of existing keys (name, prefix, roles,
+  created/last-used/expires), "New key" button opens a modal (name + optional expiry date),
+  and the raw token is shown in a green one-time reveal banner with copy button.
+
 #### 2FA enrollment QR-code flow (`ui/src/pages/SettingsPage.tsx`)
 - TOTP setup step now renders an actual scannable QR code (`QRCodeSVG` from `qrcode.react`)
   instead of the raw `otpauth://` URI string.

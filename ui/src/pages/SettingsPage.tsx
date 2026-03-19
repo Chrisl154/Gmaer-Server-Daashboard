@@ -370,6 +370,9 @@ function UsersSection() {
         )}
       </div>
 
+      {/* API Keys */}
+      <APIKeysCard />
+
       {/* Recovery codes modal */}
       {recoveryCodes && (
         <RecoveryCodesModal
@@ -441,6 +444,206 @@ function ServerAccessPicker({ servers, selected, onChange }: {
           Clear (grant all-server access)
         </button>
       )}
+    </div>
+  );
+}
+
+// ── API Keys card ─────────────────────────────────────────────────────────────
+
+interface APIKey {
+  id: string;
+  name: string;
+  prefix: string;
+  roles: string[];
+  created_at: string;
+  last_used?: string;
+  expires_at?: string;
+}
+
+function APIKeysCard() {
+  const { user: currentUser } = useAuthStore();
+  const qc = useQueryClient();
+  const [showCreate, setShowCreate] = useState(false);
+  const [newToken, setNewToken] = useState('');
+  const [tokenCopied, setTokenCopied] = useState(false);
+
+  const { data, refetch } = useQuery<{ api_keys: APIKey[] }>({
+    queryKey: ['api-keys'],
+    queryFn: () => api.get('/api/v1/auth/api-keys').then(r => r.data),
+  });
+  const keys = data?.api_keys ?? [];
+
+  const revoke = async (id: string) => {
+    try {
+      await api.delete(`/api/v1/auth/api-keys/${id}`);
+      refetch();
+      toast.success('API key revoked');
+    } catch { toast.error('Failed to revoke key'); }
+  };
+
+  const copyToken = () => {
+    navigator.clipboard.writeText(newToken);
+    setTokenCopied(true);
+    setTimeout(() => setTokenCopied(false), 2000);
+  };
+
+  return (
+    <div className="card p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="label mb-0">API Keys</h3>
+        <button onClick={() => setShowCreate(true)} className="btn-blue py-1.5 px-3 text-xs">
+          <Plus className="w-3.5 h-3.5" /> New key
+        </button>
+      </div>
+      <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+        Long-lived tokens for scripts and external automation. Each key inherits your current roles.
+      </p>
+
+      {/* One-time token reveal */}
+      {newToken && (
+        <div className="rounded-lg p-4 space-y-3" style={{ background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.3)' }}>
+          <p className="text-sm font-medium text-green-400 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4" /> Key created — copy it now, it won't be shown again.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-xs font-mono px-3 py-2 rounded break-all"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
+              {newToken}
+            </code>
+            <button onClick={copyToken} className="p-2 rounded-lg shrink-0"
+              style={{ color: tokenCopied ? '#4ade80' : 'var(--text-muted)' }}>
+              {tokenCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+            </button>
+          </div>
+          <button onClick={() => setNewToken('')} className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            I've copied it — dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Keys table */}
+      {keys.length === 0 && !newToken ? (
+        <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>No API keys yet.</p>
+      ) : (
+        <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
+          {keys.map(k => (
+            <div key={k.id} className="flex items-center justify-between py-3 first:pt-0 last:pb-0 gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Key className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--primary)' }} />
+                  <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{k.name}</span>
+                  <code className="text-xs font-mono px-1.5 py-0.5 rounded"
+                    style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+                    {k.prefix}…
+                  </code>
+                </div>
+                <div className="flex items-center gap-3 mt-1 flex-wrap">
+                  {k.roles?.map(r => (
+                    <span key={r} className="badge text-xs"
+                      style={{ background: 'rgba(249,115,22,0.12)', color: 'var(--primary)' }}>{r}</span>
+                  ))}
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    Created {new Date(k.created_at).toLocaleDateString()}
+                  </span>
+                  {k.last_used && (
+                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Last used {new Date(k.last_used).toLocaleDateString()}
+                    </span>
+                  )}
+                  {k.expires_at && (
+                    <span className="text-xs" style={{ color: new Date(k.expires_at) < new Date() ? 'var(--error)' : 'var(--text-muted)' }}>
+                      {new Date(k.expires_at) < new Date() ? 'Expired' : `Expires ${new Date(k.expires_at).toLocaleDateString()}`}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button onClick={() => revoke(k.id)} className="p-1.5 rounded-lg shrink-0 transition-colors"
+                style={{ color: 'var(--text-muted)' }}
+                title="Revoke key"
+                onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
+                onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}>
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showCreate && (
+        <CreateAPIKeyModal
+          userRoles={currentUser?.roles ?? []}
+          onClose={() => setShowCreate(false)}
+          onCreated={(token) => { setNewToken(token); refetch(); setShowCreate(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CreateAPIKeyModal({ userRoles, onClose, onCreated }: {
+  userRoles: string[];
+  onClose: () => void;
+  onCreated: (token: string) => void;
+}) {
+  const [name, setName] = useState('');
+  const [expiry, setExpiry] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    if (!name.trim()) return;
+    setLoading(true);
+    try {
+      const body: Record<string, unknown> = { name: name.trim(), roles: userRoles };
+      if (expiry) body.expires_at = new Date(expiry).toISOString();
+      const { data } = await api.post('/api/v1/auth/api-keys', body);
+      onCreated(data.token);
+    } catch { toast.error('Failed to create API key'); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.7)' }}>
+      <div className="w-full max-w-sm rounded-2xl p-6 space-y-4"
+        style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">New API Key</h2>
+          <button onClick={onClose} className="p-1.5 rounded-lg" style={{ color: 'var(--text-muted)' }}>
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="label mb-1">Name</label>
+            <input value={name} onChange={e => setName(e.target.value)}
+              placeholder="e.g. GitHub Actions, backup script"
+              className="input w-full" autoFocus />
+          </div>
+          <div>
+            <label className="label mb-1">Expiry <span style={{ color: 'var(--text-muted)' }}>(optional)</span></label>
+            <input type="date" value={expiry} onChange={e => setExpiry(e.target.value)}
+              className="input w-full"
+              min={new Date().toISOString().split('T')[0]} />
+          </div>
+          <div>
+            <p className="label mb-1">Roles</p>
+            <div className="flex gap-2 flex-wrap">
+              {userRoles.map(r => (
+                <span key={r} className="badge text-xs"
+                  style={{ background: 'rgba(249,115,22,0.12)', color: 'var(--primary)' }}>{r}</span>
+              ))}
+            </div>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Inherits your current roles.</p>
+          </div>
+        </div>
+        <div className="flex gap-2 pt-1">
+          <button onClick={submit} disabled={!name.trim() || loading} className="btn-primary flex-1 justify-center">
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Key className="w-4 h-4" />}
+            Create key
+          </button>
+          <button onClick={onClose} className="btn-ghost px-4">Cancel</button>
+        </div>
+      </div>
     </div>
   );
 }

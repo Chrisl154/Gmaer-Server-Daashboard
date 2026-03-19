@@ -268,6 +268,11 @@ func (s *Server) registerRoutes() {
 	// System
 	v1.GET("/status", s.getSystemStatus)
 
+	// API keys / personal access tokens (any authenticated user, own keys only)
+	v1.GET("/auth/api-keys", s.listAPIKeys)
+	v1.POST("/auth/api-keys", s.createAPIKey)
+	v1.DELETE("/auth/api-keys/:keyId", s.revokeAPIKey)
+
 	// Web Push subscriptions (any authenticated user)
 	v1.GET("/push/vapid-key", s.getPushVAPIDKey)
 	v1.POST("/push/subscribe", s.subscribePush)
@@ -1850,5 +1855,54 @@ func (s *Server) unsubscribePush(c *gin.Context) {
 		return
 	}
 	s.cfg.AuthSvc.RemovePushSubscription(claims.UserID, body.Endpoint)
+	c.Status(http.StatusNoContent)
+}
+
+// --- API key handlers ---
+
+func (s *Server) listAPIKeys(c *gin.Context) {
+	claims := s.getUser(c)
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	keys, err := s.cfg.AuthSvc.ListAPIKeys(claims.UserID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"api_keys": keys})
+}
+
+func (s *Server) createAPIKey(c *gin.Context) {
+	claims := s.getUser(c)
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req auth.CreateAPIKeyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	resp, err := s.cfg.AuthSvc.CreateAPIKey(c.Request.Context(), claims, req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, resp)
+}
+
+func (s *Server) revokeAPIKey(c *gin.Context) {
+	claims := s.getUser(c)
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	keyID := c.Param("keyId")
+	if err := s.cfg.AuthSvc.RevokeAPIKey(c.Request.Context(), claims.UserID, keyID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
 	c.Status(http.StatusNoContent)
 }
