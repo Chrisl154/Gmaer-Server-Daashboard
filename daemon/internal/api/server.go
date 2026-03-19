@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"io"
@@ -9,8 +10,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/games-dashboard/daemon/internal/auth"
@@ -149,6 +152,9 @@ func (s *Server) registerRoutes() {
 
 	// Public IP detection (auth-protected; called by Share panel)
 	r.GET("/api/v1/system/public-ip", s.authMiddleware(), s.getPublicIP)
+
+	// System resource snapshot (auth-protected; used by the pre-flight check)
+	r.GET("/api/v1/system/resources", s.authMiddleware(), s.getSystemResources)
 
 	// API v1
 	v1 := r.Group("/api/v1")
@@ -1239,6 +1245,64 @@ func (s *Server) getVersion(c *gin.Context) {
 func (s *Server) getPublicIP(c *gin.Context) {
 	ip := fetchPublicIP()
 	c.JSON(http.StatusOK, gin.H{"public_ip": ip})
+}
+
+// getSystemResources returns a snapshot of the host's CPU, RAM, and disk capacity.
+// Used by the create-server wizard to warn users before deploying a game that
+// exceeds available resources.
+func (s *Server) getSystemResources(c *gin.Context) {
+	cpuCores := runtime.NumCPU()
+	totalRAMGB, freeRAMGB := readHostMemInfo()
+	totalDiskGB, freeDiskGB := readHostDisk("/")
+	c.JSON(http.StatusOK, gin.H{
+		"cpu_cores":     cpuCores,
+		"total_ram_gb":  totalRAMGB,
+		"free_ram_gb":   freeRAMGB,
+		"total_disk_gb": totalDiskGB,
+		"free_disk_gb":  freeDiskGB,
+	})
+}
+
+// readHostMemInfo parses /proc/meminfo and returns (totalGB, availableGB).
+func readHostMemInfo() (totalGB, availableGB float64) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return
+	}
+	var totalKB, availKB uint64
+	sc := bufio.NewScanner(strings.NewReader(string(data)))
+	for sc.Scan() {
+		line := sc.Text()
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		val, _ := strconv.ParseUint(fields[1], 10, 64)
+		switch {
+		case strings.HasPrefix(line, "MemTotal:"):
+			totalKB = val
+		case strings.HasPrefix(line, "MemAvailable:"):
+			availKB = val
+		}
+		if totalKB > 0 && availKB > 0 {
+			break
+		}
+	}
+	const kb2gb = 1.0 / 1024 / 1024
+	return float64(totalKB) * kb2gb, float64(availKB) * kb2gb
+}
+
+// readHostDisk returns (totalGB, freeGB) for the filesystem that contains path.
+func readHostDisk(path string) (totalGB, freeGB float64) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return
+	}
+	blockSize := float64(st.Bsize)
+	const b2gb = 1.0 / 1024 / 1024 / 1024
+	totalGB = float64(st.Blocks) * blockSize * b2gb
+	freeGB = float64(st.Bavail) * blockSize * b2gb
+	return
 }
 
 // fetchPublicIP tries several well-known plain-text IP services.
