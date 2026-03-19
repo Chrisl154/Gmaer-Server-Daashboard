@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -145,6 +146,9 @@ func (s *Server) registerRoutes() {
 
 	// Version (public — useful for health checks without credentials)
 	r.GET("/api/v1/version", s.getVersion)
+
+	// Public IP detection (auth-protected; called by Share panel)
+	r.GET("/api/v1/system/public-ip", s.authMiddleware(), s.getPublicIP)
 
 	// API v1
 	v1 := r.Group("/api/v1")
@@ -1228,6 +1232,45 @@ func (s *Server) getVersion(c *gin.Context) {
 		"commit":  commit,
 		"branch":  branch,
 	})
+}
+
+// getPublicIP detects the machine's public IP by querying ipify.org with a
+// short timeout. Falls back to the local outbound IP on failure.
+func (s *Server) getPublicIP(c *gin.Context) {
+	ip := fetchPublicIP()
+	c.JSON(http.StatusOK, gin.H{"public_ip": ip})
+}
+
+// fetchPublicIP tries several well-known plain-text IP services.
+// Returns the first success or falls back to the local outbound address.
+func fetchPublicIP() string {
+	services := []string{
+		"https://api.ipify.org",
+		"https://checkip.amazonaws.com",
+		"https://ifconfig.me/ip",
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	for _, svc := range services {
+		resp, err := client.Get(svc) //nolint:gosec
+		if err != nil {
+			continue
+		}
+		b, err := io.ReadAll(io.LimitReader(resp.Body, 64))
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != http.StatusOK {
+			continue
+		}
+		ip := strings.TrimSpace(string(b))
+		if net.ParseIP(ip) != nil {
+			return ip
+		}
+	}
+	// Fall back to local outbound IP
+	if conn, err := net.Dial("udp", "8.8.8.8:80"); err == nil {
+		defer conn.Close()
+		return conn.LocalAddr().(*net.UDPAddr).IP.String()
+	}
+	return ""
 }
 
 func runGit(args ...string) string {

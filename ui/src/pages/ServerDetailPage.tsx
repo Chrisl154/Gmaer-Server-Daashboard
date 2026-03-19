@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -6,7 +7,7 @@ import {
   Download, Maximize2, Cpu, MemoryStick, Clock, Activity,
   FileText, RefreshCw, Save, FolderOpen, Share2, Copy, Check, X,
   Wifi, WifiOff, Upload, Trash2, Folder, File, ChevronRight, Users,
-  ArrowDownToLine,
+  ArrowDownToLine, Loader2, QrCode, AlertCircle,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { api, getWsUrl } from '../utils/api';
@@ -254,11 +255,21 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function ShareModal({ server, onClose }: { server: any; onClose: () => void }) {
-  // Best-guess public host: use the current page's hostname (users already
-  // know it — it's in their browser address bar).
   const [publicHost, setPublicHost] = useState(window.location.hostname || 'your-server-ip');
+  const [ipLoading, setIpLoading] = useState(true);
+  const [showQR, setShowQR] = useState(false);
+  const [reachability, setReachability] = useState<Record<string, boolean | null>>({});
+  const [checkingReach, setCheckingReach] = useState(false);
 
-  // Primary game port: first exposed UDP/TCP port (not admin ports).
+  // Auto-detect public IP from daemon
+  useEffect(() => {
+    api.get('/api/v1/system/public-ip')
+      .then(r => { if (r.data.public_ip) setPublicHost(r.data.public_ip); })
+      .catch(() => {/* keep window.location.hostname */})
+      .finally(() => setIpLoading(false));
+  }, []);
+
+  // Primary game port: first exposed port that isn't an RCON/admin port
   const primaryPort: number = (() => {
     const ports: any[] = server.ports ?? [];
     const game = ports.find((p: any) => p.exposed && !p.description?.toLowerCase().includes('rcon'));
@@ -266,6 +277,23 @@ function ShareModal({ server, onClose }: { server: any; onClose: () => void }) {
   })();
 
   const joinStr = primaryPort > 0 ? joinString(server.adapter, publicHost, primaryPort) : null;
+
+  const checkReachability = async () => {
+    if ((server.ports ?? []).length === 0) return;
+    setCheckingReach(true);
+    try {
+      const res = await api.post('/api/v1/ports/validate', { ports: server.ports });
+      const map: Record<string, boolean | null> = {};
+      for (const r of res.data.results ?? []) {
+        map[`${r.port.protocol}:${r.port.external ?? r.port.internal}`] = r.reachable;
+      }
+      setReachability(map);
+    } catch {
+      toast.error('Reachability check failed');
+    } finally {
+      setCheckingReach(false);
+    }
+  };
 
   return (
     <div
@@ -275,6 +303,7 @@ function ShareModal({ server, onClose }: { server: any; onClose: () => void }) {
     >
       <div
         className="card w-full max-w-md p-0 overflow-hidden"
+        style={{ maxHeight: '90vh', overflowY: 'auto' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -299,54 +328,86 @@ function ShareModal({ server, onClose }: { server: any; onClose: () => void }) {
               style={{ color: 'var(--text-muted)' }}>
               Your public hostname / IP
             </label>
-            <input
-              className="input w-full font-mono text-sm"
-              value={publicHost}
-              onChange={e => setPublicHost(e.target.value)}
-              placeholder="your-server-ip or domain.com"
-            />
+            <div className="relative">
+              <input
+                className="input w-full font-mono text-sm pr-8"
+                value={publicHost}
+                onChange={e => setPublicHost(e.target.value)}
+                placeholder="your-server-ip or domain.com"
+              />
+              {ipLoading && (
+                <Loader2 className="w-3.5 h-3.5 animate-spin absolute right-2.5 top-1/2 -translate-y-1/2"
+                  style={{ color: 'var(--text-muted)' }} />
+              )}
+            </div>
             <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
-              This is the address friends will type. Edit if incorrect.
+              Auto-detected from the server. Edit if incorrect.
             </p>
           </div>
 
-          {/* Port list */}
+          {/* Port list with reachability */}
           {(server.ports ?? []).length > 0 && (
             <div>
-              <label className="text-xs font-semibold uppercase tracking-wide mb-1.5 block"
-                style={{ color: 'var(--text-muted)' }}>
-                Ports
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wide"
+                  style={{ color: 'var(--text-muted)' }}>
+                  Ports
+                </label>
+                <button
+                  onClick={checkReachability}
+                  disabled={checkingReach}
+                  className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-lg transition-colors"
+                  style={{
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  {checkingReach
+                    ? <><Loader2 className="w-3 h-3 animate-spin" />Checking…</>
+                    : <><Wifi className="w-3 h-3" />Check reachability</>
+                  }
+                </button>
+              </div>
               <div className="card p-0 overflow-hidden">
-                {(server.ports ?? []).map((p: any, i: number) => (
-                  <div key={i}
-                    className="flex items-center justify-between px-4 py-2.5 text-sm"
-                    style={{ borderBottom: i < server.ports.length - 1 ? '1px solid var(--border)' : undefined }}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
-                        {p.external ?? p.internal}
-                      </span>
-                      <span className="badge uppercase text-[10px]"
-                        style={{
-                          background: p.protocol === 'tcp' ? 'rgba(59,130,246,0.12)' : 'rgba(168,85,247,0.12)',
-                          color: p.protocol === 'tcp' ? '#60a5fa' : '#c084fc',
-                        }}>
-                        {p.protocol}
-                      </span>
-                      {p.description && (
-                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{p.description}</span>
-                      )}
+                {(server.ports ?? []).map((p: any, i: number) => {
+                  const key = `${p.protocol}:${p.external ?? p.internal}`;
+                  const reached = reachability[key];
+                  return (
+                    <div key={i}
+                      className="flex items-center justify-between px-4 py-2.5 text-sm"
+                      style={{ borderBottom: i < server.ports.length - 1 ? '1px solid var(--border)' : undefined }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
+                          {p.external ?? p.internal}
+                        </span>
+                        <span className="badge uppercase text-[10px]"
+                          style={{
+                            background: p.protocol === 'tcp' ? 'rgba(59,130,246,0.12)' : 'rgba(168,85,247,0.12)',
+                            color: p.protocol === 'tcp' ? '#60a5fa' : '#c084fc',
+                          }}>
+                          {p.protocol}
+                        </span>
+                        {p.description && (
+                          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{p.description}</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {/* Live reachability result takes priority over static exposed flag */}
+                        {reached === true ? (
+                          <><Wifi className="w-3.5 h-3.5 text-green-400" /><span className="text-xs text-green-400">Reachable</span></>
+                        ) : reached === false ? (
+                          <><AlertCircle className="w-3.5 h-3.5 text-amber-400" /><span className="text-xs text-amber-400">Blocked</span></>
+                        ) : p.exposed ? (
+                          <><Wifi className="w-3.5 h-3.5 text-green-400" /><span className="text-xs text-green-400">Open</span></>
+                        ) : (
+                          <><WifiOff className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} /><span className="text-xs" style={{ color: 'var(--text-muted)' }}>Internal</span></>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      {p.exposed ? (
-                        <><Wifi className="w-3.5 h-3.5 text-green-400" /><span className="text-xs text-green-400">Open</span></>
-                      ) : (
-                        <><WifiOff className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} /><span className="text-xs" style={{ color: 'var(--text-muted)' }}>Internal</span></>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -354,10 +415,24 @@ function ShareModal({ server, onClose }: { server: any; onClose: () => void }) {
           {/* Join string */}
           {joinStr && (
             <div>
-              <label className="text-xs font-semibold uppercase tracking-wide mb-1.5 block"
-                style={{ color: 'var(--text-muted)' }}>
-                Join string
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wide"
+                  style={{ color: 'var(--text-muted)' }}>
+                  Join string
+                </label>
+                <button
+                  onClick={() => setShowQR(v => !v)}
+                  className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-lg transition-colors"
+                  style={{
+                    background: showQR ? 'rgba(249,115,22,0.12)' : 'var(--bg-elevated)',
+                    border: `1px solid ${showQR ? 'rgba(249,115,22,0.3)' : 'var(--border)'}`,
+                    color: showQR ? '#f97316' : 'var(--text-secondary)',
+                  }}
+                >
+                  <QrCode className="w-3 h-3" />
+                  {showQR ? 'Hide QR' : 'QR code'}
+                </button>
+              </div>
               <div className="flex items-center gap-2 rounded-lg px-3 py-2.5"
                 style={{ background: '#080810', border: '1px solid var(--border)' }}>
                 <span className="flex-1 font-mono text-xs break-all" style={{ color: 'var(--primary)' }}>
@@ -369,6 +444,12 @@ function ShareModal({ server, onClose }: { server: any; onClose: () => void }) {
                 <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
                   Send this link to friends — clicking it opens the game and connects directly.
                 </p>
+              )}
+              {showQR && (
+                <div className="flex justify-center mt-3 p-4 rounded-xl"
+                  style={{ background: '#ffffff' }}>
+                  <QRCodeSVG value={joinStr} size={180} level="M" />
+                </div>
               )}
             </div>
           )}
