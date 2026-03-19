@@ -9,6 +9,27 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+#### Web Push notifications (`daemon/internal/notifications/push.go`, `daemon/internal/auth/service.go`, `daemon/internal/api/server.go`, `ui/src/sw.ts`, `ui/src/pages/SettingsPage.tsx`)
+- VAPID key pair generated automatically on first run and persisted to `{data_dir}/vapid_keys.json`.
+- `notifications.Service.SetPush(vapidKeys, getSubscriptions)` wires push sending into the existing
+  `Send(event, serverName, message)` flow — every `server.crash`, `server.restart`, and `disk.warning`
+  event fans out to all registered device subscriptions alongside webhook and email.
+- Per-user `PushSubscriptions []PushSubscription` stored on `auth.User`; subscriptions survive
+  daemon restarts as part of the user state.
+- New API routes:
+  - `GET  /api/v1/push/vapid-key`       — returns the VAPID public key (base64url) for browser subscribe calls
+  - `POST /api/v1/push/subscribe`       — registers a push subscription for the authenticated user
+  - `DELETE /api/v1/push/subscribe`     — unregisters a subscription by endpoint
+- Service worker (`ui/src/sw.ts`) switched to `injectManifest` strategy with a custom TypeScript
+  service worker that handles `push` events (shows a notification) and `notificationclick` events
+  (focuses an existing tab or opens a new window at the notification URL).
+- Settings → Notifications → **Push Notifications** card: shows permission state; "Enable" button
+  requests browser permission, fetches the VAPID key, subscribes via `PushManager`, and saves the
+  subscription to the daemon; "Disable" button unsubscribes and removes the server-side record.
+- Added `github.com/SherClockHolmes/webpush-go v1.3.0` dependency.
+
 ### Changed
 - **`daemon/Dockerfile`** — switched runtime base from `gcr.io/distroless/static-debian12:nonroot`
   to `debian:bookworm-slim` and added a `docker:27-cli` build stage so the daemon can shell out

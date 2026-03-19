@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/games-dashboard/daemon/internal/api"
@@ -16,6 +17,7 @@ import (
 	"github.com/games-dashboard/daemon/internal/firewall"
 	"github.com/games-dashboard/daemon/internal/health"
 	"github.com/games-dashboard/daemon/internal/metrics"
+	"github.com/games-dashboard/daemon/internal/notifications"
 	"github.com/games-dashboard/daemon/internal/secrets"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -138,6 +140,21 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	notifySvc := gameBroker.NotifyService()
+
+	// Initialize Web Push (VAPID keys auto-generated on first run).
+	dataDir := cfg.DataDir
+	if dataDir == "" {
+		dataDir = cfg.Storage.DataDir
+	}
+	if dataDir != "" {
+		vapidPath := filepath.Join(dataDir, "vapid_keys.json")
+		if vapidKeys, err := notifications.LoadOrGenerateVAPIDKeys(vapidPath, logger); err != nil {
+			logger.Warn("Web Push disabled — could not init VAPID keys", zap.Error(err))
+		} else {
+			notifySvc.SetPush(*vapidKeys, authSvc.GetAllWebPushSubs)
+			logger.Info("Web Push initialized", zap.String("public_key", vapidKeys.Public[:16]+"..."))
+		}
+	}
 
 	// Initialize firewall service (gracefully unavailable when ufw not installed)
 	firewallSvc := firewall.NewService(logger)

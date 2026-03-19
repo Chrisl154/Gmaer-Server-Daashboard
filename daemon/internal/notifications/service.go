@@ -39,6 +39,10 @@ type Service struct {
 	cfg    Config
 	client *http.Client
 	logger *zap.Logger
+
+	// Web Push
+	vapidKeys       *VAPIDKeys
+	getSubscriptions func() []WebPushSub
 }
 
 func New(cfg Config, logger *zap.Logger) *Service {
@@ -47,6 +51,26 @@ func New(cfg Config, logger *zap.Logger) *Service {
 		client: &http.Client{Timeout: 10 * time.Second},
 		logger: logger,
 	}
+}
+
+// SetPush wires up Web Push: keys is the VAPID key pair, getSubs returns the
+// current set of all user subscriptions to fan out to on each event.
+func (s *Service) SetPush(keys VAPIDKeys, getSubs func() []WebPushSub) {
+	s.mu.Lock()
+	s.vapidKeys = &keys
+	s.getSubscriptions = getSubs
+	s.mu.Unlock()
+}
+
+// GetVAPIDPublicKey returns the VAPID public key (base64url), or "" if push
+// is not configured.
+func (s *Service) GetVAPIDPublicKey() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.vapidKeys == nil {
+		return ""
+	}
+	return s.vapidKeys.Public
 }
 
 // UpdateConfig replaces the running config (thread-safe; called by the settings API).
@@ -107,6 +131,34 @@ func (s *Service) Send(event, serverName, message string) {
 				)
 			}
 		}()
+	}
+
+	// Web Push — fan out to all subscribers if push is configured.
+	s.mu.RLock()
+	vapidKeys := s.vapidKeys
+	getSubs := s.getSubscriptions
+	s.mu.RUnlock()
+	if vapidKeys != nil && getSubs != nil {
+		subs := getSubs()
+		if len(subs) > 0 {
+			payload := PushPayload{
+				Title: fmt.Sprintf("[%s] %s", event, serverName),
+				Body:  message,
+				Tag:   event,
+				URL:   "/",
+			}
+			go func() {
+				for _, sub := range subs {
+					if err := sendWebPush(sub, payload, *vapidKeys); err != nil {
+						s.logger.Warn("Web Push failed",
+							zap.String("event", event),
+							zap.String("endpoint", sub.Endpoint),
+							zap.Error(err),
+						)
+					}
+				}
+			}()
+		}
 	}
 }
 

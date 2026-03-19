@@ -267,6 +267,11 @@ func (s *Server) registerRoutes() {
 
 	// System
 	v1.GET("/status", s.getSystemStatus)
+
+	// Web Push subscriptions (any authenticated user)
+	v1.GET("/push/vapid-key", s.getPushVAPIDKey)
+	v1.POST("/push/subscribe", s.subscribePush)
+	v1.DELETE("/push/subscribe", s.unsubscribePush)
 }
 
 func (s *Server) ListenAndServeTLS() error {
@@ -1796,4 +1801,54 @@ func (s *Server) recordEvent(c *gin.Context, action, resource string, success bo
 		return
 	}
 	s.cfg.AuthSvc.RecordEvent(claims.UserID, claims.Username, action, resource, c.ClientIP(), success, details)
+}
+
+// --- Web Push handlers ---
+
+func (s *Server) getPushVAPIDKey(c *gin.Context) {
+	pub := s.cfg.NotificationSvc.GetVAPIDPublicKey()
+	if pub == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Web Push not configured"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"public_key": pub})
+}
+
+func (s *Server) subscribePush(c *gin.Context) {
+	claims := s.getUser(c)
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var sub auth.PushSubscription
+	if err := c.ShouldBindJSON(&sub); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if sub.Endpoint == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "endpoint is required"})
+		return
+	}
+	if err := s.cfg.AuthSvc.AddPushSubscription(claims.UserID, sub); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (s *Server) unsubscribePush(c *gin.Context) {
+	claims := s.getUser(c)
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var body struct {
+		Endpoint string `json:"endpoint" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	s.cfg.AuthSvc.RemovePushSubscription(claims.UserID, body.Endpoint)
+	c.Status(http.StatusNoContent)
 }

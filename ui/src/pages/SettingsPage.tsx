@@ -1344,8 +1344,128 @@ function NotificationsSection() {
           {testing ? 'Sending…' : 'Send Test'}
         </button>
       </div>
+
+      <PushNotificationsCard />
     </div>
   );
+}
+
+// ── Push Notifications card ──────────────────────────────────────────────────
+
+function PushNotificationsCard() {
+  const [permission, setPermission] = useState<NotificationPermission>(
+    typeof Notification !== 'undefined' ? Notification.permission : 'denied'
+  );
+  const [subscribed, setSubscribed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [endpoint, setEndpoint] = useState('');
+
+  const supported =
+    typeof window !== 'undefined' &&
+    'Notification' in window &&
+    'serviceWorker' in navigator &&
+    'PushManager' in window;
+
+  useEffect(() => {
+    if (!supported) return;
+    navigator.serviceWorker.ready.then((reg) => {
+      reg.pushManager.getSubscription().then((sub) => {
+        if (sub) { setSubscribed(true); setEndpoint(sub.endpoint); }
+      });
+    });
+  }, [supported]);
+
+  async function enable() {
+    setLoading(true); setError('');
+    try {
+      const perm = await Notification.requestPermission();
+      setPermission(perm);
+      if (perm !== 'granted') { setError('Notification permission was denied.'); return; }
+      const { data } = await api.get<{ public_key: string }>('/api/v1/push/vapid-key');
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(data.public_key),
+      });
+      await api.post('/api/v1/push/subscribe', sub.toJSON());
+      setSubscribed(true); setEndpoint(sub.endpoint);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to enable push notifications.');
+    } finally { setLoading(false); }
+  }
+
+  async function disable() {
+    setLoading(true); setError('');
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await sub.unsubscribe();
+        await api.delete('/api/v1/push/subscribe', { data: { endpoint: sub.endpoint } });
+      }
+      setSubscribed(false); setEndpoint('');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to disable push notifications.');
+    } finally { setLoading(false); }
+  }
+
+  if (!supported) return (
+    <div className="card p-5 mt-6">
+      <p className="font-medium mb-1">Push Notifications</p>
+      <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+        Not supported in this browser. Install the dashboard as a PWA on a modern browser to enable push alerts.
+      </p>
+    </div>
+  );
+
+  return (
+    <div className="card p-5 mt-6 space-y-4">
+      <div>
+        <p className="font-medium">Push Notifications</p>
+        <p className="text-sm mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+          Receive crash and restart alerts on this device even when the browser tab is closed.
+        </p>
+      </div>
+      <div className="flex items-center gap-3">
+        <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Status:</span>
+        {subscribed
+          ? <span className="badge badge-green text-xs">Active</span>
+          : permission === 'denied'
+            ? <span className="badge badge-red text-xs">Blocked by browser</span>
+            : <span className="badge badge-gray text-xs">Disabled</span>}
+      </div>
+      {subscribed && endpoint && (
+        <p className="text-xs truncate" style={{ color: 'var(--text-tertiary)', maxWidth: 400 }}>{endpoint}</p>
+      )}
+      {error && <p className="text-sm" style={{ color: 'var(--error)' }}>{error}</p>}
+      {permission === 'denied' ? (
+        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+          Push is blocked. Open your browser's site settings, allow notifications, then reload.
+        </p>
+      ) : subscribed ? (
+        <button onClick={disable} disabled={loading}
+          className="btn-ghost py-2 px-5 disabled:opacity-40 text-sm"
+          style={{ color: 'var(--error)' }}>
+          {loading ? 'Disabling…' : 'Disable push notifications'}
+        </button>
+      ) : (
+        <button onClick={enable} disabled={loading}
+          className="btn-primary py-2 px-5 disabled:opacity-40 text-sm">
+          {loading ? 'Enabling…' : 'Enable push notifications'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const arr = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) arr[i] = rawData.charCodeAt(i);
+  return arr.buffer as ArrayBuffer;
 }
 
 // ── Skeleton ─────────────────────────────────────────────────────────────────

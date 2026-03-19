@@ -10,6 +10,7 @@ import (
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
+	"github.com/games-dashboard/daemon/internal/notifications"
 	"github.com/games-dashboard/daemon/internal/secrets"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/pquerna/otp/totp"
@@ -68,18 +69,28 @@ type SteamConfig struct {
 	FrontendURL string `yaml:"frontend_url" json:"frontend_url"`
 }
 
+// PushSubscription holds a Web Push endpoint and its encryption keys.
+type PushSubscription struct {
+	Endpoint string `json:"endpoint"`
+	Keys     struct {
+		P256DH string `json:"p256dh"`
+		Auth   string `json:"auth"`
+	} `json:"keys"`
+}
+
 // User represents an authenticated user
 type User struct {
-	ID             string    `json:"id"`
-	Username       string    `json:"username"`
-	PasswordHash   string    `json:"-"`
-	Roles          []string  `json:"roles"`
-	AllowedServers []string  `json:"allowed_servers,omitempty"` // nil/empty = all servers
-	TOTPEnabled    bool      `json:"totp_enabled"`
-	TOTPSecret     string    `json:"-"`
-	RecoveryCodes  []string  `json:"-"` // single-use backup codes, stored plaintext (in-memory)
-	CreatedAt      time.Time `json:"created_at"`
-	LastLogin      time.Time `json:"last_login"`
+	ID                string             `json:"id"`
+	Username          string             `json:"username"`
+	PasswordHash      string             `json:"-"`
+	Roles             []string           `json:"roles"`
+	AllowedServers    []string           `json:"allowed_servers,omitempty"` // nil/empty = all servers
+	TOTPEnabled       bool               `json:"totp_enabled"`
+	TOTPSecret        string             `json:"-"`
+	RecoveryCodes     []string           `json:"-"` // single-use backup codes, stored plaintext (in-memory)
+	PushSubscriptions []PushSubscription `json:"push_subscriptions,omitempty"`
+	CreatedAt         time.Time          `json:"created_at"`
+	LastLogin         time.Time          `json:"last_login"`
 }
 
 // Claims represents JWT claims
@@ -179,6 +190,9 @@ type Service struct {
 
 	// Steam — nonce map prevents replay attacks on the callback
 	steamStates sync.Map // state nonce -> expiry time.Time
+
+	// Push subscription management
+	subsMu sync.RWMutex
 }
 
 // NewService creates a new auth service
@@ -864,4 +878,63 @@ func parseQuery(rawQuery string) (map[string]string, error) {
 		out[k] = vals.Get(k)
 	}
 	return out, nil
+}
+
+// --- Web Push subscription management ---
+
+// AddPushSubscription saves a Web Push subscription for the given user.
+// If the endpoint is already registered it is replaced (idempotent).
+func (s *Service) AddPushSubscription(userID string, sub PushSubscription) error {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	for _, u := range s.users {
+		if u.ID == userID {
+			// Replace existing entry with same endpoint, or append.
+			for i, existing := range u.PushSubscriptions {
+				if existing.Endpoint == sub.Endpoint {
+					u.PushSubscriptions[i] = sub
+					return nil
+				}
+			}
+			u.PushSubscriptions = append(u.PushSubscriptions, sub)
+			return nil
+		}
+	}
+	return fmt.Errorf("user not found")
+}
+
+// RemovePushSubscription deletes the subscription with the given endpoint for a user.
+func (s *Service) RemovePushSubscription(userID, endpoint string) {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	for _, u := range s.users {
+		if u.ID == userID {
+			subs := u.PushSubscriptions[:0]
+			for _, sub := range u.PushSubscriptions {
+				if sub.Endpoint != endpoint {
+					subs = append(subs, sub)
+				}
+			}
+			u.PushSubscriptions = subs
+			return
+		}
+	}
+}
+
+// GetAllWebPushSubs returns a flat list of all push subscriptions across all users.
+// This is used by the notifications service to fan out to every subscriber.
+func (s *Service) GetAllWebPushSubs() []notifications.WebPushSub {
+	s.subsMu.RLock()
+	defer s.subsMu.RUnlock()
+	var all []notifications.WebPushSub
+	for _, u := range s.users {
+		for _, sub := range u.PushSubscriptions {
+			all = append(all, notifications.WebPushSub{
+				Endpoint: sub.Endpoint,
+				P256DH:   sub.Keys.P256DH,
+				Auth:     sub.Keys.Auth,
+			})
+		}
+	}
+	return all
 }
