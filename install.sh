@@ -9,6 +9,9 @@
 #   Or locally:
 #   bash install.sh
 #
+# Worker-node mode (no UI, no nginx, no admin account):
+#   bash install.sh --mode=node
+#
 # Non-interactive (CI/scripted):
 #   GDASH_NONINTERACTIVE=1 bash install.sh
 #
@@ -16,6 +19,16 @@
 # Default login: admin / (shown at end of install)
 # =============================================================================
 set -euo pipefail
+
+# ── Mode flag ─────────────────────────────────────────────────────────────────
+# --mode=node  → worker-only install (daemon + Docker + SteamCMD, no UI/nginx)
+INSTALL_MODE="full"
+for _arg in "$@"; do
+  case "$_arg" in
+    --mode=node) INSTALL_MODE="node" ;;
+    --mode=full) INSTALL_MODE="full" ;;
+  esac
+done
 
 # ── Tool versions ─────────────────────────────────────────────────────────────
 GO_VERSION="1.22.4"
@@ -353,8 +366,49 @@ collect_config_noninteractive() {
   echo ""
 }
 
+# ── Node-mode config collection (minimal — no UI/nginx/admin) ─────────────────
+collect_config_node() {
+  INSTALL_DIR="${GDASH_INSTALL_DIR:-/opt/gdash}"
+  SERVER_IP="${GDASH_HOST:-$DETECTED_IP}"
+  SERVER_HOSTNAME="${GDASH_HOSTNAME:-}"
+  DAEMON_PORT="${GDASH_DAEMON_PORT:-8443}"
+  UI_PORT="443"           # unused in node mode but keeps derived-values section happy
+  ADMIN_USER="admin"      # unused
+  ADMIN_PASS=""           # unused
+  BACKUP_SCHEDULE="0 3 * * *"   # unused
+  BACKUP_RETAIN_DAYS="30"       # unused
+  DATA_DIR="${GDASH_DATA_DIR:-${INSTALL_DIR}/data}"
+  INSTALL_DOCKER=true
+  INSTALL_K8S=false
+
+  if $HAVE_TTY && [[ -z "${GDASH_NONINTERACTIVE:-}" ]]; then
+    echo ""
+    echo -e "${BOLD}=================================================="
+    echo -e "  Games Dashboard — Node-Mode Configuration"
+    echo -e "==================================================${NC}"
+    echo -e "  This machine will be a ${BOLD}worker node${NC} (no UI, no nginx)."
+    echo -e "  Press Enter to accept defaults."
+    echo ""
+    rl_input INSTALL_DIR  "Install directory"   "/opt/gdash"
+    rl_input SERVER_IP    "This node's IP"      "$DETECTED_IP"
+    rl_input DAEMON_PORT  "Daemon port"         "8443"
+    echo ""
+    local _confirm=""
+    IFS= read -r -p "  Proceed? [Y/n]: " _confirm </dev/tty 2>/dev/null || true
+    case "${_confirm,,}" in
+      n|no) fail "Installation cancelled by user." ;;
+    esac
+  else
+    echo ""
+    echo -e "${BOLD}  Node mode — using defaults / GDASH_* environment overrides${NC}"
+    echo ""
+  fi
+}
+
 # ── Run config collection ─────────────────────────────────────────────────────
-if [[ -n "${GDASH_NONINTERACTIVE:-}" ]]; then
+if [[ "$INSTALL_MODE" == "node" ]]; then
+  collect_config_node
+elif [[ -n "${GDASH_NONINTERACTIVE:-}" ]]; then
   collect_config_noninteractive
 elif $USE_TUI; then
   collect_config_tui
@@ -512,32 +566,36 @@ fi
 export GOPATH="$HOME/go"
 export PATH="$(dirname "$GO_BIN"):$PATH"
 
-# ── Node.js ───────────────────────────────────────────────────────────────────
+# ── Node.js (not needed in worker-node mode) ──────────────────────────────────
 NODE_BIN=""
-if command -v node &>/dev/null && node --version 2>/dev/null | grep -qE "v(1[6-9]|[2-9][0-9])"; then
-  NODE_BIN="$(command -v node)"
-  ok "Node: $(node --version)"
-elif [[ -s "$NVM_DIR/nvm.sh" ]]; then
-  # shellcheck disable=SC1090
-  source "$NVM_DIR/nvm.sh" 2>/dev/null || true
-  if command -v node &>/dev/null; then
+if [[ "$INSTALL_MODE" != "node" ]]; then
+  if command -v node &>/dev/null && node --version 2>/dev/null | grep -qE "v(1[6-9]|[2-9][0-9])"; then
     NODE_BIN="$(command -v node)"
-    ok "Node: $(node --version) [nvm]"
+    ok "Node: $(node --version)"
+  elif [[ -s "$NVM_DIR/nvm.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "$NVM_DIR/nvm.sh" 2>/dev/null || true
+    if command -v node &>/dev/null; then
+      NODE_BIN="$(command -v node)"
+      ok "Node: $(node --version) [nvm]"
+    fi
   fi
-fi
 
-if [[ -z "$NODE_BIN" ]]; then
-  log "Installing Node.js ${NODE_VERSION} LTS via NVM..."
-  download "https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh" /tmp/nvm-install.sh
-  bash /tmp/nvm-install.sh >/dev/null 2>&1
-  rm -f /tmp/nvm-install.sh
-  export NVM_DIR="$HOME/.nvm"
-  # shellcheck disable=SC1090
-  source "$NVM_DIR/nvm.sh" 2>/dev/null || true
-  nvm install "$NODE_VERSION" >/dev/null 2>&1
-  nvm use "$NODE_VERSION" >/dev/null 2>&1
-  NODE_BIN="$(command -v node 2>/dev/null)" || fail "Node.js install failed."
-  ok "Node: $(node --version) [nvm installed]"
+  if [[ -z "$NODE_BIN" ]]; then
+    log "Installing Node.js ${NODE_VERSION} LTS via NVM..."
+    download "https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh" /tmp/nvm-install.sh
+    bash /tmp/nvm-install.sh >/dev/null 2>&1
+    rm -f /tmp/nvm-install.sh
+    export NVM_DIR="$HOME/.nvm"
+    # shellcheck disable=SC1090
+    source "$NVM_DIR/nvm.sh" 2>/dev/null || true
+    nvm install "$NODE_VERSION" >/dev/null 2>&1
+    nvm use "$NODE_VERSION" >/dev/null 2>&1
+    NODE_BIN="$(command -v node 2>/dev/null)" || fail "Node.js install failed."
+    ok "Node: $(node --version) [nvm installed]"
+  fi
+else
+  ok "Node.js: skipped (worker-node mode)"
 fi
 
 # ── Python packages ───────────────────────────────────────────────────────────
@@ -635,12 +693,16 @@ log "Building CLI..."
 $SUDO ln -sf "$BIN_DIR/gdash" /usr/local/bin/gdash 2>/dev/null || true
 ok "CLI → $BIN_DIR/gdash (linked to /usr/local/bin/gdash)"
 
-log "Building UI (VITE_DAEMON_URL=$UI_API_URL)..."
-chmod +x "$REPO_DIR/ui/node_modules/.bin/"* 2>/dev/null || true
-(cd "$REPO_DIR/ui" && \
-  npm install --silent 2>/dev/null && \
-  VITE_DAEMON_URL="$UI_API_URL" node_modules/.bin/vite build --outDir "$INSTALL_DIR/ui" 2>/dev/null)
-ok "UI → $INSTALL_DIR/ui"
+if [[ "$INSTALL_MODE" != "node" ]]; then
+  log "Building UI (VITE_DAEMON_URL=$UI_API_URL)..."
+  chmod +x "$REPO_DIR/ui/node_modules/.bin/"* 2>/dev/null || true
+  (cd "$REPO_DIR/ui" && \
+    npm install --silent 2>/dev/null && \
+    VITE_DAEMON_URL="$UI_API_URL" node_modules/.bin/vite build --outDir "$INSTALL_DIR/ui" 2>/dev/null)
+  ok "UI → $INSTALL_DIR/ui"
+else
+  ok "UI build: skipped (worker-node mode)"
+fi
 
 # =============================================================================
 section "Step 4: TLS Certificate"
@@ -672,7 +734,38 @@ mkdir -p "$CFG_DIR" "$DATA_DIR" "$SECRETS_DIR"
 # Generate JWT secret
 JWT_SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 
-cat > "$CFG_DIR/daemon.yaml" <<YAML
+if [[ "$INSTALL_MODE" == "node" ]]; then
+  # Worker node — binds on all interfaces so the master can reach it;
+  # no local auth (nodes are trusted via the join token on the master).
+  cat > "$CFG_DIR/daemon.yaml" <<YAML
+bind_addr: "0.0.0.0:${DAEMON_PORT}"
+log_level: "info"
+data_dir: "${DATA_DIR}"
+shutdown_timeout: 30s
+tls:
+  cert_file: "${TLS_DIR}/server.crt"
+  key_file: "${TLS_DIR}/server.key"
+auth:
+  local:
+    enabled: false
+  jwt_secret: "${JWT_SECRET}"
+  token_ttl: 8h
+  mfa_required: false
+secrets:
+  backend: "local"
+  key_file: "${SECRETS_DIR}/master.key"
+storage:
+  data_dir: "${DATA_DIR}"
+adapters:
+  dir: "${REPO_DIR}/adapters"
+metrics:
+  enabled: true
+  path: "/metrics"
+cluster:
+  enabled: false
+YAML
+else
+  cat > "$CFG_DIR/daemon.yaml" <<YAML
 bind_addr: "127.0.0.1:${DAEMON_PORT}"
 log_level: "info"
 data_dir: "${DATA_DIR}"
@@ -705,6 +798,7 @@ metrics:
 cluster:
   enabled: false
 YAML
+fi
 ok "Daemon config → $CFG_DIR/daemon.yaml"
 
 # =============================================================================
@@ -754,6 +848,10 @@ fi
 # =============================================================================
 section "Step 7: nginx Configuration"
 # =============================================================================
+
+if [[ "$INSTALL_MODE" == "node" ]]; then
+  ok "nginx: skipped (worker-node mode — daemon is directly accessible on port ${DAEMON_PORT})"
+else
 
 $SUDO tee /etc/nginx/sites-available/gdash > /dev/null <<NGINX
 # Games Dashboard
@@ -818,9 +916,15 @@ else
   fail "nginx config test failed."
 fi
 
+fi  # end of [[ "$INSTALL_MODE" != "node" ]] block for nginx
+
 # =============================================================================
 section "Step 8: Bootstrap Admin Account"
 # =============================================================================
+
+if [[ "$INSTALL_MODE" == "node" ]]; then
+  ok "Admin bootstrap: skipped (worker-node mode)"
+else
 
 log "Waiting for daemon API..."
 READY=false
@@ -859,6 +963,8 @@ else
   info "Bootstrap response: $BOOT_RESP"
   info "(If 'already initialized', the existing credentials remain valid)"
 fi
+
+fi  # end of [[ "$INSTALL_MODE" != "node" ]] block for admin bootstrap
 
 # =============================================================================
 section "Step 9: Self-Update Script"
@@ -970,30 +1076,66 @@ fi
 section "Install Complete"
 # =============================================================================
 
-echo ""
-echo -e "${GREEN}${BOLD}  ╔══════════════════════════════════════════════╗"
-echo -e "  ║       Games Dashboard is ready!              ║"
-echo -e "  ╚══════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "  ${BOLD}Dashboard URL:${NC}  ${UI_API_URL}  (port ${UI_PORT} via nginx)"
-echo -e "  ${BOLD}Username:${NC}       ${ADMIN_USER}"
-echo -e "  ${BOLD}Password:${NC}       ${ADMIN_PASS}"
-echo ""
-echo -e "  ${YELLOW}⚠  TLS note:${NC} The certificate is self-signed."
-echo -e "     Your browser will show a security warning."
-echo -e "     Click \"Advanced → Proceed\" to continue."
-echo ""
-echo -e "  ${BOLD}Useful commands:${NC}"
-echo -e "    gdash --help                    # CLI tool"
-echo -e "    gdash update                    # Update to latest (main branch)"
-echo -e "    gdash update --branch dev       # Update to dev branch"
-echo -e "    gdash update --check            # Check for updates without applying"
-echo -e "    sudo systemctl status gdash-daemon"
-echo -e "    sudo journalctl -u gdash-daemon -f"
-echo -e "    sudo systemctl restart gdash-daemon"
-echo ""
-echo -e "  ${DIM}Config:    $CFG_DIR/daemon.yaml"
-echo -e "  Data:      $DATA_DIR"
-echo -e "  Logs:      journalctl -u gdash-daemon"
-echo -e "  Install:   $INSTALL_DIR${NC}"
-echo ""
+if [[ "$INSTALL_MODE" == "node" ]]; then
+  # ── Worker node summary ──────────────────────────────────────────────────
+  NODE_ADDR="https://${SERVER_IP}:${DAEMON_PORT}"
+  NODE_HOST="${SERVER_HOSTNAME:-$(hostname -s 2>/dev/null || echo "$(hostname)")}"
+
+  echo ""
+  echo -e "${GREEN}${BOLD}  ╔══════════════════════════════════════════════╗"
+  echo -e "  ║     Games Dashboard Node is ready!           ║"
+  echo -e "  ╚══════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "  This machine is now a ${BOLD}worker node${NC}."
+  echo -e "  To add it to your master dashboard, run on the ${BOLD}master${NC}:"
+  echo ""
+  echo -e "  ${CYAN}  # Step 1 — generate a join token (on the master):${NC}"
+  echo -e "    gdash node token"
+  echo ""
+  echo -e "  ${CYAN}  # Step 2 — register this node (on the master):${NC}"
+  echo -e "    gdash node add ${NODE_HOST} \\"
+  echo -e "      --address ${SERVER_IP}:${DAEMON_PORT} \\"
+  echo -e "      --token <token-from-step-1>"
+  echo ""
+  echo -e "  ${YELLOW}⚠  TLS note:${NC} The certificate is self-signed."
+  echo -e "     The master's gdash CLI must be run with --insecure (or trust the cert) to reach this node."
+  echo ""
+  echo -e "  ${BOLD}Useful commands:${NC}"
+  echo -e "    sudo systemctl status gdash-daemon"
+  echo -e "    sudo journalctl -u gdash-daemon -f"
+  echo -e "    sudo systemctl restart gdash-daemon"
+  echo ""
+  echo -e "  ${DIM}Config:  $CFG_DIR/daemon.yaml"
+  echo -e "  Data:    $DATA_DIR"
+  echo -e "  Install: $INSTALL_DIR${NC}"
+  echo ""
+else
+  # ── Full install summary ─────────────────────────────────────────────────
+  echo ""
+  echo -e "${GREEN}${BOLD}  ╔══════════════════════════════════════════════╗"
+  echo -e "  ║       Games Dashboard is ready!              ║"
+  echo -e "  ╚══════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "  ${BOLD}Dashboard URL:${NC}  ${UI_API_URL}  (port ${UI_PORT} via nginx)"
+  echo -e "  ${BOLD}Username:${NC}       ${ADMIN_USER}"
+  echo -e "  ${BOLD}Password:${NC}       ${ADMIN_PASS}"
+  echo ""
+  echo -e "  ${YELLOW}⚠  TLS note:${NC} The certificate is self-signed."
+  echo -e "     Your browser will show a security warning."
+  echo -e "     Click \"Advanced → Proceed\" to continue."
+  echo ""
+  echo -e "  ${BOLD}Useful commands:${NC}"
+  echo -e "    gdash --help                    # CLI tool"
+  echo -e "    gdash update                    # Update to latest (main branch)"
+  echo -e "    gdash update --branch dev       # Update to dev branch"
+  echo -e "    gdash update --check            # Check for updates without applying"
+  echo -e "    sudo systemctl status gdash-daemon"
+  echo -e "    sudo journalctl -u gdash-daemon -f"
+  echo -e "    sudo systemctl restart gdash-daemon"
+  echo ""
+  echo -e "  ${DIM}Config:    $CFG_DIR/daemon.yaml"
+  echo -e "  Data:      $DATA_DIR"
+  echo -e "  Logs:      journalctl -u gdash-daemon"
+  echo -e "  Install:   $INSTALL_DIR${NC}"
+  echo ""
+fi
