@@ -209,6 +209,7 @@ func (s *Server) registerRoutes() {
 	srv.POST("/mods/test", s.requireOperator(), s.testMods)
 	srv.POST("/mods/rollback", s.requireOperator(), s.rollbackMods)
 	srv.GET("/diagnose", s.diagnoseServer)
+	srv.POST("/clone", s.requireOperator(), s.cloneServer)
 
 	// SBOM & CVE
 	v1.GET("/sbom", s.getSBOM)
@@ -1503,6 +1504,26 @@ func (s *Server) diagnoseServer(c *gin.Context) {
 	c.JSON(http.StatusOK, report)
 }
 
+// cloneServer creates a copy of a server under a new name. The clone starts
+// in the stopped state and must be deployed before it can be started.
+func (s *Server) cloneServer(c *gin.Context) {
+	id := c.Param("id")
+	var body struct {
+		Name string `json:"name" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	clone, err := s.cfg.Broker.CloneServer(c.Request.Context(), id, body.Name)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	s.recordEvent(c, "server_clone", id, true, map[string]string{"clone_id": clone.ID, "name": clone.Name})
+	c.JSON(http.StatusCreated, clone)
+}
+
 // fetchPublicIP tries several well-known plain-text IP services.
 // Returns the first success or falls back to the local outbound address.
 func fetchPublicIP() string {
@@ -1640,18 +1661,21 @@ func (s *Server) getNotifications(c *gin.Context) {
 		return
 	}
 	cfg := s.cfg.NotificationSvc.GetConfig()
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"webhook_url":    cfg.WebhookURL,
 		"webhook_format": cfg.WebhookFormat,
 		"events":         cfg.Events,
-	})
+		"email":          cfg.Email,
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) patchNotifications(c *gin.Context) {
 	var body struct {
-		WebhookURL    *string  `json:"webhook_url"`
-		WebhookFormat *string  `json:"webhook_format"`
-		Events        []string `json:"events"`
+		WebhookURL    *string                    `json:"webhook_url"`
+		WebhookFormat *string                    `json:"webhook_format"`
+		Events        []string                   `json:"events"`
+		Email         *notifications.EmailConfig `json:"email"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1671,12 +1695,27 @@ func (s *Server) patchNotifications(c *gin.Context) {
 	if body.Events != nil {
 		cur.Events = body.Events
 	}
+	if body.Email != nil {
+		cur.Email = body.Email
+	}
 	s.cfg.NotificationSvc.UpdateConfig(cur)
 	// Also persist to daemon.yaml if ConfigPath is set
 	if s.cfg.DaemonCfg != nil {
 		s.cfg.DaemonCfg.Notifications.WebhookURL = cur.WebhookURL
 		s.cfg.DaemonCfg.Notifications.WebhookFormat = cur.WebhookFormat
 		s.cfg.DaemonCfg.Notifications.Events = cur.Events
+		if cur.Email != nil {
+			s.cfg.DaemonCfg.Notifications.Email = &daemonconfig.EmailConfig{
+				Enabled:  cur.Email.Enabled,
+				SMTPHost: cur.Email.SMTPHost,
+				SMTPPort: cur.Email.SMTPPort,
+				Username: cur.Email.Username,
+				Password: cur.Email.Password,
+				From:     cur.Email.From,
+				To:       cur.Email.To,
+				UseTLS:   cur.Email.UseTLS,
+			}
+		}
 		if s.cfg.ConfigPath != "" {
 			_ = daemonconfig.Write(s.cfg.ConfigPath, s.cfg.DaemonCfg)
 		}

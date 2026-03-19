@@ -373,4 +373,6 @@ export interface ServerMetricSample {
   ram_pct: number;
   disk_pct: number;
   player_count: number; // -1 = not available
+  net_in_kbps?: number;
+  net_out_kbps?: number;
 }

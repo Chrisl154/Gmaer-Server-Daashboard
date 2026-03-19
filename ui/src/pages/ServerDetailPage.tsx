@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft, Play, Square, RotateCcw, HardDrive, Package,
@@ -33,6 +33,7 @@ export function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [showShare, setShowShare] = useState(false);
+  const [showClone, setShowClone] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: server, isLoading } = useQuery({
@@ -157,6 +158,9 @@ export function ServerDetailPage() {
           >
             <HardDrive className="w-4 h-4" /> Backup
           </button>
+          <button onClick={() => setShowClone(true)} className="btn-ghost py-2">
+            <Copy className="w-4 h-4" /> Clone
+          </button>
           <button
             onClick={() => setShowShare(true)}
             className="btn-ghost py-2"
@@ -167,6 +171,7 @@ export function ServerDetailPage() {
       </div>
 
       {showShare && <ShareModal server={server} onClose={() => setShowShare(false)} />}
+      {showClone && <CloneModal serverId={server.id} serverName={server.name} onClose={() => setShowClone(false)} />}
 
       {/* Tab bar */}
       <div className="flex gap-1 overflow-x-auto" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -200,6 +205,59 @@ export function ServerDetailPage() {
         {activeTab === 'config'   && <ConfigTab server={server} />}
         {activeTab === 'files'    && <FilesTab serverId={id!} />}
         {activeTab === 'players'  && <PlayersTab serverId={id!} adapter={server.adapter} />}
+      </div>
+    </div>
+  );
+}
+
+// ── Clone server modal ────────────────────────────────────────────────────────
+
+function CloneModal({ serverId, serverName, onClose }: { serverId: string; serverName: string; onClose: () => void }) {
+  const navigate = useNavigate();
+  const [name, setName] = useState(`${serverName} (copy)`);
+  const cloneMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/servers/${serverId}/clone`, { name }).then(r => r.data),
+    onSuccess: (clone) => {
+      toast.success(`Cloned as "${clone.name}" — deploy it to start.`);
+      onClose();
+      navigate(`/servers/${clone.id}`);
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.error ?? 'Clone failed'),
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="card w-full max-w-sm p-6 space-y-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>Clone Server</h2>
+          <button onClick={onClose} className="btn-ghost p-1.5"><X className="w-4 h-4" /></button>
+        </div>
+        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+          Creates a stopped copy with the same adapter, ports, and config. You'll need to deploy it before starting.
+        </p>
+        <div>
+          <label className="label">New server name</label>
+          <input
+            className="input"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            autoFocus
+            onKeyDown={e => e.key === 'Enter' && name.trim() && cloneMutation.mutate()}
+          />
+        </div>
+        <div className="flex gap-3">
+          <button onClick={onClose} className="btn-ghost flex-1 justify-center">Cancel</button>
+          <button
+            onClick={() => cloneMutation.mutate()}
+            disabled={!name.trim() || cloneMutation.isPending}
+            className="btn-primary flex-1 justify-center"
+          >
+            {cloneMutation.isPending ? 'Cloning…' : 'Clone'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -747,15 +805,18 @@ function MetricsChart({ serverId }: { serverId: string }) {
   });
 
   const samples: ServerMetricSample[] = data?.samples ?? [];
+  const hasNetData = samples.some(s => (s.net_in_kbps ?? 0) > 0 || (s.net_out_kbps ?? 0) > 0);
   const chartData = samples.map(s => ({
-    time: new Date(s.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    cpu:  parseFloat(s.cpu_pct.toFixed(1)),
-    ram:  parseFloat(s.ram_pct.toFixed(1)),
+    time:    new Date(s.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    cpu:     parseFloat(s.cpu_pct.toFixed(1)),
+    ram:     parseFloat(s.ram_pct.toFixed(1)),
+    netIn:   parseFloat(((s.net_in_kbps  ?? 0) / 1000).toFixed(2)), // Mbps for chart
+    netOut:  parseFloat(((s.net_out_kbps ?? 0) / 1000).toFixed(2)),
   }));
 
   return (
-    <div className="card p-5">
-      <h3 className="label mb-4">Resource Utilization</h3>
+    <div className="card p-5 space-y-5">
+      <h3 className="label">Resource Utilization</h3>
       {chartData.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12">
           <Activity className="w-8 h-8 mb-2" style={{ color: 'var(--text-muted)' }} />
@@ -765,32 +826,59 @@ function MetricsChart({ serverId }: { serverId: string }) {
         </div>
       ) : (
         <>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-              <XAxis dataKey="time" tick={{ fontSize: 10, fill: 'var(--text-muted)' }} interval="preserveStartEnd" />
-              <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: 'var(--text-muted)' }} unit="%" />
-              <Tooltip
-                contentStyle={{
-                  background: 'var(--bg-elevated)',
-                  border: '1px solid var(--border-strong)',
-                  borderRadius: 10,
-                  fontSize: 12,
-                }}
-                labelStyle={{ color: 'var(--text-secondary)' }}
-              />
-              <Line type="monotone" dataKey="cpu" stroke="#f97316" strokeWidth={2} dot={false} name="CPU %" />
-              <Line type="monotone" dataKey="ram" stroke="#3b82f6" strokeWidth={2} dot={false} name="RAM %" />
-            </LineChart>
-          </ResponsiveContainer>
-          <div className="flex gap-4 mt-3">
-            <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
-              <span className="w-3 h-0.5 rounded inline-block" style={{ background: '#f97316' }} /> CPU %
-            </span>
-            <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
-              <span className="w-3 h-0.5 rounded inline-block" style={{ background: '#3b82f6' }} /> RAM %
-            </span>
+          {/* CPU / RAM chart */}
+          <div>
+            <ResponsiveContainer width="100%" height={160}>
+              <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                <XAxis dataKey="time" tick={{ fontSize: 10, fill: 'var(--text-muted)' }} interval="preserveStartEnd" />
+                <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: 'var(--text-muted)' }} unit="%" />
+                <Tooltip
+                  contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: 10, fontSize: 12 }}
+                  labelStyle={{ color: 'var(--text-secondary)' }}
+                />
+                <Line type="monotone" dataKey="cpu" stroke="#f97316" strokeWidth={2} dot={false} name="CPU %" />
+                <Line type="monotone" dataKey="ram" stroke="#3b82f6" strokeWidth={2} dot={false} name="RAM %" />
+              </LineChart>
+            </ResponsiveContainer>
+            <div className="flex gap-4 mt-2">
+              <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+                <span className="w-3 h-0.5 rounded inline-block" style={{ background: '#f97316' }} /> CPU %
+              </span>
+              <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+                <span className="w-3 h-0.5 rounded inline-block" style={{ background: '#3b82f6' }} /> RAM %
+              </span>
+            </div>
           </div>
+
+          {/* Network I/O chart — only rendered when we have data */}
+          {hasNetData && (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--text-muted)' }}>Network I/O (Mbps)</p>
+              <ResponsiveContainer width="100%" height={130}>
+                <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10, fill: 'var(--text-muted)' }} interval="preserveStartEnd" />
+                  <YAxis tick={{ fontSize: 10, fill: 'var(--text-muted)' }} unit=" M" />
+                  <Tooltip
+                    contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: 10, fontSize: 12 }}
+                    labelStyle={{ color: 'var(--text-secondary)' }}
+                    formatter={(v: any) => [`${v} Mbps`]}
+                  />
+                  <Line type="monotone" dataKey="netIn"  stroke="#22c55e" strokeWidth={2} dot={false} name="↓ In" />
+                  <Line type="monotone" dataKey="netOut" stroke="#a855f7" strokeWidth={2} dot={false} name="↑ Out" />
+                </LineChart>
+              </ResponsiveContainer>
+              <div className="flex gap-4 mt-2">
+                <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+                  <span className="w-3 h-0.5 rounded inline-block" style={{ background: '#22c55e' }} /> ↓ In
+                </span>
+                <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+                  <span className="w-3 h-0.5 rounded inline-block" style={{ background: '#a855f7' }} /> ↑ Out
+                </span>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

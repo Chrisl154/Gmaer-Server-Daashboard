@@ -2,19 +2,36 @@ package notifications
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/smtp"
+	"strings"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
 )
 
+// EmailConfig mirrors config.EmailConfig — duplicated here to avoid an import cycle.
+type EmailConfig struct {
+	Enabled  bool
+	SMTPHost string
+	SMTPPort int
+	Username string
+	Password string
+	From     string
+	To       []string
+	UseTLS   bool
+}
+
 type Config struct {
 	WebhookURL    string
 	WebhookFormat string // discord|slack|generic (default: discord)
 	Events        []string
+	Email         *EmailConfig
 }
 
 type Service struct {
@@ -46,15 +63,12 @@ func (s *Service) GetConfig() Config {
 	return s.cfg
 }
 
-// Send fires a webhook for event if the event is in the enabled list and a URL is configured.
+// Send fires a webhook and/or email for event if the event is in the enabled list.
 func (s *Service) Send(event, serverName, message string) {
 	s.mu.RLock()
 	cfg := s.cfg
 	s.mu.RUnlock()
 
-	if cfg.WebhookURL == "" {
-		return
-	}
 	// Check if event is enabled (empty list = all events).
 	if len(cfg.Events) > 0 {
 		found := false
@@ -68,26 +82,123 @@ func (s *Service) Send(event, serverName, message string) {
 			return
 		}
 	}
-	go func() {
-		if err := s.post(cfg, event, serverName, message); err != nil {
-			s.logger.Warn("Webhook notification failed",
-				zap.String("event", event),
-				zap.String("server", serverName),
-				zap.Error(err),
-			)
-		}
-	}()
+
+	if cfg.WebhookURL != "" {
+		go func() {
+			if err := s.post(cfg, event, serverName, message); err != nil {
+				s.logger.Warn("Webhook notification failed",
+					zap.String("event", event),
+					zap.String("server", serverName),
+					zap.Error(err),
+				)
+			}
+		}()
+	}
+
+	if cfg.Email != nil && cfg.Email.Enabled && len(cfg.Email.To) > 0 {
+		go func() {
+			subject := fmt.Sprintf("[Games Dashboard] [%s] %s", event, serverName)
+			body := fmt.Sprintf("Event: %s\nServer: %s\n\n%s", event, serverName, message)
+			if err := s.sendEmail(cfg.Email, subject, body); err != nil {
+				s.logger.Warn("Email notification failed",
+					zap.String("event", event),
+					zap.String("server", serverName),
+					zap.Error(err),
+				)
+			}
+		}()
+	}
 }
 
-// Test sends a test notification using the current config and returns any error.
+// Test sends a test notification (webhook + email) and returns the first error encountered.
 func (s *Service) Test() error {
 	s.mu.RLock()
 	cfg := s.cfg
 	s.mu.RUnlock()
-	if cfg.WebhookURL == "" {
-		return fmt.Errorf("no webhook URL configured")
+
+	var errs []string
+	if cfg.WebhookURL != "" {
+		if err := s.post(cfg, "test", "Games Dashboard", "This is a test notification from Games Dashboard."); err != nil {
+			errs = append(errs, "webhook: "+err.Error())
+		}
 	}
-	return s.post(cfg, "test", "Games Dashboard", "This is a test notification from Games Dashboard.")
+	if cfg.Email != nil && cfg.Email.Enabled && len(cfg.Email.To) > 0 {
+		if err := s.sendEmail(cfg.Email,
+			"[Games Dashboard] Test notification",
+			"This is a test email from Games Dashboard.",
+		); err != nil {
+			errs = append(errs, "email: "+err.Error())
+		}
+	}
+	if cfg.WebhookURL == "" && (cfg.Email == nil || !cfg.Email.Enabled) {
+		return fmt.Errorf("no webhook URL or email configured")
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// sendEmail delivers a plain-text email via SMTP.
+func (s *Service) sendEmail(cfg *EmailConfig, subject, body string) error {
+	if cfg.SMTPHost == "" {
+		return fmt.Errorf("SMTP host not configured")
+	}
+	port := cfg.SMTPPort
+	if port == 0 {
+		if cfg.UseTLS {
+			port = 465
+		} else {
+			port = 587
+		}
+	}
+	addr := fmt.Sprintf("%s:%d", cfg.SMTPHost, port)
+
+	msg := []byte("To: " + strings.Join(cfg.To, ", ") + "\r\n" +
+		"From: " + cfg.From + "\r\n" +
+		"Subject: " + subject + "\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=UTF-8\r\n" +
+		"\r\n" +
+		body + "\r\n")
+
+	auth := smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.SMTPHost)
+
+	if cfg.UseTLS {
+		// Implicit TLS (port 465)
+		tlsCfg := &tls.Config{ServerName: cfg.SMTPHost}
+		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, tlsCfg)
+		if err != nil {
+			return fmt.Errorf("TLS dial failed: %w", err)
+		}
+		defer conn.Close()
+		c, err := smtp.NewClient(conn, cfg.SMTPHost)
+		if err != nil {
+			return fmt.Errorf("SMTP client failed: %w", err)
+		}
+		defer c.Quit()
+		if err := c.Auth(auth); err != nil {
+			return fmt.Errorf("SMTP auth failed: %w", err)
+		}
+		if err := c.Mail(cfg.From); err != nil {
+			return err
+		}
+		for _, to := range cfg.To {
+			if err := c.Rcpt(to); err != nil {
+				return err
+			}
+		}
+		w, err := c.Data()
+		if err != nil {
+			return err
+		}
+		defer w.Close()
+		_, err = w.Write(msg)
+		return err
+	}
+
+	// STARTTLS (port 587)
+	return smtp.SendMail(addr, auth, cfg.From, cfg.To, msg)
 }
 
 func (s *Service) post(cfg Config, event, serverName, message string) error {

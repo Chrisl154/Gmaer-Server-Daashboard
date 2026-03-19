@@ -1110,6 +1110,17 @@ function NotificationsSection() {
   const [events, setEvents] = useState<string[]>([
     'server.crash', 'server.restart', 'disk.warning', 'backup.failed',
   ]);
+  // Email state
+  const [emailEnabled, setEmailEnabled] = useState(false);
+  const [smtpHost, setSmtpHost] = useState('');
+  const [smtpPort, setSmtpPort] = useState('587');
+  const [smtpUser, setSmtpUser] = useState('');
+  const [smtpPass, setSmtpPass] = useState('');
+  const [emailFrom, setEmailFrom] = useState('');
+  const [emailTo, setEmailTo] = useState('');
+  const [useTLS, setUseTLS] = useState(false);
+  const [showSmtpPass, setShowSmtpPass] = useState(false);
+
   const [loaded, setLoaded] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1119,6 +1130,17 @@ function NotificationsSection() {
       setUrl(r.data.webhook_url ?? '');
       setFormat(r.data.webhook_format ?? 'discord');
       setEvents(r.data.events ?? []);
+      const em = r.data.email;
+      if (em) {
+        setEmailEnabled(em.enabled ?? false);
+        setSmtpHost(em.smtp_host ?? '');
+        setSmtpPort(String(em.smtp_port ?? 587));
+        setSmtpUser(em.username ?? '');
+        setSmtpPass(em.password ?? '');
+        setEmailFrom(em.from ?? '');
+        setEmailTo((em.to ?? []).join(', '));
+        setUseTLS(em.use_tls ?? false);
+      }
       setLoaded(true);
     });
   }, []);
@@ -1141,7 +1163,19 @@ function NotificationsSection() {
     setSaving(true);
     try {
       await api.patch('/api/v1/admin/notifications', {
-        webhook_url: url, webhook_format: format, events,
+        webhook_url: url,
+        webhook_format: format,
+        events,
+        email: {
+          enabled: emailEnabled,
+          smtp_host: smtpHost,
+          smtp_port: parseInt(smtpPort, 10) || 587,
+          username: smtpUser,
+          password: smtpPass,
+          from: emailFrom,
+          to: emailTo.split(',').map(s => s.trim()).filter(Boolean),
+          use_tls: useTLS,
+        },
       });
       toast.success('Notification settings saved');
     } catch (e: any) {
@@ -1172,11 +1206,11 @@ function NotificationsSection() {
           Notifications
         </h2>
         <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-          Send alerts to Discord, Slack, or any HTTP webhook when important events occur.
+          Send alerts via Discord/Slack webhook and/or email when important events occur.
         </p>
       </div>
 
-      {/* Webhook URL */}
+      {/* Webhook */}
       <div className="card p-5 space-y-4">
         <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Webhook</h3>
         <div>
@@ -1191,25 +1225,90 @@ function NotificationsSection() {
             placeholder="https://discord.com/api/webhooks/…"
           />
           <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-            Paste a Discord, Slack Incoming Webhook, or any HTTP endpoint that accepts POST JSON.
+            Discord, Slack Incoming Webhook, or any HTTP endpoint that accepts POST JSON.
           </p>
         </div>
-
         <div>
           <label className="block text-xs font-semibold uppercase tracking-wide mb-1.5"
             style={{ color: 'var(--text-muted)' }}>
             Format
           </label>
-          <select
-            className="input w-full"
-            value={format}
-            onChange={e => setFormat(e.target.value as any)}
-          >
+          <select className="input w-full" value={format} onChange={e => setFormat(e.target.value as any)}>
             <option value="discord">Discord (rich embed)</option>
             <option value="slack">Slack (text message)</option>
             <option value="generic">Generic JSON (event + server + message)</option>
           </select>
         </div>
+      </div>
+
+      {/* Email */}
+      <div className="card p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Email (SMTP)</h3>
+          <button
+            type="button"
+            onClick={() => setEmailEnabled(v => !v)}
+            className="relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors"
+            style={{ background: emailEnabled ? 'var(--primary)' : 'rgba(148,163,184,0.3)' }}
+            aria-pressed={emailEnabled}
+          >
+            <span className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition"
+              style={{ transform: emailEnabled ? 'translateX(16px)' : 'translateX(0)' }} />
+          </button>
+        </div>
+
+        {emailEnabled && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">SMTP Host</label>
+                <input className="input" value={smtpHost} onChange={e => setSmtpHost(e.target.value)}
+                  placeholder="smtp.gmail.com" />
+              </div>
+              <div>
+                <label className="label">Port</label>
+                <input className="input" value={smtpPort} onChange={e => setSmtpPort(e.target.value)}
+                  placeholder="587" type="number" min={1} max={65535} />
+              </div>
+            </div>
+            <div>
+              <label className="label">Username</label>
+              <input className="input" value={smtpUser} onChange={e => setSmtpUser(e.target.value)}
+                placeholder="you@example.com" autoComplete="off" />
+            </div>
+            <div>
+              <label className="label">Password / App password</label>
+              <div className="relative">
+                <input className="input pr-10" type={showSmtpPass ? 'text' : 'password'}
+                  value={smtpPass} onChange={e => setSmtpPass(e.target.value)}
+                  placeholder="••••••••" autoComplete="new-password" />
+                <button type="button" tabIndex={-1}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1"
+                  onClick={() => setShowSmtpPass(v => !v)}
+                  style={{ color: 'var(--text-muted)' }}>
+                  {showSmtpPass ? '🙈' : '👁'}
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="label">From address</label>
+              <input className="input" value={emailFrom} onChange={e => setEmailFrom(e.target.value)}
+                placeholder="alerts@example.com" />
+            </div>
+            <div>
+              <label className="label">To addresses <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(comma-separated)</span></label>
+              <input className="input" value={emailTo} onChange={e => setEmailTo(e.target.value)}
+                placeholder="admin@example.com, oncall@example.com" />
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={useTLS} onChange={e => setUseTLS(e.target.checked)}
+                className="w-4 h-4 accent-orange-500" />
+              <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                Use implicit TLS (port 465) — uncheck for STARTTLS (port 587)
+              </span>
+            </label>
+          </div>
+        )}
       </div>
 
       {/* Events */}
@@ -1218,7 +1317,7 @@ function NotificationsSection() {
           Events to notify
         </h3>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          Untick events you don't want notifications for.
+          Applies to both webhook and email.
         </p>
         <div className="space-y-2">
           {ALL_EVENTS.map(ev => (
@@ -1226,12 +1325,8 @@ function NotificationsSection() {
               className="flex items-center gap-3 cursor-pointer py-1.5 rounded-lg px-3 transition-colors"
               style={{ background: events.includes(ev.id) ? 'var(--primary-subtle)' : 'transparent' }}
             >
-              <input
-                type="checkbox"
-                checked={events.includes(ev.id)}
-                onChange={() => toggleEvent(ev.id)}
-                className="w-4 h-4 accent-orange-500"
-              />
+              <input type="checkbox" checked={events.includes(ev.id)} onChange={() => toggleEvent(ev.id)}
+                className="w-4 h-4 accent-orange-500" />
               <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{ev.label}</span>
             </label>
           ))}
@@ -1240,19 +1335,12 @@ function NotificationsSection() {
 
       {/* Actions */}
       <div className="flex gap-3">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="btn-primary py-2 px-5"
-        >
+        <button onClick={save} disabled={saving} className="btn-primary py-2 px-5">
           <Save className="w-4 h-4" />
           {saving ? 'Saving…' : 'Save'}
         </button>
-        <button
-          onClick={test}
-          disabled={testing || !url}
-          className="btn-ghost py-2 px-5 disabled:opacity-40"
-        >
+        <button onClick={test} disabled={testing || (!url && !emailEnabled)}
+          className="btn-ghost py-2 px-5 disabled:opacity-40">
           {testing ? 'Sending…' : 'Send Test'}
         </button>
       </div>

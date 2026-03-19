@@ -14,6 +14,13 @@ import {
 
 interface TrendPoint { time: string; running: number; }
 
+// Format kbps for display — shows Kbps below 1000, Mbps above.
+function fmtKbps(kbps: number): string {
+  if (kbps <= 0) return '0 Kbps';
+  if (kbps < 1000) return `${Math.round(kbps)} Kbps`;
+  return `${(kbps / 1000).toFixed(1)} Mbps`;
+}
+
 export function DashboardPage() {
   const { data: serversData, isLoading } = useQuery({
     queryKey: ['servers'],
@@ -522,7 +529,7 @@ function ResourceTable({ servers, isLoading }: { servers: any[]; isLoading: bool
         style={{
           color: 'var(--text-muted)',
           borderBottom: '1px solid var(--border)',
-          gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr 1fr',
+          gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr',
           background: 'var(--bg-elevated)',
         }}
       >
@@ -531,6 +538,7 @@ function ResourceTable({ servers, isLoading }: { servers: any[]; isLoading: bool
         <span>CPU</span>
         <span>RAM</span>
         <span>Disk</span>
+        <span>Network</span>
         <span>Players</span>
         <span>Allocated</span>
       </div>
@@ -560,7 +568,7 @@ function ResourceTable({ servers, isLoading }: { servers: any[]; isLoading: bool
             key={s.id}
             className="grid px-5 py-3 items-center cursor-pointer hover:bg-white/[0.02] transition-colors"
             style={{
-              gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr 1fr',
+              gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr',
               borderBottom: idx < servers.length - 1 ? '1px solid var(--border)' : 'none',
             }}
             onClick={() => navigate(`/servers/${s.id}`)}
@@ -601,6 +609,16 @@ function ResourceTable({ servers, isLoading }: { servers: any[]; isLoading: bool
             {/* Disk */}
             <div className="pr-4">
               <MiniBar pct={s.disk_pct ?? 0} color={diskColor} />
+            </div>
+
+            {/* Network I/O */}
+            <div className="text-xs space-y-0.5 pr-2" style={{ color: isRunning && (s.net_in_kbps || s.net_out_kbps) ? 'var(--text-secondary)' : 'var(--text-muted)', opacity: isRunning ? 1 : 0.4 }}>
+              {isRunning && (s.net_in_kbps > 0 || s.net_out_kbps > 0) ? (
+                <>
+                  <div>↓ {fmtKbps(s.net_in_kbps ?? 0)}</div>
+                  <div>↑ {fmtKbps(s.net_out_kbps ?? 0)}</div>
+                </>
+              ) : <span>—</span>}
             </div>
 
             {/* Players */}

@@ -8,11 +8,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// NotificationsConfig holds webhook notification settings.
+// NotificationsConfig holds webhook and email notification settings.
 type NotificationsConfig struct {
-	WebhookURL    string   `yaml:"webhook_url" json:"webhook_url"`
-	WebhookFormat string   `yaml:"webhook_format" json:"webhook_format"` // discord|slack|generic
-	Events        []string `yaml:"events" json:"events"`                 // server.crash|server.restart|disk.warning|backup.failed|backup.complete
+	WebhookURL    string       `yaml:"webhook_url" json:"webhook_url"`
+	WebhookFormat string       `yaml:"webhook_format" json:"webhook_format"` // discord|slack|generic
+	Events        []string     `yaml:"events" json:"events"`                 // server.crash|server.restart|disk.warning|backup.failed|backup.complete
+	Email         *EmailConfig `yaml:"email,omitempty" json:"email,omitempty"`
+}
+
+// EmailConfig holds SMTP settings for email notifications.
+type EmailConfig struct {
+	Enabled  bool     `yaml:"enabled" json:"enabled"`
+	SMTPHost string   `yaml:"smtp_host" json:"smtp_host"`
+	SMTPPort int      `yaml:"smtp_port" json:"smtp_port"` // 587 (STARTTLS) or 465 (implicit TLS)
+	Username string   `yaml:"username" json:"username"`
+	Password string   `yaml:"password" json:"password"`
+	From     string   `yaml:"from" json:"from"`
+	To       []string `yaml:"to" json:"to"`
+	// UseTLS switches between STARTTLS (false, port 587) and implicit TLS (true, port 465).
+	UseTLS bool `yaml:"use_tls" json:"use_tls"`
 }
 
 // LogRotationConfig controls per-server daemon event log rotation.

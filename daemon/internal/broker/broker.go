@@ -5,7 +5,9 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -78,9 +80,11 @@ type Server struct {
 	LastError string `json:"last_error,omitempty"`
 	// Live resource utilisation — updated every metrics collection cycle (15 s).
 	// 0 = unknown / server not running.
-	CPUPct  float64 `json:"cpu_pct,omitempty"`
-	RAMPct  float64 `json:"ram_pct,omitempty"`
-	DiskPct float64 `json:"disk_pct,omitempty"`
+	CPUPct     float64 `json:"cpu_pct,omitempty"`
+	RAMPct     float64 `json:"ram_pct,omitempty"`
+	DiskPct    float64 `json:"disk_pct,omitempty"`
+	NetInKbps  float64 `json:"net_in_kbps,omitempty"`
+	NetOutKbps float64 `json:"net_out_kbps,omitempty"`
 	// Player counts — updated alongside CPU/RAM/Disk every 15 s.
 	// PlayerCount == -1 means the adapter does not support player count queries
 	// or the RCON password is not set.  PlayerCount >= 0 is the live count.
@@ -272,6 +276,10 @@ type Broker struct {
 	processes    map[string]*exec.Cmd
 	metricsData  map[string]*metricsRing
 	diskWarnedAt map[string]time.Time // throttle: last time a disk warning was emitted per server
+	// prevNetBytes tracks the previous cumulative network byte counters per server [in, out]
+	// used to compute kbps rates between metric collection cycles.
+	prevNetBytes map[string][2]uint64
+	prevNetTime  map[string]time.Time
 	// auto-update scheduler (robfig/cron); updateMu protects updateEntries independently
 	// of the main mu to avoid lock-ordering issues.
 	updateCron    *cron.Cron
@@ -337,6 +345,18 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 			WebhookFormat: cfg.Notifications.WebhookFormat,
 			Events:        cfg.Notifications.Events,
 		}
+		if e := cfg.Notifications.Email; e != nil {
+			notifyCfg.Email = &notifications.EmailConfig{
+				Enabled:  e.Enabled,
+				SMTPHost: e.SMTPHost,
+				SMTPPort: e.SMTPPort,
+				Username: e.Username,
+				Password: e.Password,
+				From:     e.From,
+				To:       e.To,
+				UseTLS:   e.UseTLS,
+			}
+		}
 	}
 	notifySvc := notifications.New(notifyCfg, logger)
 
@@ -368,6 +388,8 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		processes:    make(map[string]*exec.Cmd),
 		metricsData:  metricsData,
 		diskWarnedAt: make(map[string]time.Time),
+		prevNetBytes: make(map[string][2]uint64),
+		prevNetTime:  make(map[string]time.Time),
 		logWriters:   make(map[string]*rotatingWriter),
 	}, nil
 }
@@ -380,6 +402,13 @@ func (b *Broker) NotifyService() *notifications.Service {
 // ClusterManager returns the cluster manager (may be nil if cluster disabled)
 func (b *Broker) ClusterManager() *cluster.Manager {
 	return b.clusterMgr
+}
+
+// generateServerID returns a short random hex ID suitable for use as a server ID.
+func generateServerID() string {
+	b := make([]byte, 6)
+	rand.Read(b) //nolint:errcheck
+	return hex.EncodeToString(b)
 }
 
 // saveServersLocked persists the servers map to disk. Must be called with b.mu held (read or write).
@@ -538,10 +567,27 @@ func (b *Broker) collectMetrics() {
 	}
 	pcWg.Wait()
 
+	now := time.Now()
 	for id, s := range servers {
 		var cpu, ram float64
+		var netInKbps, netOutKbps float64
 		if s.deployMethod == "docker" && s.containerID != "" {
-			cpu, ram = sampleDocker(s.containerID)
+			ds := sampleDocker(s.containerID)
+			cpu, ram = ds.CPUPct, ds.RAMPct
+			// Compute kbps from cumulative byte delta
+			b.mu.Lock()
+			prev := b.prevNetBytes[id]
+			prevT := b.prevNetTime[id]
+			b.prevNetBytes[id] = [2]uint64{ds.NetInB, ds.NetOutB}
+			b.prevNetTime[id] = now
+			b.mu.Unlock()
+			if !prevT.IsZero() && ds.NetInB >= prev[0] && ds.NetOutB >= prev[1] {
+				elapsed := now.Sub(prevT).Seconds()
+				if elapsed > 0 {
+					netInKbps = float64(ds.NetInB-prev[0]) / elapsed / 1024 * 8
+					netOutKbps = float64(ds.NetOutB-prev[1]) / elapsed / 1024 * 8
+				}
+			}
 		} else if s.pid > 0 {
 			cpu, ram = sampleProcess(s.pid)
 		}
@@ -558,11 +604,13 @@ func (b *Broker) collectMetrics() {
 			continue
 		}
 		ring.push(ServerMetricSample{
-			Timestamp:   time.Now().Unix(),
+			Timestamp:   now.Unix(),
 			CPUPercent:  cpu,
 			RAMPercent:  ram,
 			DiskPercent: disk,
 			PlayerCount: pc.current,
+			NetInKbps:   netInKbps,
+			NetOutKbps:  netOutKbps,
 		})
 
 		// Mirror latest values onto the Server object for direct API access
@@ -572,6 +620,8 @@ func (b *Broker) collectMetrics() {
 			sv.CPUPct = cpu
 			sv.RAMPct = ram
 			sv.DiskPct = disk
+			sv.NetInKbps = netInKbps
+			sv.NetOutKbps = netOutKbps
 			sv.PlayerCount = pc.current
 			if pc.max > 0 {
 				sv.MaxPlayers = pc.max
@@ -787,6 +837,62 @@ func (b *Broker) GetServer(ctx context.Context, id string) (*Server, error) {
 		return nil, fmt.Errorf("server not found: %s", id)
 	}
 	return s, nil
+}
+
+// CloneServer creates a copy of an existing server with a new name.
+// The clone starts in the stopped state and gets a fresh ID, so the original
+// is never affected. Runtime-only fields (PID, container ID, metrics) are not copied.
+func (b *Broker) CloneServer(ctx context.Context, id, newName string) (*Server, error) {
+	b.mu.RLock()
+	src, ok := b.servers[id]
+	if !ok {
+		b.mu.RUnlock()
+		return nil, fmt.Errorf("server not found: %s", id)
+	}
+	// Deep-copy config map
+	cfgCopy := make(map[string]any, len(src.Config))
+	for k, v := range src.Config {
+		cfgCopy[k] = v
+	}
+	// Deep-copy ports slice
+	portsCopy := make([]PortMapping, len(src.Ports))
+	copy(portsCopy, src.Ports)
+	// Deep-copy resources
+	resCopy := src.Resources
+	var backupCopy *BackupConfig
+	if src.BackupConfig != nil {
+		bc := *src.BackupConfig
+		backupCopy = &bc
+	}
+	b.mu.RUnlock()
+
+	clone := &Server{
+		ID:           generateServerID(),
+		Name:         newName,
+		Adapter:      src.Adapter,
+		State:        StateStopped,
+		DeployMethod: src.DeployMethod,
+		InstallDir:   "", // will need to be re-deployed; leave blank so user sets it
+		Ports:        portsCopy,
+		Config:       cfgCopy,
+		Resources:    resCopy,
+		BackupConfig: backupCopy,
+		NodeID:       src.NodeID,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		AutoRestart:  src.AutoRestart,
+		MaxRestarts:  src.MaxRestarts,
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.servers[clone.ID] = clone
+	b.consoleChs[clone.ID] = make(chan string, 1000)
+	b.metricsData[clone.ID] = &metricsRing{}
+	b.saveServersLocked()
+
+	b.logger.Info("Server cloned", zap.String("source_id", id), zap.String("clone_id", clone.ID), zap.String("name", newName))
+	return clone, nil
 }
 
 // UpdateServer modifies server configuration
