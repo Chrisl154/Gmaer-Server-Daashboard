@@ -109,6 +109,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			RedirectURL:  cfg.Auth.OIDC.RedirectURL,
 		}
 	}
+	if cfg.Auth.Steam != nil {
+		authCfg.Steam = &auth.SteamConfig{
+			Enabled:     cfg.Auth.Steam.Enabled,
+			APIKey:      cfg.Auth.Steam.APIKey,
+			ReturnURL:   cfg.Auth.Steam.ReturnURL,
+			Realm:       cfg.Auth.Steam.Realm,
+			FrontendURL: cfg.Auth.Steam.FrontendURL,
+		}
+	}
 
 	// Initialize auth service
 	authSvc, err := auth.NewService(authCfg, secretsMgr, logger)

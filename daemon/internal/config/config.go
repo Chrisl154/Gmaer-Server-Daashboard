@@ -58,6 +58,7 @@ type AuthConfig struct {
 	Local       LocalAuthConfig  `yaml:"local" json:"local"`
 	OIDC        *OIDCConfig      `yaml:"oidc,omitempty" json:"oidc,omitempty"`
 	SAML        *SAMLConfig      `yaml:"saml,omitempty" json:"saml,omitempty"`
+	Steam       *SteamConfig     `yaml:"steam,omitempty" json:"steam,omitempty"`
 	JWTSecret   string           `yaml:"jwt_secret" json:"jwt_secret"`
 	TokenTTL    time.Duration    `yaml:"token_ttl" json:"token_ttl"`
 	MFARequired bool             `yaml:"mfa_required" json:"mfa_required"`
@@ -79,6 +80,14 @@ type OIDCConfig struct {
 type SAMLConfig struct {
 	MetadataURL string `yaml:"metadata_url" json:"metadata_url"`
 	EntityID    string `yaml:"entity_id" json:"entity_id"`
+}
+
+type SteamConfig struct {
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	APIKey      string `yaml:"api_key" json:"api_key"`
+	ReturnURL   string `yaml:"return_url" json:"return_url"`
+	Realm       string `yaml:"realm" json:"realm"`
+	FrontendURL string `yaml:"frontend_url" json:"frontend_url"`
 }
 
 type SecretsConfig struct {

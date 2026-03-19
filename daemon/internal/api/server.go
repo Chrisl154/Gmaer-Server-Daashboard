@@ -136,6 +136,8 @@ func (s *Server) registerRoutes() {
 	r.POST("/api/v1/auth/login", s.login)
 	r.GET("/api/v1/auth/oidc/login", s.oidcLogin)
 	r.GET("/api/v1/auth/oidc/callback", s.oidcCallback)
+	r.GET("/api/v1/auth/steam/login", s.steamLogin)
+	r.GET("/api/v1/auth/steam/callback", s.steamCallback)
 
 	// First-run bootstrap (public; guarded internally when already initialised)
 	r.GET("/api/v1/system/init-status", s.getInitStatus)
@@ -207,6 +209,7 @@ func (s *Server) registerRoutes() {
 	v1.POST("/auth/logout", s.logout)
 	v1.POST("/auth/totp/setup", s.setupTOTP)
 	v1.POST("/auth/totp/verify", s.verifyTOTP)
+	v1.GET("/users/me", s.getMe)
 
 	// Cluster nodes
 	v1.GET("/nodes", s.listNodes)
@@ -869,6 +872,56 @@ func (s *Server) oidcCallback(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// steamLogin redirects the browser to Steam's OpenID 2.0 login page.
+func (s *Server) steamLogin(c *gin.Context) {
+	loginURL, _, err := s.cfg.AuthSvc.GetSteamLoginURL()
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	c.Redirect(http.StatusFound, loginURL)
+}
+
+// steamCallback receives the OpenID 2.0 assertion from Steam, verifies it,
+// issues a JWT, and redirects the browser back to the frontend login page.
+func (s *Server) steamCallback(c *gin.Context) {
+	resp, err := s.cfg.AuthSvc.SteamCallback(c.Request.Context(), c.Request.URL.RawQuery)
+	if err != nil {
+		// Redirect to login with an error hint rather than returning JSON
+		// (the browser is at this URL due to a redirect from Steam).
+		c.Redirect(http.StatusFound, "/login?error=steam_auth_failed")
+		return
+	}
+
+	frontendBase := s.cfg.AuthSvc.SteamFrontendURL()
+	redirectURL := frontendBase + "/login?token=" + resp.Token +
+		"&expires_at=" + resp.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")
+	c.Redirect(http.StatusFound, redirectURL)
+}
+
+// getMe returns the profile of the currently authenticated user.
+func (s *Server) getMe(c *gin.Context) {
+	claims := c.MustGet("user").(*auth.Claims)
+	users, err := s.cfg.AuthSvc.ListUsers(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for _, u := range users {
+		if u.ID == claims.UserID {
+			c.JSON(http.StatusOK, u)
+			return
+		}
+	}
+	// Fallback: return a minimal record from the claims if the user map lookup
+	// failed (e.g. short-lived Steam user not yet persisted).
+	c.JSON(http.StatusOK, gin.H{
+		"id":       claims.UserID,
+		"username": claims.Username,
+		"roles":    claims.Roles,
+	})
 }
 
 func (s *Server) listUsers(c *gin.Context) {

@@ -16,6 +16,7 @@ interface AuthState {
   isAuthenticated: boolean;
   mfaRequired: boolean;
   login: (username: string, password: string, totpCode?: string) => Promise<{ mfaRequired?: boolean }>;
+  loginWithToken: (token: string, user: User) => void;
   logout: () => void;
   checkAuth: () => void;
   setupTOTP: () => Promise<{ secret: string; qr_code_url: string }>;
@@ -53,6 +54,11 @@ export const useAuthStore = create<AuthState>()(
           toast.error(msg);
           throw err;
         }
+      },
+
+      loginWithToken: (token, user) => {
+        api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+        set({ user, token, isAuthenticated: true, mfaRequired: false });
       },
 
       logout: () => {

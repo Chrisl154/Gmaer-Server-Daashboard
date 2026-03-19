@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ type Config struct {
 	Local    LocalAuthConfig  `yaml:"local" json:"local"`
 	OIDC     *OIDCConfig      `yaml:"oidc,omitempty" json:"oidc,omitempty"`
 	SAML     *SAMLConfig      `yaml:"saml,omitempty" json:"saml,omitempty"`
+	Steam    *SteamConfig     `yaml:"steam,omitempty" json:"steam,omitempty"`
 	JWTSecret string          `yaml:"jwt_secret" json:"jwt_secret"`
 	TokenTTL time.Duration    `yaml:"token_ttl" json:"token_ttl"`
 	MFARequired bool          `yaml:"mfa_required" json:"mfa_required"`
@@ -42,6 +44,28 @@ type OIDCConfig struct {
 type SAMLConfig struct {
 	MetadataURL string `yaml:"metadata_url" json:"metadata_url"`
 	EntityID    string `yaml:"entity_id" json:"entity_id"`
+}
+
+// SteamConfig holds Steam OpenID 2.0 settings.
+type SteamConfig struct {
+	// Enabled turns on the Steam login option.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// APIKey is a Steam Web API key used to fetch player display names.
+	// Obtain one at https://steamcommunity.com/dev/apikey
+	// Optional — if omitted the Steam64 ID is used as the username.
+	APIKey string `yaml:"api_key" json:"api_key"`
+	// ReturnURL is the full URL Steam will redirect the browser back to after
+	// authentication — must be the public /api/v1/auth/steam/callback URL,
+	// e.g. "https://your-server.com/api/v1/auth/steam/callback".
+	ReturnURL string `yaml:"return_url" json:"return_url"`
+	// Realm is the OpenID trust root (typically your dashboard's base URL,
+	// e.g. "https://your-server.com"). Defaults to the scheme+host of ReturnURL.
+	Realm string `yaml:"realm" json:"realm"`
+	// FrontendURL is the base URL of the frontend SPA. After the callback the
+	// browser is redirected to {FrontendURL}/login?token=... so the app can
+	// store the issued JWT. Leave empty to use a relative redirect (works when
+	// the daemon serves the frontend from the same origin).
+	FrontendURL string `yaml:"frontend_url" json:"frontend_url"`
 }
 
 // User represents an authenticated user
@@ -144,6 +168,9 @@ type Service struct {
 	oauth2Cfg    *oauth2.Config
 	oidcInitErr  error
 	oidcStates   sync.Map // state nonce -> expiry time.Time
+
+	// Steam — nonce map prevents replay attacks on the callback
+	steamStates sync.Map // state nonce -> expiry time.Time
 }
 
 // NewService creates a new auth service
@@ -627,4 +654,138 @@ func generateID() string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
+}
+
+// GetSteamLoginURL returns the URL to redirect the browser to for Steam auth.
+// state is a random nonce stored server-side to prevent CSRF on the callback.
+func (s *Service) GetSteamLoginURL() (loginURL, state string, err error) {
+	if s.cfg.Steam == nil || !s.cfg.Steam.Enabled {
+		return "", "", fmt.Errorf("steam auth not configured")
+	}
+	state = generateID()
+	s.steamStates.Store(state, time.Now().Add(10*time.Minute))
+
+	returnTo := s.cfg.Steam.ReturnURL + "?state=" + state
+	realm := s.cfg.Steam.Realm
+	if realm == "" {
+		// Derive realm from ReturnURL (scheme + host)
+		if u, parseErr := parseURLBase(s.cfg.Steam.ReturnURL); parseErr == nil {
+			realm = u
+		} else {
+			realm = s.cfg.Steam.ReturnURL
+		}
+	}
+	return SteamLoginURL(returnTo, realm), state, nil
+}
+
+// SteamCallback verifies the OpenID 2.0 assertion from Steam, finds or creates
+// a local user, and issues a Games Dashboard JWT.
+func (s *Service) SteamCallback(ctx context.Context, rawQuery string) (*LoginResponse, error) {
+	if s.cfg.Steam == nil || !s.cfg.Steam.Enabled {
+		return nil, fmt.Errorf("steam auth not configured")
+	}
+
+	// Validate state nonce
+	params, parseErr := parseQuery(rawQuery)
+	if parseErr != nil {
+		return nil, fmt.Errorf("steam: bad callback query: %w", parseErr)
+	}
+	state := params["state"]
+	if state == "" {
+		return nil, fmt.Errorf("steam: missing state nonce")
+	}
+	expiry, ok := s.steamStates.LoadAndDelete(state)
+	if !ok || time.Now().After(expiry.(time.Time)) {
+		return nil, fmt.Errorf("steam: invalid or expired state nonce")
+	}
+
+	// Remove our state param before passing to Steam verifier
+	openIDQuery := dropParam(rawQuery, "state")
+
+	steamID, err := VerifySteamCallback(ctx, openIDQuery)
+	if err != nil {
+		s.audit("", "unknown", "steam-login", "auth", "", false, map[string]string{"error": err.Error()})
+		return nil, err
+	}
+
+	displayName := GetSteamDisplayName(ctx, s.cfg.Steam.APIKey, steamID)
+
+	// Find or create local user keyed on "steam:<steamID>"
+	userKey := "steam:" + steamID
+	user, exists := s.users[userKey]
+	if !exists {
+		user = &User{
+			ID:        generateID(),
+			Username:  displayName,
+			Roles:     []string{"viewer"},
+			CreatedAt: time.Now(),
+		}
+		s.users[userKey] = user
+		s.logger.Info("Created user from Steam", zap.String("steam_id", steamID), zap.String("username", displayName))
+	}
+	user.LastLogin = time.Now()
+
+	expiresAt := time.Now().Add(s.cfg.TokenTTL)
+	jwtClaims := &Claims{
+		UserID:   user.ID,
+		Username: user.Username,
+		Roles:    user.Roles,
+		MFADone:  true,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Subject:   user.ID,
+		},
+	}
+	tokenStr, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwtClaims).
+		SignedString([]byte(s.cfg.JWTSecret))
+	if err != nil {
+		return nil, fmt.Errorf("steam: failed to sign JWT: %w", err)
+	}
+	s.tokenCache[tokenStr] = jwtClaims
+	s.audit(user.ID, user.Username, "steam-login", "auth", "", true, map[string]string{"steam_id": steamID})
+
+	return &LoginResponse{
+		Token:     tokenStr,
+		ExpiresAt: expiresAt,
+		User:      sanitizeUser(user),
+	}, nil
+}
+
+// SteamFrontendURL returns the configured frontend base URL, or empty string
+// (which the API layer will treat as same-origin / relative).
+func (s *Service) SteamFrontendURL() string {
+	if s.cfg.Steam != nil {
+		return s.cfg.Steam.FrontendURL
+	}
+	return ""
+}
+
+// parseURLBase returns scheme://host from a full URL string.
+func parseURLBase(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	return u.Scheme + "://" + u.Host, nil
+}
+
+// dropParam removes a single key from a raw query string.
+func dropParam(rawQuery, key string) string {
+	vals, _ := url.ParseQuery(rawQuery)
+	vals.Del(key)
+	return vals.Encode()
+}
+
+// parseQuery returns the query string as a flat map.
+func parseQuery(rawQuery string) (map[string]string, error) {
+	vals, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(vals))
+	for k := range vals {
+		out[k] = vals.Get(k)
+	}
+	return out, nil
 }
