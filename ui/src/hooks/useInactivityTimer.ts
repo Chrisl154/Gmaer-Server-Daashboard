@@ -1,8 +1,7 @@
 import { useEffect, useRef } from 'react';
 
-// 29 minutes 50 seconds — matches the server-side 2h token with room to spare
-// for the inactivity logout to fire well before the token would naturally expire.
-const INACTIVITY_MS = 29 * 60 * 1000 + 50 * 1000; // 1_790_000 ms
+// 14 minutes 59 seconds of inactivity before automatic logout.
+const INACTIVITY_MS = 14 * 60 * 1000 + 59 * 1000; // 899_000 ms
 
 const ACTIVITY_EVENTS = [
   'mousemove',
