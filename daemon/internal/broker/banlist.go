@@ -102,19 +102,24 @@ func (b *Broker) BanPlayer(ctx context.Context, id, player, reason string) error
 		return ErrBanlistNotSupported
 	}
 
+	safePlayer, err := sanitizePlayerName(s.Adapter, player)
+	if err != nil {
+		return fmt.Errorf("invalid player name: %w", err)
+	}
+
 	var cmd string
 	switch s.Adapter {
 	case "minecraft":
 		if reason != "" {
-			cmd = fmt.Sprintf("ban %s %s", player, reason)
+			cmd = fmt.Sprintf("ban %s %s", safePlayer, reason)
 		} else {
-			cmd = fmt.Sprintf("ban %s", player)
+			cmd = fmt.Sprintf("ban %s", safePlayer)
 		}
 	case "ark-survival-ascended", "conan-exiles":
-		cmd = fmt.Sprintf("banplayer %s", player)
+		cmd = fmt.Sprintf("banplayer %s", safePlayer)
 	}
 
-	_, err := b.SendConsoleCommand(ctx, id, cmd)
+	_, err = b.SendConsoleCommand(ctx, id, cmd)
 	return err
 }
 
@@ -130,15 +135,20 @@ func (b *Broker) UnbanPlayer(ctx context.Context, id, player string) error {
 		return ErrBanlistNotSupported
 	}
 
+	safePlayer, err := sanitizePlayerName(s.Adapter, player)
+	if err != nil {
+		return fmt.Errorf("invalid player name: %w", err)
+	}
+
 	var cmd string
 	switch s.Adapter {
 	case "minecraft":
-		cmd = fmt.Sprintf("pardon %s", player)
+		cmd = fmt.Sprintf("pardon %s", safePlayer)
 	case "ark-survival-ascended", "conan-exiles":
-		cmd = fmt.Sprintf("unbanplayer %s", player)
+		cmd = fmt.Sprintf("unbanplayer %s", safePlayer)
 	}
 
-	_, err := b.SendConsoleCommand(ctx, id, cmd)
+	_, err = b.SendConsoleCommand(ctx, id, cmd)
 	return err
 }
 
@@ -173,7 +183,11 @@ func (b *Broker) WhitelistAdd(ctx context.Context, id, player string) error {
 	if !supportsWhitelist(s.Adapter) {
 		return ErrBanlistNotSupported
 	}
-	_, err := b.SendConsoleCommand(ctx, id, fmt.Sprintf("whitelist add %s", player))
+	safePlayer, err := sanitizePlayerName(s.Adapter, player)
+	if err != nil {
+		return fmt.Errorf("invalid player name: %w", err)
+	}
+	_, err = b.SendConsoleCommand(ctx, id, fmt.Sprintf("whitelist add %s", safePlayer))
 	return err
 }
 
@@ -188,7 +202,11 @@ func (b *Broker) WhitelistRemove(ctx context.Context, id, player string) error {
 	if !supportsWhitelist(s.Adapter) {
 		return ErrBanlistNotSupported
 	}
-	_, err := b.SendConsoleCommand(ctx, id, fmt.Sprintf("whitelist remove %s", player))
+	safePlayer, err := sanitizePlayerName(s.Adapter, player)
+	if err != nil {
+		return fmt.Errorf("invalid player name: %w", err)
+	}
+	_, err = b.SendConsoleCommand(ctx, id, fmt.Sprintf("whitelist remove %s", safePlayer))
 	return err
 }
 
