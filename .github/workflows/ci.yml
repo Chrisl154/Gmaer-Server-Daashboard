@@ -356,6 +356,97 @@ jobs:
             integration-test.log
 
   # ──────────────────────────────────────────────
+  # Playwright Browser E2E Tests
+  # ──────────────────────────────────────────────
+  playwright:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+
+      - name: Make daemon executable
+        run: chmod +x dist/daemon-linux-amd64
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Set up daemon test environment
+        run: |
+          mkdir -p /tmp/gdash-e2e/{config,data,tls}
+          # Self-signed cert so the daemon can start with TLS
+          openssl req -x509 -newkey rsa:2048 \
+            -keyout /tmp/gdash-e2e/tls/key.pem \
+            -out    /tmp/gdash-e2e/tls/cert.pem \
+            -days 1 -nodes -subj '/CN=localhost' 2>/dev/null
+          # Bcrypt hash for admin / TestPassword123!
+          pip3 install bcrypt -q
+          HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'TestPassword123!', bcrypt.gensalt(rounds=10)).decode())")
+          cat > /tmp/gdash-e2e/config/config.yaml <<CONF
+          address: ":8443"
+          tls:
+            cert_file: /tmp/gdash-e2e/tls/cert.pem
+            key_file:  /tmp/gdash-e2e/tls/key.pem
+          data_dir: /tmp/gdash-e2e/data
+          secrets:
+            key_file: /tmp/gdash-e2e/data/master.key
+          auth:
+            admin_password_hash: "$HASH"
+          CONF
+
+      - name: Start daemon
+        run: |
+          GDASH_CONFIG=/tmp/gdash-e2e/config/config.yaml dist/daemon-linux-amd64 &
+          timeout 30 bash -c \
+            'until curl -sf -k https://localhost:8443/healthz; do sleep 1; done'
+
+      - name: Start Vite dev server
+        working-directory: ui
+        run: |
+          npm run dev &
+          timeout 30 bash -c \
+            'until curl -sf http://localhost:3000; do sleep 1; done'
+        env:
+          VITE_DAEMON_URL: https://localhost:8443
+
+      - name: Install Playwright + Chromium
+        working-directory: tests/e2e/playwright
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        working-directory: tests/e2e/playwright
+        run: npx playwright test
+        env:
+          BASE_URL: http://localhost:3000
+          TEST_ADMIN_USER: admin
+          TEST_ADMIN_PASS: TestPassword123!
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            tests/e2e/playwright/playwright-report/
+            tests/e2e/playwright/test-results/
+
+  # ──────────────────────────────────────────────
   # Helm Chart Packaging
   # ──────────────────────────────────────────────
   helm-package:
