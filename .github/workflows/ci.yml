@@ -70,6 +70,98 @@ jobs:
             daemon/coverage.out
 
   # ──────────────────────────────────────────────
+  # SAST — gosec + semgrep
+  # ──────────────────────────────────────────────
+  sast:
+    name: SAST (gosec + semgrep)
+    runs-on: ubuntu-latest
+    # Runs independently — doesn't block build or release.
+    # Findings surface in the GitHub Security tab via SARIF upload.
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: daemon/go.sum
+
+      # ── gosec — Go security checker ──────────────────────────────────────
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec (SARIF output)
+        working-directory: daemon
+        run: |
+          gosec \
+            -fmt sarif \
+            -out ../gosec.sarif \
+            -exclude-generated \
+            ./... || true   # findings are non-blocking; visible in Security tab
+
+      - name: Upload gosec SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
+
+      - name: Run gosec (text summary for step log)
+        working-directory: daemon
+        run: |
+          gosec \
+            -fmt text \
+            -severity medium \
+            -exclude-generated \
+            ./... || true
+
+      # ── semgrep — multi-language SAST ────────────────────────────────────
+      - name: Install semgrep
+        run: pip3 install semgrep -q
+
+      - name: Run semgrep — Go backend
+        run: |
+          semgrep \
+            --config p/golang \
+            --config p/owasp-top-ten \
+            --sarif \
+            --output semgrep-go.sarif \
+            daemon/ || true
+
+      - name: Run semgrep — React / TypeScript frontend
+        run: |
+          semgrep \
+            --config p/react \
+            --config p/typescript \
+            --sarif \
+            --output semgrep-ui.sarif \
+            ui/src/ || true
+
+      - name: Upload semgrep Go SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep-go.sarif
+          category: semgrep-go
+
+      - name: Upload semgrep UI SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep-ui.sarif
+          category: semgrep-ui
+
+      - name: Upload SAST reports as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-reports
+          path: |
+            gosec.sarif
+            semgrep-go.sarif
+            semgrep-ui.sarif
+
+  # ──────────────────────────────────────────────
   # Lint
   # ──────────────────────────────────────────────
   lint:
