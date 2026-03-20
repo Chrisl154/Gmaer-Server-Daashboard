@@ -73,14 +73,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Resolve JWT secret — load from file or generate a new one.
-	// This runs before any service is initialised so the secret is always set.
-	jwtSecret, err := resolveJWTSecret(cfg.Storage.DataDir, logger)
-	if err != nil {
-		return fmt.Errorf("failed to resolve JWT secret: %w", err)
-	}
-	cfg.Auth.JWTSecret = jwtSecret
-
 	// Override with flags
 	if tlsCert != "" {
 		cfg.TLS.CertFile = tlsCert
@@ -100,6 +92,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to init secrets manager: %w", err)
 	}
+
+	// Resolve JWT secret — loads the encrypted secret from disk or generates a
+	// new 64-byte (128 hex char) secret, encrypts it via the secrets manager,
+	// and persists the ciphertext. Must run after secretsMgr is ready.
+	jwtSecret, err := resolveJWTSecret(cfg.Storage.DataDir, secretsMgr, logger)
+	if err != nil {
+		return fmt.Errorf("failed to resolve JWT secret: %w", err)
+	}
+	cfg.Auth.JWTSecret = jwtSecret
 
 	// Map config.AuthConfig → auth.Config (the two packages define parallel types)
 	authCfg := auth.Config{
@@ -289,40 +290,50 @@ func version() string {
 	return "1.0.0"
 }
 
-// resolveJWTSecret loads the JWT secret from {dataDir}/jwt_secret.
-// If the file does not exist, or the config contains the old placeholder,
-// a fresh 64-character (32-byte hex) secret is generated, persisted, and returned.
-// The secret file is created with mode 0600 so only the daemon user can read it.
-func resolveJWTSecret(dataDir string, logger *zap.Logger) (string, error) {
-	const placeholder = "change-me-in-production"
-	secretFile := filepath.Join(dataDir, "jwt_secret")
+// resolveJWTSecret loads the JWT secret from {dataDir}/jwt_secret.enc.
+// The file contains the secret encrypted by the secrets manager (AES-GCM via
+// the master key). On first boot the file does not exist: a fresh 64-byte
+// (128 hex char) secret is generated via crypto/rand, encrypted, and persisted.
+// The ciphertext file is created with mode 0600. Even if the file is exfiltrated,
+// the plaintext secret is unrecoverable without the master key.
+func resolveJWTSecret(dataDir string, mgr *secrets.Manager, logger *zap.Logger) (string, error) {
+	secretFile := filepath.Join(dataDir, "jwt_secret.enc")
 
-	// Try to read an existing secret first.
-	if data, err := os.ReadFile(secretFile); err == nil {
-		secret := strings.TrimSpace(string(data))
-		if secret != "" && secret != placeholder {
-			return secret, nil
+	// Try to load and decrypt an existing secret.
+	if ciphertext, err := os.ReadFile(secretFile); err == nil {
+		plaintext := strings.TrimSpace(string(ciphertext))
+		if plaintext != "" {
+			secret, decErr := mgr.Decrypt(plaintext)
+			if decErr == nil && secret != "" {
+				return secret, nil
+			}
+			// Decryption failed (e.g. master key rotated) — regenerate below.
+			logger.Warn("JWT secret decryption failed, regenerating", zap.Error(decErr))
 		}
 	}
 
-	// Generate a new 64-character (32-byte) random secret.
-	raw := make([]byte, 32)
+	// Generate a new 64-byte (128 hex char) random secret.
+	raw := make([]byte, 64)
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("crypto/rand failed: %w", err)
 	}
-	secret := hex.EncodeToString(raw) // 64 hex characters
+	secret := hex.EncodeToString(raw) // 128 hex characters
 
-	// Persist to data dir (0600 — owner read/write only).
+	// Encrypt and persist (0600 — owner read/write only).
+	ciphertext, err := mgr.Encrypt(secret)
+	if err != nil {
+		return "", fmt.Errorf("could not encrypt JWT secret: %w", err)
+	}
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return "", fmt.Errorf("could not create data dir: %w", err)
 	}
-	if err := os.WriteFile(secretFile, []byte(secret+"\n"), 0o600); err != nil {
-		return "", fmt.Errorf("could not write jwt_secret file: %w", err)
+	if err := os.WriteFile(secretFile, []byte(ciphertext+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("could not write jwt_secret.enc: %w", err)
 	}
 
-	logger.Warn("JWT secret auto-generated and saved",
+	logger.Warn("JWT secret auto-generated and saved (encrypted)",
 		zap.String("path", secretFile),
-		zap.String("action", "new installs are secure by default; set jwt_secret in config to override"),
+		zap.String("note", "set auth.jwt_secret in daemon.yaml to use a fixed secret instead"),
 	)
 	return secret, nil
 }
