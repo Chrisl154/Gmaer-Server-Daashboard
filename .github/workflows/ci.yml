@@ -545,6 +545,125 @@ jobs:
             tests/load/k6/summary.json
 
   # ──────────────────────────────────────────────
+  # Helm Smoke Test (kind cluster)
+  # ──────────────────────────────────────────────
+  helm-smoke:
+    name: Helm Smoke (kind)
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kind
+        run: |
+          curl -Lo /usr/local/bin/kind \
+            https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x /usr/local/bin/kind
+          kind version
+
+      - name: Install kubectl
+        run: |
+          curl -Lo /usr/local/bin/kubectl \
+            "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x /usr/local/bin/kubectl
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Create kind cluster
+        run: |
+          kind create cluster --name gdash-smoke --wait 60s
+          kubectl cluster-info --context kind-gdash-smoke
+
+      - name: Build Docker images
+        run: |
+          docker build -t gdash-daemon-test:latest daemon/
+          docker build -t gdash-ui-test:latest     ui/
+
+      - name: Load images into kind
+        run: |
+          kind load docker-image gdash-daemon-test:latest --name gdash-smoke
+          kind load docker-image gdash-ui-test:latest     --name gdash-smoke
+
+      - name: Lint Helm chart
+        run: helm lint helm/charts/games-dashboard -f tests/helm/values.kind.yaml
+
+      - name: helm install
+        run: |
+          helm install gdash-smoke helm/charts/games-dashboard \
+            --namespace gdash-smoke \
+            --create-namespace \
+            --values tests/helm/values.kind.yaml \
+            --timeout 5m \
+            --wait
+
+      - name: Wait for daemon rollout
+        run: |
+          kubectl rollout status deployment \
+            -l "app.kubernetes.io/component=daemon" \
+            -n gdash-smoke \
+            --timeout=120s
+
+      - name: Wait for UI rollout
+        run: |
+          kubectl rollout status deployment \
+            -l "app.kubernetes.io/component=ui" \
+            -n gdash-smoke \
+            --timeout=60s
+
+      - name: Smoke — daemon /healthz
+        run: |
+          kubectl port-forward \
+            -n gdash-smoke \
+            svc/gdash-smoke-games-dashboard-daemon 8443:8443 &
+          PF_PID=$!
+          sleep 3
+          curl -sf -k https://localhost:8443/healthz | tee /tmp/healthz.json
+          grep -q '"ok"' /tmp/healthz.json
+          kill $PF_PID
+
+      - name: Smoke — daemon /api/v1/version
+        run: |
+          kubectl port-forward \
+            -n gdash-smoke \
+            svc/gdash-smoke-games-dashboard-daemon 18443:8443 &
+          PF_PID=$!
+          sleep 3
+          curl -sf -k https://localhost:18443/api/v1/version | tee /tmp/version.json
+          python3 -c "import json,sys; d=json.load(open('/tmp/version.json')); assert 'version' in d, 'version key missing'"
+          kill $PF_PID
+
+      - name: Smoke — UI /healthz
+        run: |
+          kubectl port-forward \
+            -n gdash-smoke \
+            svc/gdash-smoke-games-dashboard-http 8080:80 &
+          PF_PID=$!
+          sleep 3
+          curl -sf http://localhost:8080/healthz | grep '"ok"'
+          kill $PF_PID
+
+      - name: Print pod status on failure
+        if: failure()
+        run: |
+          echo "=== Pod status ==="
+          kubectl get pods -n gdash-smoke -o wide
+          echo "=== Pod events ==="
+          kubectl get events -n gdash-smoke --sort-by='.lastTimestamp'
+          echo "=== Daemon logs ==="
+          kubectl logs -n gdash-smoke -l app.kubernetes.io/component=daemon \
+            --tail=60 || true
+          echo "=== UI logs ==="
+          kubectl logs -n gdash-smoke -l app.kubernetes.io/component=ui \
+            --tail=30 || true
+
+      - name: Delete kind cluster
+        if: always()
+        run: kind delete cluster --name gdash-smoke
+
+  # ──────────────────────────────────────────────
   # Helm Chart Packaging
   # ──────────────────────────────────────────────
   helm-package:
