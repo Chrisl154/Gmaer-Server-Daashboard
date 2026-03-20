@@ -447,6 +447,104 @@ jobs:
             tests/e2e/playwright/test-results/
 
   # ──────────────────────────────────────────────
+  # k6 Load / Performance Baseline
+  # ──────────────────────────────────────────────
+  load-test:
+    name: k6 Load Baseline
+    runs-on: ubuntu-latest
+    needs: [build]
+    # Non-gating: results are for trending, not blocking
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+
+      - name: Make daemon executable
+        run: chmod +x dist/daemon-linux-amd64
+
+      - name: Install k6
+        run: |
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] \
+            https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update -qq && sudo apt-get install -y k6
+
+      - name: Set up daemon test environment
+        run: |
+          mkdir -p /tmp/gdash-load/{config,data,tls}
+          openssl req -x509 -newkey rsa:2048 \
+            -keyout /tmp/gdash-load/tls/key.pem \
+            -out    /tmp/gdash-load/tls/cert.pem \
+            -days 1 -nodes -subj '/CN=localhost' 2>/dev/null
+          pip3 install bcrypt -q
+          HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'TestPassword123!', bcrypt.gensalt(rounds=10)).decode())")
+          cat > /tmp/gdash-load/config/config.yaml <<CONF
+          address: ":8443"
+          tls:
+            cert_file: /tmp/gdash-load/tls/cert.pem
+            key_file:  /tmp/gdash-load/tls/key.pem
+          data_dir: /tmp/gdash-load/data
+          secrets:
+            key_file: /tmp/gdash-load/data/master.key
+          auth:
+            admin_password_hash: "$HASH"
+          CONF
+
+      - name: Start daemon
+        run: |
+          GDASH_CONFIG=/tmp/gdash-load/config/config.yaml dist/daemon-linux-amd64 &
+          timeout 30 bash -c \
+            'until curl -sf -k https://localhost:8443/healthz; do sleep 1; done'
+
+      - name: Run k6 smoke test
+        run: |
+          k6 run \
+            --env BASE_URL=https://localhost:8443 \
+            --env ADMIN_PASS=TestPassword123! \
+            --out json=tests/load/k6/results.json \
+            --summary-export tests/load/k6/summary.json \
+            tests/load/k6/smoke.js
+
+      - name: Annotate PR with k6 summary
+        if: always()
+        run: |
+          if [ -f tests/load/k6/summary.json ]; then
+            echo "### k6 Load Baseline Results" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat tests/load/k6/summary.json | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          metrics = d.get('metrics', {})
+          for name in ['http_req_duration', 'http_req_failed', 'auth_login_duration', 'api_request_duration']:
+              m = metrics.get(name, {})
+              v = m.get('values', {})
+              if 'p(95)' in v:
+                  print(f'{name}: p95={v[\"p(95)\"]:.1f}ms  p99={v.get(\"p(99)\",0):.1f}ms')
+              elif 'rate' in v:
+                  print(f'{name}: rate={v[\"rate\"]:.4f}')
+          " 2>/dev/null || cat tests/load/k6/summary.json
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload k6 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: |
+            tests/load/k6/results.json
+            tests/load/k6/summary.json
+
+  # ──────────────────────────────────────────────
   # Helm Chart Packaging
   # ──────────────────────────────────────────────
   helm-package:
