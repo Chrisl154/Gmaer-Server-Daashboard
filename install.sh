@@ -86,9 +86,41 @@ DETECTED_IP=$(detect_ip)
 gen_password() {
   python3 -c "
 import secrets, string
-chars = string.ascii_letters + string.digits + '!@#%^&*'
-print(''.join(secrets.choice(chars) for _ in range(16)))
-" 2>/dev/null || openssl rand -base64 12 | tr -d '/+='
+lower  = string.ascii_lowercase
+upper  = string.ascii_uppercase
+digits = string.digits
+special= '!@#%^&*'
+# Guarantee at least one of each required class, then pad to 16 chars total
+pool = lower + upper + digits + special
+pwd  = [secrets.choice(lower), secrets.choice(upper),
+        secrets.choice(digits), secrets.choice(special)]
+pwd += [secrets.choice(pool) for _ in range(12)]
+secrets.SystemRandom().shuffle(pwd)
+print(''.join(pwd))
+" 2>/dev/null || openssl rand -base64 18 | tr -d '/+='
+}
+
+# ── Validate password complexity ───────────────────────────────────────────────
+# Returns 0 (valid) or prints an error message and returns 1.
+# Rules: ≥12 chars, ≥1 uppercase, ≥1 lowercase, ≥1 digit, ≥1 special char.
+validate_password() {
+  local pw="$1"
+  if [[ ${#pw} -lt 12 ]]; then
+    echo "  Password must be at least 12 characters."; return 1
+  fi
+  if ! [[ "$pw" =~ [A-Z] ]]; then
+    echo "  Password must contain at least one uppercase letter."; return 1
+  fi
+  if ! [[ "$pw" =~ [a-z] ]]; then
+    echo "  Password must contain at least one lowercase letter."; return 1
+  fi
+  if ! [[ "$pw" =~ [0-9] ]]; then
+    echo "  Password must contain at least one digit."; return 1
+  fi
+  if ! [[ "$pw" =~ [^A-Za-z0-9] ]]; then
+    echo "  Password must contain at least one special character (!@#%^&* etc)."; return 1
+  fi
+  return 0
 }
 
 # =============================================================================
@@ -124,11 +156,16 @@ wt_input() {
 # wt_password VAR_NAME TITLE PROMPT
 wt_password() {
   local _var="$1" _title="$2" _prompt="$3"
-  local _result _confirm
+  local _result _confirm _err
   while true; do
     _result=$(whiptail --title "$_title" \
       --passwordbox "$_prompt" 10 60 "" 3>&1 1>&2 2>&3) || true
     [[ -z "$_result" ]] && break  # empty = keep auto-generated
+    # Complexity check
+    _err=$(validate_password "$_result" 2>&1) || {
+      whiptail --title "$_title" --msgbox "Weak password:\n$_err\n\nRequirements: ≥12 chars, uppercase, lowercase, digit, special character." 12 60
+      continue
+    }
     _confirm=$(whiptail --title "$_title" \
       --passwordbox "Confirm password:" 10 60 "" 3>&1 1>&2 2>&3) || true
     if [[ "$_result" == "$_confirm" ]]; then
@@ -155,11 +192,17 @@ rl_input() {
 
 rl_password() {
   local _var="$1" _prompt="$2"
-  local _result="" _confirm=""
+  local _result="" _confirm="" _err
   while true; do
     IFS= read -r -s -p "  $_prompt (blank = auto-generate): " _result </dev/tty 2>/dev/null || true
     echo
     [[ -z "$_result" ]] && break
+    # Complexity check
+    if ! _err=$(validate_password "$_result" 2>&1); then
+      echo "  $_err"
+      echo "  Requirements: ≥12 chars, uppercase, lowercase, digit, special character."
+      continue
+    fi
     IFS= read -r -s -p "  Confirm password: " _confirm </dev/tty 2>/dev/null || true
     echo
     [[ "$_result" == "$_confirm" ]] && break
