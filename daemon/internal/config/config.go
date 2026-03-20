@@ -195,7 +195,7 @@ func defaults() *Config {
 		},
 		Auth: AuthConfig{
 			Local:    LocalAuthConfig{Enabled: true},
-			TokenTTL: 24 * time.Hour,
+			TokenTTL: 2 * time.Hour,
 			// JWTSecret intentionally left empty — main.go calls resolveJWTSecret
 			// which loads an existing secret from data_dir/jwt_secret or generates
 			// a fresh 64-character random secret and persists it.

@@ -194,12 +194,16 @@ type AuditEntry struct {
 
 // Service handles authentication
 type Service struct {
-	cfg        Config
-	secrets    *secrets.Manager
-	logger     *zap.Logger
-	users      map[string]*User
-	auditLog   []AuditEntry
-	tokenCache map[string]*Claims
+	cfg      Config
+	secrets  *secrets.Manager
+	logger   *zap.Logger
+	users    map[string]*User
+	auditLog []AuditEntry
+
+	// blocklist holds revoked JWT tokens until their natural expiry.
+	// Only logged-out tokens are stored here — keeps memory footprint minimal.
+	blocklist   map[string]time.Time // raw token -> expiry time
+	blocklistMu sync.Mutex
 
 	// OIDC — initialized once on first use
 	oidcOnce     sync.Once
@@ -221,12 +225,12 @@ type Service struct {
 // NewService creates a new auth service
 func NewService(cfg Config, secretsMgr *secrets.Manager, logger *zap.Logger) (*Service, error) {
 	svc := &Service{
-		cfg:        cfg,
-		secrets:    secretsMgr,
-		logger:     logger,
-		users:      make(map[string]*User),
-		auditLog:   []AuditEntry{},
-		tokenCache: make(map[string]*Claims),
+		cfg:       cfg,
+		secrets:   secretsMgr,
+		logger:    logger,
+		users:     make(map[string]*User),
+		auditLog:  []AuditEntry{},
+		blocklist: make(map[string]time.Time),
 	}
 
 	// Seed admin user only when a password hash exists.
@@ -302,7 +306,6 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 		return nil, fmt.Errorf("failed to sign token: %w", err)
 	}
 
-	s.tokenCache[tokenStr] = claims
 	user.LastLogin = time.Now()
 
 	s.audit(user.ID, user.Username, "login", "auth", "", true, nil)
@@ -314,18 +317,56 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 	}, nil
 }
 
-// Logout invalidates a token
-func (s *Service) Logout(ctx context.Context, token string) error {
-	delete(s.tokenCache, token)
+// Logout immediately revokes a token by adding it to the blocklist.
+// The token remains in the blocklist until its natural JWT expiry so that
+// ValidateToken can reject any reuse attempt within the original TTL window.
+func (s *Service) Logout(ctx context.Context, rawHeader string) error {
+	tokenStr := strings.TrimPrefix(rawHeader, "Bearer ")
+	tokenStr = strings.TrimSpace(tokenStr)
+	if tokenStr == "" {
+		return nil
+	}
+
+	// Parse without full validation so we can read the expiry even if the
+	// clock has already passed it (shouldn't happen at logout but be safe).
+	var expiresAt time.Time
+	parsed, _ := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
+		return []byte(s.cfg.JWTSecret), nil
+	})
+	if parsed != nil {
+		if c, ok := parsed.Claims.(*Claims); ok && c.ExpiresAt != nil {
+			expiresAt = c.ExpiresAt.Time
+		}
+	}
+	if expiresAt.IsZero() {
+		expiresAt = time.Now().Add(s.cfg.TokenTTL)
+	}
+
+	s.blocklistMu.Lock()
+	s.blocklist[tokenStr] = expiresAt
+	s.blocklistMu.Unlock()
+
+	s.purgeBlocklist()
 	return nil
 }
 
-// ValidateToken validates and parses a JWT token
+// purgeBlocklist removes expired entries so the blocklist stays bounded.
+func (s *Service) purgeBlocklist() {
+	now := time.Now()
+	s.blocklistMu.Lock()
+	defer s.blocklistMu.Unlock()
+	for tok, exp := range s.blocklist {
+		if now.After(exp) {
+			delete(s.blocklist, tok)
+		}
+	}
+}
+
+// ValidateToken validates and parses a JWT token, and rejects revoked tokens.
 func (s *Service) ValidateToken(ctx context.Context, tokenStr string) (*Claims, error) {
 	// Strip "Bearer " prefix
-	if len(tokenStr) > 7 && tokenStr[:7] == "Bearer " {
-		tokenStr = tokenStr[7:]
-	}
+	tokenStr = strings.TrimPrefix(tokenStr, "Bearer ")
+	tokenStr = strings.TrimSpace(tokenStr)
 
 	// API key path — tokens start with "gdash_"
 	if strings.HasPrefix(tokenStr, "gdash_") {
@@ -345,6 +386,14 @@ func (s *Service) ValidateToken(ctx context.Context, tokenStr string) (*Claims, 
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token claims")
+	}
+
+	// Reject tokens that have been explicitly revoked via Logout.
+	s.blocklistMu.Lock()
+	_, revoked := s.blocklist[tokenStr]
+	s.blocklistMu.Unlock()
+	if revoked {
+		return nil, fmt.Errorf("token has been revoked")
 	}
 
 	return claims, nil
@@ -590,7 +639,6 @@ func (s *Service) OIDCCallback(ctx context.Context, code, state string) (*LoginR
 		return nil, fmt.Errorf("failed to sign JWT: %w", err)
 	}
 
-	s.tokenCache[tokenStr] = jwtClaims
 	s.audit(user.ID, user.Username, "oidc-login", "auth", "", true,
 		map[string]string{"sub": oidcClaims.Sub, "issuer": s.cfg.OIDC.Issuer})
 
@@ -889,7 +937,6 @@ func (s *Service) SteamCallback(ctx context.Context, rawQuery string) (*LoginRes
 	if err != nil {
 		return nil, fmt.Errorf("steam: failed to sign JWT: %w", err)
 	}
-	s.tokenCache[tokenStr] = jwtClaims
 	s.audit(user.ID, user.Username, "steam-login", "auth", "", true, map[string]string{"steam_id": steamID})
 
 	return &LoginResponse{
