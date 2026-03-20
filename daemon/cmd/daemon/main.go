@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/games-dashboard/daemon/internal/api"
@@ -69,6 +72,14 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+
+	// Resolve JWT secret — load from file or generate a new one.
+	// This runs before any service is initialised so the secret is always set.
+	jwtSecret, err := resolveJWTSecret(cfg.Storage.DataDir, logger)
+	if err != nil {
+		return fmt.Errorf("failed to resolve JWT secret: %w", err)
+	}
+	cfg.Auth.JWTSecret = jwtSecret
 
 	// Override with flags
 	if tlsCert != "" {
@@ -276,4 +287,42 @@ func initLogger(level string) (*zap.Logger, error) {
 
 func version() string {
 	return "1.0.0"
+}
+
+// resolveJWTSecret loads the JWT secret from {dataDir}/jwt_secret.
+// If the file does not exist, or the config contains the old placeholder,
+// a fresh 64-character (32-byte hex) secret is generated, persisted, and returned.
+// The secret file is created with mode 0600 so only the daemon user can read it.
+func resolveJWTSecret(dataDir string, logger *zap.Logger) (string, error) {
+	const placeholder = "change-me-in-production"
+	secretFile := filepath.Join(dataDir, "jwt_secret")
+
+	// Try to read an existing secret first.
+	if data, err := os.ReadFile(secretFile); err == nil {
+		secret := strings.TrimSpace(string(data))
+		if secret != "" && secret != placeholder {
+			return secret, nil
+		}
+	}
+
+	// Generate a new 64-character (32-byte) random secret.
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("crypto/rand failed: %w", err)
+	}
+	secret := hex.EncodeToString(raw) // 64 hex characters
+
+	// Persist to data dir (0600 — owner read/write only).
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		return "", fmt.Errorf("could not create data dir: %w", err)
+	}
+	if err := os.WriteFile(secretFile, []byte(secret+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("could not write jwt_secret file: %w", err)
+	}
+
+	logger.Warn("JWT secret auto-generated and saved",
+		zap.String("path", secretFile),
+		zap.String("action", "new installs are secure by default; set jwt_secret in config to override"),
+	)
+	return secret, nil
 }

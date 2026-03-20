@@ -194,9 +194,11 @@ func defaults() *Config {
 			KeyFile:  "/etc/games-dashboard/tls/server.key",
 		},
 		Auth: AuthConfig{
-			Local: LocalAuthConfig{Enabled: true},
+			Local:    LocalAuthConfig{Enabled: true},
 			TokenTTL: 24 * time.Hour,
-			JWTSecret: "change-me-in-production",
+			// JWTSecret intentionally left empty — main.go calls resolveJWTSecret
+			// which loads an existing secret from data_dir/jwt_secret or generates
+			// a fresh 64-character random secret and persists it.
 		},
 		Secrets: SecretsConfig{
 			Backend: "local",
