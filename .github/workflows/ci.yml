@@ -37,6 +37,13 @@ jobs:
           go test ./... -race -coverprofile=coverage.out
           go tool cover -html=coverage.out -o coverage.html
 
+      - name: Check Go coverage threshold (60%)
+        working-directory: daemon
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $3}' | tr -d '%')
+          echo "Total coverage: ${COVERAGE}%"
+          awk -v cov="$COVERAGE" 'BEGIN { if (cov+0 < 60) { print "Coverage " cov "% is below the 60% threshold"; exit 1 } }'
+
       - name: Run CLI Build Check
         working-directory: cli
         run: go build ./...
@@ -52,13 +59,15 @@ jobs:
         working-directory: ui
         run: |
           npm ci
-          npm run test -- --run
+          npm run test -- --run --coverage
 
       - name: Upload Go coverage
         uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: daemon/coverage.html
+          path: |
+            daemon/coverage.html
+            daemon/coverage.out
 
   # ──────────────────────────────────────────────
   # Lint
@@ -93,7 +102,7 @@ jobs:
         working-directory: ui
         run: |
           npm ci
-          npm run lint || true   # warn only until lint is fully clean
+          npm run lint
 
   # ──────────────────────────────────────────────
   # Build Binaries
