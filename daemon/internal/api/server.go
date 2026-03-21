@@ -142,7 +142,8 @@ func (s *Server) registerRoutes() {
 	r.GET("/metrics", s.handleMetrics)
 
 	// Public auth endpoints (must be outside the authenticated group)
-	r.POST("/api/v1/auth/login", s.login)
+	// Rate-limited: 5 attempts per minute per IP to block brute-force.
+	r.POST("/api/v1/auth/login", rateLimitMiddleware(5.0/60, 5), s.login)
 	r.GET("/api/v1/auth/oidc/login", s.oidcLogin)
 	r.GET("/api/v1/auth/oidc/callback", s.oidcCallback)
 	r.GET("/api/v1/auth/steam/login", s.steamLogin)
@@ -225,7 +226,7 @@ func (s *Server) registerRoutes() {
 	// Auth (protected — login/oidc are registered as public routes above)
 	v1.POST("/auth/logout", s.logout)
 	v1.POST("/auth/totp/setup", s.setupTOTP)
-	v1.POST("/auth/totp/verify", s.verifyTOTP)
+	v1.POST("/auth/totp/verify", rateLimitMiddleware(5.0/60, 5), s.verifyTOTP)
 	v1.GET("/auth/totp/recovery-codes", s.getRecoveryCodesCount)
 	v1.POST("/auth/totp/recovery-codes/regenerate", s.regenerateRecoveryCodes)
 	v1.GET("/auth/totp/recovery-codes/download", s.downloadRecoveryCodes)
@@ -352,8 +353,10 @@ func (s *Server) createServer(c *gin.Context) {
 	if err != nil {
 		s.recordEvent(c, "create_server", req.ID, false, gin.H{"name": req.Name, "adapter": req.Adapter, "error": err.Error()})
 		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "invalid server ID") || strings.Contains(err.Error(), "already exists") {
+		if strings.Contains(err.Error(), "invalid server ID") {
 			status = http.StatusBadRequest
+		} else if strings.Contains(err.Error(), "already exists") {
+			status = http.StatusConflict
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
@@ -391,7 +394,11 @@ func (s *Server) deleteServer(c *gin.Context) {
 	id := c.Param("id")
 	if err := s.cfg.Broker.DeleteServer(c.Request.Context(), id); err != nil {
 		s.recordEvent(c, "delete_server", id, false, gin.H{"error": err.Error()})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "running") || strings.Contains(err.Error(), "starting") {
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	s.recordEvent(c, "delete_server", id, true, nil)
@@ -711,6 +718,8 @@ func (s *Server) downloadFile(c *gin.Context) {
 func (s *Server) uploadFile(c *gin.Context) {
 	id := c.Param("id")
 	destDir := c.DefaultQuery("dir", "/")
+	// Limit upload body to 100 MB to prevent resource exhaustion.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 100<<20)
 	form, err := c.MultipartForm()
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "multipart form expected"})

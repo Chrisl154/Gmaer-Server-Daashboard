@@ -2,12 +2,14 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -158,13 +160,19 @@ func (s *Server) applyUpdate(c *gin.Context) {
 
 	// Setsid detaches the child into its own session so it survives when systemd
 	// kills the current daemon process during the restart step.
-	cmd := exec.Command("bash", updateScriptPath, req.Branch) //nolint:gosec
+	// 10-minute timeout guards against a hung update script.
+	updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	cmd := exec.CommandContext(updateCtx, "bash", updateScriptPath, req.Branch) //nolint:gosec
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
+		updateCancel()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to launch update script: " + err.Error()})
 		return
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		defer updateCancel()
+		_ = cmd.Wait()
+	}()
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"status": "update_started",

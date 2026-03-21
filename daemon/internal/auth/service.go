@@ -262,6 +262,11 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
+	// Enforce global MFA requirement before issuing a token.
+	if s.cfg.MFARequired && !user.TOTPEnabled {
+		return nil, fmt.Errorf("MFA is required — please set up two-factor authentication before logging in")
+	}
+
 	mfaDone := false
 
 	if user.TOTPEnabled {

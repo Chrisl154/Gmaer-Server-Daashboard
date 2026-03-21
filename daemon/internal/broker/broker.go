@@ -966,9 +966,21 @@ func (b *Broker) UpdateServer(ctx context.Context, id string, req UpdateServerRe
 		s.AutoUpdateSchedule = *req.AutoUpdateSchedule
 	}
 	if req.StartSchedule != nil {
+		if *req.StartSchedule != "" {
+			if _, err := cron.ParseStandard(*req.StartSchedule); err != nil {
+				b.mu.Unlock()
+				return nil, fmt.Errorf("invalid start_schedule cron expression %q: %w", *req.StartSchedule, err)
+			}
+		}
 		s.StartSchedule = *req.StartSchedule
 	}
 	if req.StopSchedule != nil {
+		if *req.StopSchedule != "" {
+			if _, err := cron.ParseStandard(*req.StopSchedule); err != nil {
+				b.mu.Unlock()
+				return nil, fmt.Errorf("invalid stop_schedule cron expression %q: %w", *req.StopSchedule, err)
+			}
+		}
 		s.StopSchedule = *req.StopSchedule
 	}
 	// Capture state before releasing lock.
@@ -2566,7 +2578,9 @@ func (b *Broker) TriggerCVEScan(ctx context.Context) (*Job, error) {
 	job := b.newJob("cve-scan", "system")
 	go func() {
 		b.updateJob(job.ID, "running", 10, "Running CVE scan...")
-		if _, err := b.sbomSvc.TriggerScan(context.Background()); err != nil {
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer scanCancel()
+		if _, err := b.sbomSvc.TriggerScan(scanCtx); err != nil {
 			b.updateJob(job.ID, "failed", 0, err.Error())
 			return
 		}
