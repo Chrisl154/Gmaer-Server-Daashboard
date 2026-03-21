@@ -1043,9 +1043,11 @@ func (s *Server) createUser(c *gin.Context) {
 	}
 	user, err := s.cfg.AuthSvc.CreateUser(c.Request.Context(), req)
 	if err != nil {
+		s.recordEvent(c, "user.create", "user:"+req.Username, false, map[string]any{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "user.create", "user:"+user.ID, true, map[string]any{"username": req.Username, "roles": req.Roles})
 	c.JSON(http.StatusCreated, user)
 }
 
@@ -1058,18 +1060,22 @@ func (s *Server) updateUser(c *gin.Context) {
 	}
 	user, err := s.cfg.AuthSvc.UpdateUser(c.Request.Context(), userID, req)
 	if err != nil {
+		s.recordEvent(c, "user.update", "user:"+userID, false, map[string]any{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "user.update", "user:"+userID, true, map[string]any{"username": user.Username, "roles": req.Roles})
 	c.JSON(http.StatusOK, user)
 }
 
 func (s *Server) deleteUser(c *gin.Context) {
 	userID := c.Param("userId")
 	if err := s.cfg.AuthSvc.DeleteUser(c.Request.Context(), userID); err != nil {
+		s.recordEvent(c, "user.delete", "user:"+userID, false, map[string]any{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	s.recordEvent(c, "user.delete", "user:"+userID, true, nil)
 	c.JSON(http.StatusNoContent, nil)
 }
 
