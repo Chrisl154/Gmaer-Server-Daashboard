@@ -2301,6 +2301,30 @@ func (b *Broker) TriggerBackup(ctx context.Context, serverID string, req BackupR
 }
 
 func (b *Broker) RestoreBackup(ctx context.Context, serverID, backupID string) (*Job, error) {
+	// Stop the server before restoring to avoid file corruption.
+	b.mu.RLock()
+	s, ok := b.servers[serverID]
+	b.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("server not found: %s", serverID)
+	}
+
+	if s.State == StateRunning || s.State == StateStarting {
+		if err := b.StopServer(ctx, serverID); err != nil {
+			return nil, fmt.Errorf("failed to stop server before restore: %w", err)
+		}
+		// Poll until stopped (mirrors RestartServer logic; max 15 s grace + 5 s buffer).
+		for i := 0; i < 40; i++ {
+			time.Sleep(500 * time.Millisecond)
+			b.mu.RLock()
+			state := b.servers[serverID].State
+			b.mu.RUnlock()
+			if state == StateStopped || state == StateError {
+				break
+			}
+		}
+	}
+
 	svcJob, err := b.backupSvc.Restore(ctx, serverID, backupID)
 	if err != nil {
 		return nil, err
