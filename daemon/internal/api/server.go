@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -28,6 +29,10 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
+
+// validServerID matches safe server IDs — same rule as broker.validServerID.
+// Enforced in serverACLMiddleware before any handler runs.
+var validServerID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // Config holds API server configuration
 type Config struct {
@@ -1635,6 +1640,12 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 // Must run after authMiddleware (requires "user" in context).
 func (s *Server) serverACLMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Validate the server ID before anything else — prevents path traversal.
+		if !validServerID.MatchString(c.Param("id")) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid server ID"})
+			c.Abort()
+			return
+		}
 		claims := s.getUser(c)
 		if claims == nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
