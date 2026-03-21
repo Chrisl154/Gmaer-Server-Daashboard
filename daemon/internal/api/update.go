@@ -116,7 +116,45 @@ func (s *Server) applyUpdate(c *gin.Context) {
 		return
 	}
 
+	// Verify the tip commit is GPG-signed before applying unless the operator
+	// has explicitly opted out via updates.require_signed_commits: false.
+	requireSigned := s.cfg.DaemonCfg == nil || s.cfg.DaemonCfg.Updates.RequireSignedCommits
+	if requireSigned {
+		// Fetch so we have the latest remote refs.
+		_ = exec.Command("git", "-C", repoDirPath, "fetch", "origin", "--quiet").Run() //nolint:gosec
+
+		// Resolve the tip commit of origin/<branch>.
+		tipOut, err := exec.Command("git", "-C", repoDirPath, "rev-parse", "origin/"+req.Branch).Output() //nolint:gosec
+		if err != nil {
+			s.recordEvent(c, "update.apply", "daemon", false, map[string]any{"branch": req.Branch, "error": "could not resolve tip commit"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not resolve tip commit for branch " + req.Branch})
+			return
+		}
+		tipCommit := strings.TrimSpace(string(tipOut))
+
+		// Verify the commit carries a valid GPG signature.
+		verifyCmd := exec.Command("git", "-C", repoDirPath, "verify-commit", tipCommit) //nolint:gosec
+		if out, err := verifyCmd.CombinedOutput(); err != nil {
+			s.cfg.Logger.Warn("Update blocked — tip commit is not GPG-signed",
+				zap.String("branch", req.Branch),
+				zap.String("commit", tipCommit),
+				zap.String("gpg_output", string(out)),
+			)
+			s.recordEvent(c, "update.apply", "daemon", false, map[string]any{
+				"branch": req.Branch,
+				"commit": tipCommit,
+				"reason": "unsigned commit",
+			})
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "Update blocked: the tip commit on " + req.Branch + " is not GPG-signed. " +
+					"Set updates.require_signed_commits: false in daemon.yaml to allow unsigned updates.",
+			})
+			return
+		}
+	}
+
 	s.cfg.Logger.Info("Starting self-update", zap.String("branch", req.Branch))
+	s.recordEvent(c, "update.apply", "daemon", true, map[string]any{"branch": req.Branch})
 
 	// Setsid detaches the child into its own session so it survives when systemd
 	// kills the current daemon process during the restart step.

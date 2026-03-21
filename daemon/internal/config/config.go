@@ -53,6 +53,14 @@ type Config struct {
 	LogRotation     LogRotationConfig   `yaml:"log_rotation" json:"log_rotation"`
 	LogLevel        string              `yaml:"log_level" json:"log_level"`
 	DataDir         string              `yaml:"data_dir" json:"data_dir"`
+	Updates         UpdateConfig        `yaml:"updates" json:"updates"`
+}
+
+// UpdateConfig controls self-update behaviour.
+type UpdateConfig struct {
+	// RequireSignedCommits rejects updates whose tip commit is not GPG-signed.
+	// Set to false only if the repository does not use commit signing.
+	RequireSignedCommits bool `yaml:"require_signed_commits" json:"require_signed_commits"`
 }
 
 type TLSConfig struct {
@@ -227,5 +235,8 @@ func defaults() *Config {
 		},
 		LogLevel: "info",
 		DataDir:  "/var/lib/games-dashboard",
+		Updates: UpdateConfig{
+			RequireSignedCommits: true,
+		},
 	}
 }
