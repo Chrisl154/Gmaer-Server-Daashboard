@@ -17,14 +17,14 @@ import (
 
 // EmailConfig mirrors config.EmailConfig — duplicated here to avoid an import cycle.
 type EmailConfig struct {
-	Enabled  bool
-	SMTPHost string
-	SMTPPort int
-	Username string
-	Password string
-	From     string
-	To       []string
-	UseTLS   bool
+	Enabled  bool     `json:"enabled"`
+	SMTPHost string   `json:"smtp_host"`
+	SMTPPort int      `json:"smtp_port"`
+	Username string   `json:"username"`
+	Password string   `json:"-"` // never serialized — use PasswordSet in API responses
+	From     string   `json:"from"`
+	To       []string `json:"to"`
+	UseTLS   bool     `json:"use_tls"`
 }
 
 type Config struct {
@@ -235,16 +235,16 @@ func (s *Service) sendEmail(cfg *EmailConfig, subject, body string) error {
 			return fmt.Errorf("SMTP authentication failed (check username/password)")
 		}
 		if err := c.Mail(cfg.From); err != nil {
-			return err
+			return fmt.Errorf("SMTP MAIL FROM failed: %w", sanitizeSMTPErr(err))
 		}
 		for _, to := range cfg.To {
 			if err := c.Rcpt(to); err != nil {
-				return err
+				return fmt.Errorf("SMTP RCPT TO failed: %w", sanitizeSMTPErr(err))
 			}
 		}
 		w, err := c.Data()
 		if err != nil {
-			return err
+			return fmt.Errorf("SMTP DATA failed: %w", sanitizeSMTPErr(err))
 		}
 		defer w.Close()
 		_, err = w.Write(msg)
@@ -252,18 +252,26 @@ func (s *Service) sendEmail(cfg *EmailConfig, subject, body string) error {
 	}
 
 	// STARTTLS (port 587). smtp.SendMail bundles auth internally; if it fails
-	// due to an auth error the server response may contain encoded credentials,
-	// so we replace auth-related errors with a generic message.
+	// the server response may contain encoded credentials, so sanitize all errors.
 	if err := smtp.SendMail(addr, auth, cfg.From, cfg.To, msg); err != nil {
-		errStr := err.Error()
-		if strings.Contains(errStr, "auth") || strings.Contains(errStr, "Auth") ||
-			strings.Contains(errStr, "535") || strings.Contains(errStr, "534") ||
-			strings.Contains(errStr, "username") || strings.Contains(errStr, "password") {
-			return fmt.Errorf("SMTP authentication failed (check username/password)")
-		}
-		return err
+		return sanitizeSMTPErr(err)
 	}
 	return nil
+}
+
+// sanitizeSMTPErr strips server-challenge details from SMTP errors that could
+// leak credentials (e.g. base64-encoded PLAIN auth tokens in 535 responses).
+func sanitizeSMTPErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	errStr := err.Error()
+	if strings.ContainsAny(errStr, "535 534 auth Auth username password credential") ||
+		strings.Contains(errStr, "auth") || strings.Contains(errStr, "535") ||
+		strings.Contains(errStr, "534") || strings.Contains(errStr, "credential") {
+		return fmt.Errorf("SMTP authentication failed (check username/password)")
+	}
+	return err
 }
 
 func (s *Service) post(cfg Config, event, serverName, message string) error {

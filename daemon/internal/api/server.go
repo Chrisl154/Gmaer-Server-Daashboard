@@ -1702,7 +1702,19 @@ func (s *Server) getNotifications(c *gin.Context) {
 		"webhook_url":    cfg.WebhookURL,
 		"webhook_format": cfg.WebhookFormat,
 		"events":         cfg.Events,
-		"email":          cfg.Email,
+	}
+	if cfg.Email != nil {
+		// Never return the password — send a boolean so the UI can show "configured"
+		resp["email"] = gin.H{
+			"enabled":      cfg.Email.Enabled,
+			"smtp_host":    cfg.Email.SMTPHost,
+			"smtp_port":    cfg.Email.SMTPPort,
+			"username":     cfg.Email.Username,
+			"password_set": cfg.Email.Password != "",
+			"from":         cfg.Email.From,
+			"to":           cfg.Email.To,
+			"use_tls":      cfg.Email.UseTLS,
+		}
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -1733,6 +1745,11 @@ func (s *Server) patchNotifications(c *gin.Context) {
 		cur.Events = body.Events
 	}
 	if body.Email != nil {
+		// Preserve the stored password if the client sent an empty one —
+		// the GET response never returns the password, so the client can't echo it back.
+		if body.Email.Password == "" && cur.Email != nil {
+			body.Email.Password = cur.Email.Password
+		}
 		cur.Email = body.Email
 	}
 	s.cfg.NotificationSvc.UpdateConfig(cur)
