@@ -30,9 +30,11 @@ type Config struct {
 	OIDC     *OIDCConfig      `yaml:"oidc,omitempty" json:"oidc,omitempty"`
 	SAML     *SAMLConfig      `yaml:"saml,omitempty" json:"saml,omitempty"`
 	Steam    *SteamConfig     `yaml:"steam,omitempty" json:"steam,omitempty"`
-	JWTSecret string          `yaml:"jwt_secret" json:"jwt_secret"`
-	TokenTTL time.Duration    `yaml:"token_ttl" json:"token_ttl"`
+	JWTSecret   string        `yaml:"jwt_secret" json:"jwt_secret"`
+	TokenTTL    time.Duration `yaml:"token_ttl" json:"token_ttl"`
 	MFARequired bool          `yaml:"mfa_required" json:"mfa_required"`
+	// DataDir is the directory where users.json and audit.log are persisted.
+	DataDir string `yaml:"data_dir" json:"-"`
 }
 
 type LocalAuthConfig struct {
@@ -234,19 +236,13 @@ func NewService(cfg Config, secretsMgr *secrets.Manager, logger *zap.Logger) (*S
 		blocklist: make(map[string]time.Time),
 	}
 
-	// Seed admin user only when a password hash exists.
-	// An empty hash means the system has not been bootstrapped yet — seeding
-	// the user without a hash would cause IsInitialized() to return true and
-	// permanently block the bootstrap endpoint while making login impossible.
-	if cfg.Local.Enabled && cfg.Local.Admin.Username != "" && cfg.Local.Admin.PasswordHash != "" {
-		svc.users[cfg.Local.Admin.Username] = &User{
-			ID:           "admin-0",
-			Username:     cfg.Local.Admin.Username,
-			PasswordHash: cfg.Local.Admin.PasswordHash,
-			Roles:        []string{"admin"},
-			CreatedAt:    time.Now(),
-		}
-	}
+	// Load persisted users from disk first, then merge the admin from config
+	// so daemon.yaml remains authoritative for the admin password.
+	svc.loadUsers()
+	svc.mergeAdminFromConfig()
+
+	// Load the persisted audit log into memory.
+	svc.loadAuditLog()
 
 	// P39: periodically evict expired tokens from the blocklist so it stays bounded.
 	go func() {
@@ -322,6 +318,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 	}
 
 	user.LastLogin = time.Now()
+	go s.saveUsers()
 
 	s.audit(user.ID, user.Username, "login", "auth", "", true, nil)
 
@@ -430,8 +427,9 @@ func (s *Service) validateAPIKey(raw string) (*Claims, error) {
 			if key.ExpiresAt != nil && now.After(*key.ExpiresAt) {
 				return nil, fmt.Errorf("API key expired")
 			}
-			// Update last-used timestamp.
+			// Update last-used timestamp and persist asynchronously.
 			u.APIKeys[i].LastUsed = &now
+			go s.saveUsers()
 			return &Claims{
 				UserID:   u.ID,
 				Username: u.Username,
@@ -497,6 +495,7 @@ func (s *Service) VerifyTOTP(ctx context.Context, claims *Claims, code string) (
 	}
 	user.TOTPEnabled = true
 	user.RecoveryCodes = hashes // store bcrypt hashes, not plaintext
+	go s.saveUsers()
 
 	return &TOTPVerifyResponse{RecoveryCodes: codes}, nil // return plaintext once
 }
@@ -538,6 +537,7 @@ func (s *Service) RegenerateRecoveryCodes(ctx context.Context, claims *Claims, t
 		return nil, fmt.Errorf("could not hash recovery codes: %w", err)
 	}
 	user.RecoveryCodes = hashes // store bcrypt hashes, not plaintext
+	go s.saveUsers()
 	return &TOTPVerifyResponse{RecoveryCodes: codes}, nil // return plaintext once
 }
 
@@ -644,6 +644,7 @@ func (s *Service) OIDCCallback(ctx context.Context, code, state string) (*LoginR
 		s.logger.Info("Created user from OIDC", zap.String("username", username))
 	}
 	user.LastLogin = time.Now()
+	go s.saveUsers()
 
 	// Issue a Games Dashboard JWT
 	ttl := s.cfg.TokenTTL
@@ -730,6 +731,7 @@ func (s *Service) CreateUser(ctx context.Context, req CreateUserRequest) (*User,
 	}
 
 	s.users[req.Username] = user
+	go s.saveUsers()
 	return sanitizeUser(user), nil
 }
 
@@ -756,6 +758,7 @@ func (s *Service) UpdateUser(ctx context.Context, userID string, req UpdateUserR
 		user.AllowedServers = *req.AllowedServers
 	}
 
+	go s.saveUsers()
 	return sanitizeUser(user), nil
 }
 
@@ -764,6 +767,7 @@ func (s *Service) DeleteUser(ctx context.Context, userID string) error {
 	for username, u := range s.users {
 		if u.ID == userID {
 			delete(s.users, username)
+			go s.saveUsers()
 			return nil
 		}
 	}
@@ -830,6 +834,8 @@ func (s *Service) audit(userID, username, action, resource, ip string, success b
 	s.auditLogMu.Lock()
 	s.auditLog = append(s.auditLog, entry)
 	s.auditLogMu.Unlock()
+	// Persist to disk so audit trail survives restarts.
+	go s.appendAuditEntry(entry)
 }
 
 // CanAccessServer returns true when the user is allowed to access the given server.
@@ -991,6 +997,7 @@ func (s *Service) SteamCallback(ctx context.Context, rawQuery string) (*LoginRes
 		s.logger.Info("Created user from Steam", zap.String("steam_id", steamID), zap.String("username", displayName))
 	}
 	user.LastLogin = time.Now()
+	go s.saveUsers()
 
 	expiresAt := time.Now().Add(s.cfg.TokenTTL)
 	jwtClaims := &Claims{
@@ -1073,6 +1080,7 @@ func (s *Service) AddPushSubscription(userID string, sub PushSubscription) error
 				}
 			}
 			u.PushSubscriptions = append(u.PushSubscriptions, sub)
+			go s.saveUsers()
 			return nil
 		}
 	}
@@ -1092,6 +1100,7 @@ func (s *Service) RemovePushSubscription(userID, endpoint string) {
 				}
 			}
 			u.PushSubscriptions = subs
+			go s.saveUsers()
 			return
 		}
 	}
@@ -1111,6 +1120,7 @@ func (s *Service) RemovePushSubscriptionByEndpoint(endpoint string) {
 		}
 		u.PushSubscriptions = n
 	}
+	go s.saveUsers()
 }
 
 // GetAllWebPushSubs returns a flat list of all push subscriptions across all users.
@@ -1205,6 +1215,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, callerClaims *Claims, req Cr
 	for _, u := range s.users {
 		if u.ID == callerClaims.UserID {
 			u.APIKeys = append(u.APIKeys, key)
+			go s.saveUsers()
 			s.audit(u.ID, u.Username, "api_key.create", "auth", "", true, map[string]any{"key_name": key.Name})
 			return &CreateAPIKeyResponse{Key: key, Token: raw}, nil
 		}
@@ -1243,6 +1254,7 @@ func (s *Service) RevokeAPIKey(ctx context.Context, userID, keyID string) error 
 				return fmt.Errorf("API key not found")
 			}
 			u.APIKeys = keys
+			go s.saveUsers()
 			s.audit(u.ID, u.Username, "api_key.revoke", "auth", "", true, map[string]any{"key_id": keyID})
 			return nil
 		}

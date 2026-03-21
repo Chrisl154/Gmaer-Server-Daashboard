@@ -114,6 +114,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		JWTSecret:   cfg.Auth.JWTSecret,
 		TokenTTL:    cfg.Auth.TokenTTL,
 		MFARequired: cfg.Auth.MFARequired,
+		DataDir:     cfg.Storage.DataDir,
 	}
 	if cfg.Auth.OIDC != nil {
 		authCfg.OIDC = &auth.OIDCConfig{

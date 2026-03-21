@@ -70,6 +70,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+#### Auth persistence — users, API keys, TOTP, push subscriptions, audit log (`daemon/internal/auth/persist.go`, `auth/service.go`, `cmd/daemon/main.go`)
+- All user state now survives daemon restarts. Nothing is lost on reboot.
+- New `auth/persist.go` introduces a `storedUser` struct (with explicit json tags for fields marked `json:"-"` on the API-facing `User` struct) so `PasswordHash`, `TOTPSecret`, `RecoveryCodes`, and `APIKey.Hash` are written to disk without ever appearing in API responses.
+- `saveUsers()` atomically writes all users to `{data_dir}/users.json` (temp file + `os.Rename`). Called asynchronously after every mutation: login, create/update/delete user, TOTP enroll/regenerate, API key create/revoke/use, push subscription add/remove, OIDC/Steam first-login user creation.
+- `loadUsers()` reads `users.json` at startup, populating the in-memory map before any requests are served.
+- `mergeAdminFromConfig()` ensures the admin from `daemon.yaml` is always present with the latest password hash — `daemon.yaml` remains authoritative for the admin account.
+- Audit log entries appended to `{data_dir}/audit.log` as newline-delimited JSON after each event (non-blocking goroutine). Up to 10,000 entries loaded into memory on startup; on-disk file retains full history.
+- `auth.Config.DataDir` wired from `cfg.Storage.DataDir` in `cmd/daemon/main.go`.
+
+
+
 #### Server scheduling (`daemon/internal/broker/schedule.go`, `broker.go`, `ui/src/pages/ServerDetailPage.tsx`)
 - `StartSchedule` and `StopSchedule` cron fields added to the `Server` struct and
   `UpdateServerRequest`; persisted in servers.json and survives daemon restarts.
