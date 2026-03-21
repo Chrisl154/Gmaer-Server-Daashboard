@@ -708,7 +708,9 @@ func (s *Server) downloadFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
 		return
 	}
-	content, err := s.cfg.Broker.ReadConfigFile(c.Request.Context(), id, filePath)
+	// P42: resolve and validate the absolute path then stream it with c.FileAttachment
+	// instead of reading the entire file into memory.
+	absPath, err := s.cfg.Broker.ResolveFilePath(c.Request.Context(), id, filePath)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -717,8 +719,7 @@ func (s *Server) downloadFile(c *gin.Context) {
 	if idx := strings.LastIndex(filePath, "/"); idx >= 0 {
 		filename = filePath[idx+1:]
 	}
-	c.Header("Content-Disposition", "attachment; filename=\""+filename+"\"")
-	c.Data(http.StatusOK, "application/octet-stream", []byte(content))
+	c.FileAttachment(absPath, filename)
 }
 
 func (s *Server) uploadFile(c *gin.Context) {
@@ -843,6 +844,11 @@ func (s *Server) rollbackMods(c *gin.Context) {
 func (s *Server) getSBOM(c *gin.Context) {
 	sbom, err := s.cfg.Broker.GetSBOM(c.Request.Context())
 	if err != nil {
+		// P51: return 404 when no scan has been run yet rather than 500.
+		if strings.Contains(err.Error(), "no SBOM available") {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1455,9 +1461,15 @@ func (s *Server) diagnoseServer(c *gin.Context) {
 	add := func(f DiagnosticFinding) { report.Findings = append(report.Findings, f) }
 
 	// 1. Docker daemon availability
-	ctx5 := func() context.Context { c2, _ := context.WithTimeout(c.Request.Context(), 3*time.Second); return c2 } //nolint:govet
+	// P55: properly cancel the timeout context to avoid goroutine leaks.
+	ctx5 := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(c.Request.Context(), 3*time.Second)
+	}
 	dockerOK := false
-	if out, err2 := exec.CommandContext(ctx5(), "docker", "info", "--format", "{{.ServerVersion}}").Output(); err2 == nil && len(out) > 0 {
+	dockerCtx, dockerCancel := ctx5()
+	out, err2 := exec.CommandContext(dockerCtx, "docker", "info", "--format", "{{.ServerVersion}}").Output()
+	dockerCancel()
+	if err2 == nil && len(out) > 0 {
 		dockerOK = true
 		add(DiagnosticFinding{Severity: "ok", Title: "Docker is running", Detail: "Docker daemon responded successfully."})
 	} else {

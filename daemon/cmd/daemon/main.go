@@ -163,7 +163,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		if vapidKeys, err := notifications.LoadOrGenerateVAPIDKeys(vapidPath, logger); err != nil {
 			logger.Warn("Web Push disabled — could not init VAPID keys", zap.Error(err))
 		} else {
-			notifySvc.SetPush(*vapidKeys, authSvc.GetAllWebPushSubs)
+			notifySvc.SetPush(*vapidKeys, authSvc.GetAllWebPushSubs, authSvc.RemovePushSubscriptionByEndpoint)
 			logger.Info("Web Push initialized", zap.String("public_key", vapidKeys.Public[:16]+"..."))
 		}
 	}

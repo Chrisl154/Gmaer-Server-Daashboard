@@ -127,20 +127,14 @@ func (s *Service) GenerateSBOM(ctx context.Context, components []ComponentInfo) 
 	return bom, nil
 }
 
+// ErrNoSBOM is returned by GetSBOM when no scan has been run yet.
+// Callers should translate this to a 404 response. P51.
+var ErrNoSBOM = fmt.Errorf("no SBOM available — trigger a scan via POST /sbom/scan first")
+
 // GetSBOM returns the most recently generated SBOM as a generic map
 func (s *Service) GetSBOM(ctx context.Context) (map[string]any, error) {
 	if s.lastSBOM == nil {
-		// Return a minimal placeholder
-		return map[string]any{
-			"bomFormat":   "CycloneDX",
-			"specVersion": "1.5",
-			"version":     1,
-			"serialNumber": "urn:uuid:" + uuid.New().String(),
-			"metadata": map[string]any{
-				"timestamp": time.Now().UTC().Format(time.RFC3339),
-			},
-			"components": []any{},
-		}, nil
+		return nil, ErrNoSBOM
 	}
 
 	// Marshal and unmarshal to get a generic map

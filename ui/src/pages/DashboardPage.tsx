@@ -40,8 +40,10 @@ export function DashboardPage() {
   const healthy = statusData?.healthy;
 
   // Disk warnings: collect servers whose install partition is >85% full.
+  // P54: explicit null check before numeric comparison to handle servers where
+  // disk_pct is absent or null (e.g. offline servers with no metrics).
   const diskWarnServers: Array<{ name: string; pct: number }> = servers
-    .filter((s: any) => s.disk_pct >= 85)
+    .filter((s: any) => s.disk_pct != null && s.disk_pct >= 85)
     .map((s: any) => ({ name: s.name, pct: Math.round(s.disk_pct) }))
     .sort((a: any, b: any) => b.pct - a.pct);
 

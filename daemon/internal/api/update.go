@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -153,6 +154,25 @@ func (s *Server) applyUpdate(c *gin.Context) {
 			})
 			return
 		}
+	}
+
+	// P52: copy the current daemon binary before overwriting so a failed update
+	// can be manually recovered by restoring from the .bak file.
+	if self, exErr := os.Executable(); exErr == nil {
+		_ = func() error {
+			src, err := os.Open(self) //nolint:gosec
+			if err != nil {
+				return err
+			}
+			defer src.Close()
+			dst, err := os.OpenFile(self+".bak", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+			if err != nil {
+				return err
+			}
+			defer dst.Close()
+			_, err = io.Copy(dst, src)
+			return err
+		}()
 	}
 
 	s.cfg.Logger.Info("Starting self-update", zap.String("branch", req.Branch))

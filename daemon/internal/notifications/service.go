@@ -41,8 +41,9 @@ type Service struct {
 	logger *zap.Logger
 
 	// Web Push
-	vapidKeys       *VAPIDKeys
+	vapidKeys        *VAPIDKeys
 	getSubscriptions func() []WebPushSub
+	removeSub        func(endpoint string) // P50: called when push service returns 410 Gone
 }
 
 func New(cfg Config, logger *zap.Logger) *Service {
@@ -54,11 +55,13 @@ func New(cfg Config, logger *zap.Logger) *Service {
 }
 
 // SetPush wires up Web Push: keys is the VAPID key pair, getSubs returns the
-// current set of all user subscriptions to fan out to on each event.
-func (s *Service) SetPush(keys VAPIDKeys, getSubs func() []WebPushSub) {
+// current set of all user subscriptions to fan out to on each event,
+// and removeSub is called with the endpoint when the push service returns 410 Gone.
+func (s *Service) SetPush(keys VAPIDKeys, getSubs func() []WebPushSub, removeSub func(endpoint string)) {
 	s.mu.Lock()
 	s.vapidKeys = &keys
 	s.getSubscriptions = getSubs
+	s.removeSub = removeSub
 	s.mu.Unlock()
 }
 
@@ -110,10 +113,12 @@ func (s *Service) Send(event, serverName, message string) {
 	if cfg.WebhookURL != "" {
 		go func() {
 			if err := s.post(cfg, event, serverName, message); err != nil {
+				// P49: redact the full webhook URL from error messages to avoid
+				// leaking tokens embedded in Discord/Slack webhook URLs.
 				s.logger.Warn("Webhook notification failed",
 					zap.String("event", event),
 					zap.String("server", serverName),
-					zap.Error(err),
+					zap.String("error", redactWebhookErr(cfg.WebhookURL, err)),
 				)
 			}
 		}()
@@ -137,6 +142,7 @@ func (s *Service) Send(event, serverName, message string) {
 	s.mu.RLock()
 	vapidKeys := s.vapidKeys
 	getSubs := s.getSubscriptions
+	removeSub := s.removeSub
 	s.mu.RUnlock()
 	if vapidKeys != nil && getSubs != nil {
 		subs := getSubs()
@@ -150,11 +156,16 @@ func (s *Service) Send(event, serverName, message string) {
 			go func() {
 				for _, sub := range subs {
 					if err := sendWebPush(sub, payload, *vapidKeys); err != nil {
-						s.logger.Warn("Web Push failed",
-							zap.String("event", event),
-							zap.String("endpoint", sub.Endpoint),
-							zap.Error(err),
-						)
+						// P50: 410 Gone means the subscription is no longer valid — remove it.
+						if strings.Contains(err.Error(), "subscription expired (410)") && removeSub != nil {
+							removeSub(sub.Endpoint)
+						} else {
+							s.logger.Warn("Web Push failed",
+								zap.String("event", event),
+								zap.String("endpoint", sub.Endpoint),
+								zap.Error(err),
+							)
+						}
 					}
 				}
 			}()
@@ -272,6 +283,19 @@ func sanitizeSMTPErr(err error) error {
 		return fmt.Errorf("SMTP authentication failed (check username/password)")
 	}
 	return err
+}
+
+// redactWebhookErr replaces any occurrence of the webhook URL (which may contain
+// a secret token) in the error message with a safe placeholder. P49.
+func redactWebhookErr(webhookURL string, err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if webhookURL != "" {
+		msg = strings.ReplaceAll(msg, webhookURL, "<webhook-url>")
+	}
+	return msg
 }
 
 func (s *Service) post(cfg Config, event, serverName, message string) error {

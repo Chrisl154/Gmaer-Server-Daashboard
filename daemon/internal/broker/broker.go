@@ -901,39 +901,45 @@ func (b *Broker) CloneServer(ctx context.Context, id, newName string) (*Server, 
 		b.mu.RUnlock()
 		return nil, fmt.Errorf("server not found: %s", id)
 	}
-	// Deep-copy config map
-	cfgCopy := make(map[string]any, len(src.Config))
-	for k, v := range src.Config {
-		cfgCopy[k] = v
-	}
-	// Deep-copy ports slice
-	portsCopy := make([]PortMapping, len(src.Ports))
-	copy(portsCopy, src.Ports)
-	// Deep-copy resources
-	resCopy := src.Resources
-	var backupCopy *BackupConfig
-	if src.BackupConfig != nil {
-		bc := *src.BackupConfig
-		backupCopy = &bc
-	}
+	// P40: snapshot all fields under the read lock, then deep-copy via JSON
+	// round-trip to handle nested maps/slices in Config.
+	snap := *src // shallow copy of value fields while holding the lock
 	b.mu.RUnlock()
+
+	// Deep-copy the slice/map/pointer fields that would alias otherwise.
+	raw, _ := json.Marshal(struct {
+		Config       map[string]any `json:"config"`
+		Ports        []PortMapping  `json:"ports"`
+		Resources    ResourceSpec   `json:"resources"`
+		BackupConfig *BackupConfig  `json:"backup_config,omitempty"`
+	}{snap.Config, snap.Ports, snap.Resources, snap.BackupConfig})
+	var deep struct {
+		Config       map[string]any `json:"config"`
+		Ports        []PortMapping  `json:"ports"`
+		Resources    ResourceSpec   `json:"resources"`
+		BackupConfig *BackupConfig  `json:"backup_config,omitempty"`
+	}
+	_ = json.Unmarshal(raw, &deep)
+	if deep.Config == nil {
+		deep.Config = map[string]any{}
+	}
 
 	clone := &Server{
 		ID:           generateServerID(),
 		Name:         newName,
-		Adapter:      src.Adapter,
+		Adapter:      snap.Adapter,
 		State:        StateStopped,
-		DeployMethod: src.DeployMethod,
+		DeployMethod: snap.DeployMethod,
 		InstallDir:   "", // will need to be re-deployed; leave blank so user sets it
-		Ports:        portsCopy,
-		Config:       cfgCopy,
-		Resources:    resCopy,
-		BackupConfig: backupCopy,
-		NodeID:       src.NodeID,
+		Ports:        deep.Ports,
+		Config:       deep.Config,
+		Resources:    deep.Resources,
+		BackupConfig: deep.BackupConfig,
+		NodeID:       snap.NodeID,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
-		AutoRestart:  src.AutoRestart,
-		MaxRestarts:  src.MaxRestarts,
+		AutoRestart:  snap.AutoRestart,
+		MaxRestarts:  snap.MaxRestarts,
 	}
 
 	b.mu.Lock()
@@ -2066,6 +2072,10 @@ func (b *Broker) GetServerLogs(ctx context.Context, id, lines string) ([]string,
 	if n, err := strconv.Atoi(lines); err == nil && n > 0 {
 		maxLines = n
 	}
+	// P45: hard cap to prevent unbounded memory usage.
+	if maxLines > 10000 {
+		maxLines = 10000
+	}
 
 	// Candidate log file locations in preference order.
 	candidates := []string{}
@@ -2302,16 +2312,24 @@ func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (st
 // It also emits the message to the console stream.
 func (b *Broker) setServerError(id, humanMsg string) {
 	var serverName string
+	var inGrace bool
 	b.mu.Lock()
 	if sv, ok := b.servers[id]; ok {
 		serverName = sv.Name
 		sv.State = StateError
 		sv.PID = 0
 		sv.LastError = humanMsg
+		// P48: suppress crash notifications during the startup grace window to
+		// avoid false alarms when the process exits before it finishes binding.
+		if sv.LastStarted != nil && time.Since(*sv.LastStarted) < startupGracePeriod {
+			inGrace = true
+		}
 	}
 	b.mu.Unlock()
 	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(humanMsg), time.Now().Unix()))
-	b.throttledNotify(id, "server.crash", serverName, humanMsg)
+	if !inGrace {
+		b.throttledNotify(id, "server.crash", serverName, humanMsg)
+	}
 }
 
 func (b *Broker) sendConsoleMessage(id, msg string) {
@@ -2543,6 +2561,16 @@ func (b *Broker) InstallMod(ctx context.Context, serverID string, req InstallMod
 	}
 	if req.SourceURL != "" && !strings.HasPrefix(req.SourceURL, "https://") {
 		return nil, fmt.Errorf("mod source_url must use HTTPS")
+	}
+	// P46: refuse to install mods while the server is running to avoid file corruption.
+	b.mu.RLock()
+	sv, svOK := b.servers[serverID]
+	b.mu.RUnlock()
+	if !svOK {
+		return nil, fmt.Errorf("server %q not found", serverID)
+	}
+	if sv.State == StateRunning || sv.State == StateStarting {
+		return nil, fmt.Errorf("stop the server before installing mods")
 	}
 
 	job := b.newJob("install-mod", serverID)
@@ -2817,6 +2845,26 @@ func (b *Broker) configFilePath(installDir, relPath string) (string, error) {
 	return abs, nil
 }
 
+// ResolveFilePath validates relPath against the server's install directory and
+// returns its absolute path. P42: used by the download handler to avoid reading
+// the entire file into memory — the caller passes the path to c.FileAttachment.
+func (b *Broker) ResolveFilePath(ctx context.Context, id, relPath string) (string, error) {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("server %q not found", id)
+	}
+	abs, err := b.configFilePath(s.InstallDir, relPath)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("file not found: %w", err)
+	}
+	return abs, nil
+}
+
 // ReadConfigFile reads the contents of a config file from the server's install
 // directory. relPath should match one of the paths declared in the adapter's
 // config_templates (the leading slash is stripped before joining).
@@ -2873,8 +2921,14 @@ func (b *Broker) WriteConfigFile(ctx context.Context, id, relPath, content strin
 			_ = os.WriteFile(abs+".bak", src, 0o644)
 		}
 	}
-	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+	// P44: write atomically — write to a temp file then rename to avoid partial writes.
+	tmp := abs + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("cannot write config file: %w", err)
+	}
+	if err := os.Rename(tmp, abs); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("cannot replace config file: %w", err)
 	}
 	return nil
 }
@@ -2944,14 +2998,11 @@ func (b *Broker) DeleteFile(ctx context.Context, id, relPath string) error {
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(abs)
-	if err != nil {
+	if _, err := os.Stat(abs); err != nil {
 		return fmt.Errorf("file not found: %w", err)
 	}
-	if info.IsDir() {
-		return fmt.Errorf("path %q is a directory — use recursive delete explicitly", relPath)
-	}
-	return os.Remove(abs)
+	// P43: use RemoveAll so directories can be deleted, not just regular files.
+	return os.RemoveAll(abs)
 }
 
 // UploadFile writes the contents of an uploaded file to destDir/filename inside

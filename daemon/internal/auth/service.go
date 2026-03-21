@@ -248,6 +248,15 @@ func NewService(cfg Config, secretsMgr *secrets.Manager, logger *zap.Logger) (*S
 		}
 	}
 
+	// P39: periodically evict expired tokens from the blocklist so it stays bounded.
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			svc.purgeBlocklist()
+		}
+	}()
+
 	return svc, nil
 }
 
@@ -482,10 +491,14 @@ func (s *Service) VerifyTOTP(ctx context.Context, claims *Claims, code string) (
 	}
 
 	codes := generateRecoveryCodes(10)
+	hashes, err := hashRecoveryCodes(codes)
+	if err != nil {
+		return nil, fmt.Errorf("could not hash recovery codes: %w", err)
+	}
 	user.TOTPEnabled = true
-	user.RecoveryCodes = codes
+	user.RecoveryCodes = hashes // store bcrypt hashes, not plaintext
 
-	return &TOTPVerifyResponse{RecoveryCodes: codes}, nil
+	return &TOTPVerifyResponse{RecoveryCodes: codes}, nil // return plaintext once
 }
 
 // GetRecoveryCodesCount returns how many unused recovery codes the user has left.
@@ -520,8 +533,12 @@ func (s *Service) RegenerateRecoveryCodes(ctx context.Context, claims *Claims, t
 		return nil, fmt.Errorf("invalid TOTP code")
 	}
 	codes := generateRecoveryCodes(10)
-	user.RecoveryCodes = codes
-	return &TOTPVerifyResponse{RecoveryCodes: codes}, nil
+	hashes, err := hashRecoveryCodes(codes)
+	if err != nil {
+		return nil, fmt.Errorf("could not hash recovery codes: %w", err)
+	}
+	user.RecoveryCodes = hashes // store bcrypt hashes, not plaintext
+	return &TOTPVerifyResponse{RecoveryCodes: codes}, nil // return plaintext once
 }
 
 // initOIDC initializes the OIDC provider and OAuth2 config on first use.
@@ -879,11 +896,26 @@ func generateRecoveryCodes(n int) []string {
 	return codes
 }
 
+// hashRecoveryCodes returns a bcrypt hash for each plaintext recovery code.
+// P37: codes are stored as hashes so the raw values are never persisted.
+func hashRecoveryCodes(codes []string) ([]string, error) {
+	hashes := make([]string, len(codes))
+	for i, c := range codes {
+		h, err := bcrypt.GenerateFromPassword([]byte(c), bcrypt.MinCost)
+		if err != nil {
+			return nil, err
+		}
+		hashes[i] = string(h)
+	}
+	return hashes, nil
+}
+
 // consumeRecoveryCode attempts to find and remove the given code from the
-// user's recovery code list. Returns true if the code was found and consumed.
+// user's recovery code list. P38: uses bcrypt comparison (timing-safe).
+// Returns true if the code matched any stored hash and was consumed.
 func consumeRecoveryCode(user *User, code string) bool {
-	for i, c := range user.RecoveryCodes {
-		if c == code {
+	for i, h := range user.RecoveryCodes {
+		if bcrypt.CompareHashAndPassword([]byte(h), []byte(code)) == nil {
 			user.RecoveryCodes = append(user.RecoveryCodes[:i], user.RecoveryCodes[i+1:]...)
 			return true
 		}
@@ -1062,6 +1094,22 @@ func (s *Service) RemovePushSubscription(userID, endpoint string) {
 			u.PushSubscriptions = subs
 			return
 		}
+	}
+}
+
+// RemovePushSubscriptionByEndpoint removes the subscription with the given endpoint
+// across all users. Called by the push service when a 410 Gone is received. P50.
+func (s *Service) RemovePushSubscriptionByEndpoint(endpoint string) {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	for _, u := range s.users {
+		n := u.PushSubscriptions[:0]
+		for _, sub := range u.PushSubscriptions {
+			if sub.Endpoint != endpoint {
+				n = append(n, sub)
+			}
+		}
+		u.PushSubscriptions = n
 	}
 }
 

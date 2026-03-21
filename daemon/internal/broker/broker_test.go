@@ -316,15 +316,10 @@ func TestValidatePorts(t *testing.T) {
 
 func TestGetSBOM(t *testing.T) {
 	b := newTestBroker(t)
-	sbom, err := b.GetSBOM(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sbom == nil {
-		t.Error("expected non-nil SBOM")
-	}
-	if _, ok := sbom["bomFormat"]; !ok {
-		t.Error("SBOM should contain bomFormat field")
+	// P51: GetSBOM returns ErrNoSBOM when no scan has been run yet.
+	_, err := b.GetSBOM(context.Background())
+	if err == nil {
+		t.Error("expected error when no SBOM has been generated")
 	}
 }
 

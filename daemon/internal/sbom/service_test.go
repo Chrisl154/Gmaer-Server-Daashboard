@@ -22,17 +22,14 @@ func TestNewService(t *testing.T) {
 	}
 }
 
-func TestGetSBOM_NoSBOM_ReturnsPlaceholder(t *testing.T) {
+func TestGetSBOM_NoSBOM_ReturnsError(t *testing.T) {
 	svc := newTestService(t)
-	result, err := svc.GetSBOM(context.Background())
-	if err != nil {
-		t.Fatalf("GetSBOM error: %v", err)
+	_, err := svc.GetSBOM(context.Background())
+	if err == nil {
+		t.Fatal("expected ErrNoSBOM when no scan has been run")
 	}
-	if result == nil {
-		t.Fatal("expected placeholder map, got nil")
-	}
-	if result["bomFormat"] != "CycloneDX" {
-		t.Errorf("bomFormat = %v, want CycloneDX", result["bomFormat"])
+	if err != ErrNoSBOM {
+		t.Errorf("expected ErrNoSBOM, got %v", err)
 	}
 }
 
