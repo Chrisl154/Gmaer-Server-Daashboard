@@ -70,7 +70,12 @@ server {
     add_header X-Frame-Options DENY;
     add_header X-Content-Type-Options nosniff;
     add_header Referrer-Policy strict-origin-when-cross-origin;
-    add_header Content-Security-Policy "default-src 'self'; connect-src 'self' https: wss:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'";
+    add_header Permissions-Policy "geolocation=(), microphone=(), camera=()";
+    # unsafe-inline removed from script-src: Vite bundles all JS into hashed
+    # external files — no inline scripts are emitted. style-src retains
+    # unsafe-inline because React renders style={{...}} props as inline style
+    # attributes; styles cannot execute code so the risk is significantly lower.
+    add_header Content-Security-Policy "default-src 'self'; connect-src 'self' https: wss:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
 }
 EOF
 
