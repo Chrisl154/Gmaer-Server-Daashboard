@@ -2434,7 +2434,20 @@ func (b *Broker) ListMods(ctx context.Context, serverID string) ([]Mod, error) {
 	return s.ModManifest.Mods, nil
 }
 
+// allowedModSources is the set of accepted mod source identifiers.
+var allowedModSources = map[string]bool{
+	"steam": true, "curseforge": true, "git": true, "local": true,
+}
+
 func (b *Broker) InstallMod(ctx context.Context, serverID string, req InstallModRequest) (*Job, error) {
+	// Validate source before starting the job.
+	if !allowedModSources[req.Source] {
+		return nil, fmt.Errorf("unknown mod source %q: must be one of steam, curseforge, git, local", req.Source)
+	}
+	if req.SourceURL != "" && !strings.HasPrefix(req.SourceURL, "https://") {
+		return nil, fmt.Errorf("mod source_url must use HTTPS")
+	}
+
 	job := b.newJob("install-mod", serverID)
 	go func() {
 		b.updateJob(job.ID, "running", 50, fmt.Sprintf("Installing mod %s...", req.ModID))
@@ -2457,6 +2470,7 @@ func (b *Broker) InstallMod(ctx context.Context, serverID string, req InstallMod
 				s.ModManifest = &ModManifest{}
 			}
 			s.ModManifest.Mods = append(s.ModManifest.Mods, mod)
+			b.saveServersLocked()
 		}
 		b.mu.Unlock()
 
@@ -2479,6 +2493,7 @@ func (b *Broker) UninstallMod(ctx context.Context, serverID, modID string) error
 		}
 	}
 	s.ModManifest.Mods = mods
+	b.saveServersLocked()
 	return nil
 }
 

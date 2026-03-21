@@ -768,7 +768,11 @@ func (s *Server) installMod(c *gin.Context) {
 	job, err := s.cfg.Broker.InstallMod(c.Request.Context(), id, req)
 	if err != nil {
 		s.recordEvent(c, "install_mod", id, false, gin.H{"mod_id": req.ModID, "source": req.Source, "error": err.Error()})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "unknown mod source") || strings.Contains(err.Error(), "must use HTTPS") {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	s.recordEvent(c, "install_mod", id, true, gin.H{"mod_id": req.ModID, "source": req.Source, "job_id": job.ID})
