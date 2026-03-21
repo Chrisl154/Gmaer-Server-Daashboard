@@ -197,8 +197,9 @@ type Service struct {
 	cfg      Config
 	secrets  *secrets.Manager
 	logger   *zap.Logger
-	users    map[string]*User
-	auditLog []AuditEntry
+	users      map[string]*User
+	auditLog   []AuditEntry
+	auditLogMu sync.RWMutex
 
 	// blocklist holds revoked JWT tokens until their natural expiry.
 	// Only logged-out tokens are stored here — keeps memory footprint minimal.
@@ -752,9 +753,34 @@ func (s *Service) DeleteUser(ctx context.Context, userID string) error {
 	return fmt.Errorf("user not found")
 }
 
-// GetAuditLog returns the audit log
-func (s *Service) GetAuditLog(ctx context.Context) ([]AuditEntry, error) {
-	return s.auditLog, nil
+// GetAuditLog returns a paginated slice of the audit log (newest first).
+// offset and limit default to 0 and 100; max limit is 1000.
+func (s *Service) GetAuditLog(ctx context.Context, offset, limit int) ([]AuditEntry, int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	s.auditLogMu.RLock()
+	all := make([]AuditEntry, len(s.auditLog))
+	copy(all, s.auditLog)
+	total := len(all)
+	s.auditLogMu.RUnlock()
+
+	// Return newest first.
+	reversed := make([]AuditEntry, total)
+	for i, e := range all {
+		reversed[total-1-i] = e
+	}
+	if offset >= total {
+		return []AuditEntry{}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return reversed[offset:end], total, nil
 }
 
 // RecordEvent appends a system event to the audit log (called by API handlers for
@@ -784,7 +810,9 @@ func (s *Service) audit(userID, username, action, resource, ip string, success b
 		Success:   success,
 		Details:   details,
 	}
+	s.auditLogMu.Lock()
 	s.auditLog = append(s.auditLog, entry)
+	s.auditLogMu.Unlock()
 }
 
 // CanAccessServer returns true when the user is allowed to access the given server.

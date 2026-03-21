@@ -281,7 +281,7 @@ type Broker struct {
 	notify     *notifications.Service
 	servers    map[string]*Server
 	jobs       map[string]*Job
-	consoleChs map[string]chan string
+	consoleChs map[string]*consoleBroadcaster
 	// processes tracks running game server processes by server ID
 	processes    map[string]*exec.Cmd
 	metricsData  map[string]*metricsRing
@@ -381,10 +381,10 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 	persistedServers := loadServersState(cfg, logger)
 
 	// Pre-populate consoleChs and metricsData for loaded servers.
-	consoleChs := make(map[string]chan string)
+	consoleChs := make(map[string]*consoleBroadcaster)
 	metricsData := make(map[string]*metricsRing)
 	for id := range persistedServers {
-		consoleChs[id] = make(chan string, 1000)
+		consoleChs[id] = newConsoleBroadcaster()
 		metricsData[id] = &metricsRing{}
 	}
 
@@ -868,7 +868,7 @@ func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Se
 	}
 
 	b.servers[req.ID] = server
-	b.consoleChs[req.ID] = make(chan string, 1000)
+	b.consoleChs[req.ID] = newConsoleBroadcaster()
 	b.metricsData[req.ID] = &metricsRing{}
 	b.saveServersLocked()
 
@@ -939,7 +939,7 @@ func (b *Broker) CloneServer(ctx context.Context, id, newName string) (*Server, 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.servers[clone.ID] = clone
-	b.consoleChs[clone.ID] = make(chan string, 1000)
+	b.consoleChs[clone.ID] = newConsoleBroadcaster()
 	b.metricsData[clone.ID] = &metricsRing{}
 	b.saveServersLocked()
 
@@ -1051,10 +1051,7 @@ func (b *Broker) DeleteServer(ctx context.Context, id string) error {
 	}
 	delete(b.servers, id)
 	b.saveServersLocked()
-	if ch, ok := b.consoleChs[id]; ok {
-		close(ch)
-		delete(b.consoleChs, id)
-	}
+	delete(b.consoleChs, id)
 	delete(b.metricsData, id)
 	b.mu.Unlock()
 
@@ -1435,21 +1432,38 @@ func (b *Broker) doStop(ctx context.Context, id string) {
 }
 
 // RestartServer restarts a game server
-func (b *Broker) RestartServer(ctx context.Context, id string) error {
+func (b *Broker) RestartServer(ctx context.Context, id string) (*Job, error) {
+	b.mu.RLock()
+	_, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("server not found: %s", id)
+	}
 	if err := b.StopServer(ctx, id); err != nil {
-		return err
+		return nil, err
 	}
-	// doStop runs asynchronously; poll until the server is no longer stopping.
-	for i := 0; i < 30; i++ {
-		time.Sleep(500 * time.Millisecond)
-		b.mu.RLock()
-		state := b.servers[id].State
-		b.mu.RUnlock()
-		if state == StateStopped || state == StateError {
-			break
+	job := b.newJob("restart", id)
+	go func() {
+		b.updateJob(job.ID, "running", 10, "Waiting for server to stop...")
+		// Poll until stopped or timeout (15 s).
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(500 * time.Millisecond)
+			b.mu.RLock()
+			state := b.servers[id].State
+			b.mu.RUnlock()
+			if state == StateStopped || state == StateIdle || state == StateError {
+				break
+			}
 		}
-	}
-	return b.StartServer(ctx, id)
+		b.updateJob(job.ID, "running", 50, "Starting server...")
+		if err := b.StartServer(ctx, id); err != nil {
+			b.updateJob(job.ID, "failed", 0, "Failed to start: "+err.Error())
+			return
+		}
+		b.updateJob(job.ID, "success", 100, "Server restarted")
+	}()
+	return job, nil
 }
 
 // DeployServer deploys a game server
@@ -2161,15 +2175,53 @@ func tailFile(path string, n int) ([]string, error) {
 	return out, nil
 }
 
-// GetConsoleStream returns a channel for live console output
-func (b *Broker) GetConsoleStream(ctx context.Context, id string) (<-chan string, error) {
+// consoleBroadcaster fans out console messages to all active WebSocket viewers.
+type consoleBroadcaster struct {
+	mu   sync.Mutex
+	subs map[chan string]struct{}
+}
+
+func newConsoleBroadcaster() *consoleBroadcaster {
+	return &consoleBroadcaster{subs: make(map[chan string]struct{})}
+}
+
+func (cb *consoleBroadcaster) subscribe() chan string {
+	ch := make(chan string, 256)
+	cb.mu.Lock()
+	cb.subs[ch] = struct{}{}
+	cb.mu.Unlock()
+	return ch
+}
+
+func (cb *consoleBroadcaster) unsubscribe(ch chan string) {
+	cb.mu.Lock()
+	delete(cb.subs, ch)
+	cb.mu.Unlock()
+}
+
+func (cb *consoleBroadcaster) broadcast(msg string) {
+	cb.mu.Lock()
+	for ch := range cb.subs {
+		select {
+		case ch <- msg:
+		default: // slow subscriber — drop rather than block
+		}
+	}
+	cb.mu.Unlock()
+}
+
+// GetConsoleStream subscribes to live console output for the given server.
+// The caller must call the returned unsubscribe func when done to avoid leaking
+// the subscriber channel (typically deferred in the WebSocket handler).
+func (b *Broker) GetConsoleStream(ctx context.Context, id string) (<-chan string, func(), error) {
 	b.mu.RLock()
-	ch, ok := b.consoleChs[id]
+	bc, ok := b.consoleChs[id]
 	b.mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("no console stream for %s", id)
+		return nil, nil, fmt.Errorf("no console stream for %s", id)
 	}
-	return ch, nil
+	sub := bc.subscribe()
+	return sub, func() { bc.unsubscribe(sub) }, nil
 }
 
 // SendConsoleCommand sends a command to a running server's console.
@@ -2263,15 +2315,12 @@ func (b *Broker) setServerError(id, humanMsg string) {
 }
 
 func (b *Broker) sendConsoleMessage(id, msg string) {
-	// Deliver to any active WebSocket stream.
+	// Deliver to all active WebSocket viewers via fan-out broadcaster.
 	b.mu.RLock()
-	ch, ok := b.consoleChs[id]
+	bc, ok := b.consoleChs[id]
 	b.mu.RUnlock()
 	if ok {
-		select {
-		case ch <- msg:
-		default:
-		}
+		bc.broadcast(msg)
 	}
 
 	// Persist all console output via a rotating log writer.

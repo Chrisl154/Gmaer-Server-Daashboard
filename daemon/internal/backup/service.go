@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -98,7 +99,7 @@ func NewService(cfg Config, logger *zap.Logger) *Service {
 		cfg.DataDir = "/var/lib/games-dashboard/backups"
 	}
 
-	return &Service{
+	svc := &Service{
 		cfg:       cfg,
 		logger:    logger,
 		cron:      cron.New(cron.WithSeconds()),
@@ -106,6 +107,37 @@ func NewService(cfg Config, logger *zap.Logger) *Service {
 		jobs:      make(map[string]*Job),
 		schedules: make(map[string]cron.EntryID),
 	}
+	svc.loadRecords()
+	return svc
+}
+
+func (s *Service) recordsPath() string {
+	return filepath.Join(s.cfg.DataDir, "backup-records.json")
+}
+
+func (s *Service) loadRecords() {
+	data, err := os.ReadFile(s.recordsPath())
+	if err != nil {
+		return // file doesn't exist yet — that's fine
+	}
+	var records map[string][]*Record
+	if err := json.Unmarshal(data, &records); err != nil {
+		s.logger.Warn("Failed to parse backup records file — starting fresh", zap.Error(err))
+		return
+	}
+	s.records = records
+}
+
+func (s *Service) persistRecords() {
+	data, err := json.Marshal(s.records)
+	if err != nil {
+		s.logger.Warn("Failed to marshal backup records", zap.Error(err))
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(s.recordsPath()), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(s.recordsPath(), data, 0o600)
 }
 
 // Start begins the cron scheduler
@@ -260,6 +292,7 @@ func (s *Service) executeBackup(ctx context.Context, serverID string, paths []st
 
 	s.mu.Lock()
 	s.updateRecordStatus(serverID, record.ID, "complete")
+	s.persistRecords()
 	s.mu.Unlock()
 
 	s.updateJob(job.ID, "success", 100, fmt.Sprintf("Backup complete (%s)", humanizeBytes(totalSize)))
@@ -510,6 +543,7 @@ func (s *Service) pruneOldBackups(serverID string) {
 
 	s.records[serverID] = kept
 	if pruned > 0 {
+		s.persistRecords()
 		s.logger.Info("Pruned old backups",
 			zap.String("server", serverID),
 			zap.Int("pruned", pruned))

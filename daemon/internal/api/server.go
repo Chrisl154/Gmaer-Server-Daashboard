@@ -440,13 +440,18 @@ func (s *Server) stopServer(c *gin.Context) {
 
 func (s *Server) restartServer(c *gin.Context) {
 	id := c.Param("id")
-	if err := s.cfg.Broker.RestartServer(c.Request.Context(), id); err != nil {
+	job, err := s.cfg.Broker.RestartServer(c.Request.Context(), id)
+	if err != nil {
 		s.recordEvent(c, "restart_server", id, false, gin.H{"error": err.Error()})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "already") || strings.Contains(err.Error(), "stopping") {
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	s.recordEvent(c, "restart_server", id, true, nil)
-	c.JSON(http.StatusOK, gin.H{"status": "restarting", "id": id})
+	c.JSON(http.StatusAccepted, gin.H{"status": "restarting", "id": id, "job_id": job.ID})
 }
 
 func (s *Server) deployServer(c *gin.Context) {
@@ -543,11 +548,12 @@ func (s *Server) streamConsole(c *gin.Context) {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 
-	stream, err := s.cfg.Broker.GetConsoleStream(ctx, id)
+	stream, unsub, err := s.cfg.Broker.GetConsoleStream(ctx, id)
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","msg":"Console stream not available — make sure the server has been deployed and is running"}`)) //nolint:errcheck
 		return
 	}
+	defer unsub()
 
 	for {
 		select {
@@ -1089,12 +1095,14 @@ func (s *Server) deleteUser(c *gin.Context) {
 }
 
 func (s *Server) getAuditLog(c *gin.Context) {
-	logs, err := s.cfg.AuthSvc.GetAuditLog(c.Request.Context())
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	logs, total, err := s.cfg.AuthSvc.GetAuditLog(c.Request.Context(), offset, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"audit_log": logs})
+	c.JSON(http.StatusOK, gin.H{"audit_log": logs, "total": total, "offset": offset, "limit": limit})
 }
 
 func (s *Server) rotateSecrets(c *gin.Context) {

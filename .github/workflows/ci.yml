@@ -437,7 +437,7 @@ jobs:
           tests/integration/run-tests.sh \
             --mode docker \
             --output test-results.xml \
-            2>&1 | tee integration-test.log || true
+            2>&1 | tee integration-test.log
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
