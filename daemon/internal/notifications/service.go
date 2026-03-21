@@ -230,7 +230,9 @@ func (s *Service) sendEmail(cfg *EmailConfig, subject, body string) error {
 		}
 		defer c.Quit()
 		if err := c.Auth(auth); err != nil {
-			return fmt.Errorf("SMTP auth failed: %w", err)
+			// Do not wrap the underlying error — SMTP auth errors can echo back
+			// server challenges that contain encoded credentials.
+			return fmt.Errorf("SMTP authentication failed (check username/password)")
 		}
 		if err := c.Mail(cfg.From); err != nil {
 			return err
@@ -249,8 +251,19 @@ func (s *Service) sendEmail(cfg *EmailConfig, subject, body string) error {
 		return err
 	}
 
-	// STARTTLS (port 587)
-	return smtp.SendMail(addr, auth, cfg.From, cfg.To, msg)
+	// STARTTLS (port 587). smtp.SendMail bundles auth internally; if it fails
+	// due to an auth error the server response may contain encoded credentials,
+	// so we replace auth-related errors with a generic message.
+	if err := smtp.SendMail(addr, auth, cfg.From, cfg.To, msg); err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "auth") || strings.Contains(errStr, "Auth") ||
+			strings.Contains(errStr, "535") || strings.Contains(errStr, "534") ||
+			strings.Contains(errStr, "username") || strings.Contains(errStr, "password") {
+			return fmt.Errorf("SMTP authentication failed (check username/password)")
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Service) post(cfg Config, event, serverName, message string) error {
