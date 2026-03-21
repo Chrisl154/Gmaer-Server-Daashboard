@@ -285,7 +285,8 @@ type Broker struct {
 	// processes tracks running game server processes by server ID
 	processes    map[string]*exec.Cmd
 	metricsData  map[string]*metricsRing
-	diskWarnedAt map[string]time.Time // throttle: last time a disk warning was emitted per server
+	diskWarnedAt    map[string]time.Time // throttle: last time a disk warning was emitted per server
+	notifyThrottled map[string]time.Time // throttle: last notification per "serverID:event" key
 	// prevNetBytes tracks the previous cumulative network byte counters per server [in, out]
 	// used to compute kbps rates between metric collection cycles.
 	prevNetBytes map[string][2]uint64
@@ -404,7 +405,8 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		consoleChs:   consoleChs,
 		processes:    make(map[string]*exec.Cmd),
 		metricsData:  metricsData,
-		diskWarnedAt: make(map[string]time.Time),
+		diskWarnedAt:    make(map[string]time.Time),
+		notifyThrottled: make(map[string]time.Time),
 		prevNetBytes:  make(map[string][2]uint64),
 		prevNetTime:   make(map[string]time.Time),
 		logWriters:    make(map[string]*rotatingWriter),
@@ -415,6 +417,21 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 // NotifyService returns the notifications service instance.
 func (b *Broker) NotifyService() *notifications.Service {
 	return b.notify
+}
+
+// throttledNotify sends a notification at most once per 5 minutes per
+// server+event combination to prevent spam during crash loops.
+func (b *Broker) throttledNotify(serverID, event, serverName, message string) {
+	key := serverID + ":" + event
+	b.mu.Lock()
+	last := b.notifyThrottled[key]
+	if time.Since(last) < 5*time.Minute {
+		b.mu.Unlock()
+		return
+	}
+	b.notifyThrottled[key] = time.Now()
+	b.mu.Unlock()
+	b.notify.Send(event, serverName, message)
 }
 
 // ClusterManager returns the cluster manager (may be nil if cluster disabled)
@@ -1329,7 +1346,7 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 			b.sendConsoleMessage(id, fmt.Sprintf(
 				`{"type":"system","msg":"Server %s crashed — restarting in %ds (attempt %d/%d)","ts":%d}`,
 				id, restartDelay, attempt, maxRestarts, time.Now().Unix()))
-			b.notify.Send("server.restart", restartServerName, fmt.Sprintf("Server crashed and is restarting (attempt %d/%d, delay %ds).", attempt, maxRestarts, restartDelay))
+			b.throttledNotify(id, "server.restart", restartServerName, fmt.Sprintf("Server crashed and is restarting (attempt %d/%d, delay %ds).", attempt, maxRestarts, restartDelay))
 		} else {
 			b.mu.Unlock()
 			return
@@ -2242,7 +2259,7 @@ func (b *Broker) setServerError(id, humanMsg string) {
 	}
 	b.mu.Unlock()
 	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(humanMsg), time.Now().Unix()))
-	b.notify.Send("server.crash", serverName, humanMsg)
+	b.throttledNotify(id, "server.crash", serverName, humanMsg)
 }
 
 func (b *Broker) sendConsoleMessage(id, msg string) {
@@ -2739,6 +2756,10 @@ func (b *Broker) configFilePath(installDir, relPath string) (string, error) {
 	// Strip leading slash so filepath.Join doesn't treat it as absolute.
 	rel := strings.TrimPrefix(relPath, "/")
 	abs := filepath.Clean(filepath.Join(installDir, rel))
+	// Resolve symlinks so a crafted symlink can't escape the install directory.
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
 	// Ensure the resolved path is still under installDir.
 	prefix := filepath.Clean(installDir) + string(os.PathSeparator)
 	if abs != filepath.Clean(installDir) && !strings.HasPrefix(abs, prefix) {
@@ -2796,6 +2817,12 @@ func (b *Broker) WriteConfigFile(ctx context.Context, id, relPath, content strin
 	}
 	if mkErr := os.MkdirAll(filepath.Dir(abs), 0o755); mkErr != nil {
 		return fmt.Errorf("cannot create config directory: %w", mkErr)
+	}
+	// Back up the existing file before overwriting so admins can recover mistakes.
+	if _, statErr := os.Stat(abs); statErr == nil {
+		if src, readErr := os.ReadFile(abs); readErr == nil {
+			_ = os.WriteFile(abs+".bak", src, 0o644)
+		}
 	}
 	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("cannot write config file: %w", err)

@@ -278,6 +278,19 @@ func (s *Service) executeRestore(ctx context.Context, serverID string, record *R
 		zap.String("server", serverID),
 		zap.String("backup_id", record.ID))
 
+	// Verify archive integrity before touching any server files.
+	if record.Checksum != "" {
+		s.updateJob(job.ID, "running", 20, "Verifying backup integrity...")
+		if err := s.verifyChecksum(record); err != nil {
+			s.updateJob(job.ID, "failed", 0, "Integrity check failed: "+err.Error())
+			s.logger.Error("Restore aborted — checksum mismatch",
+				zap.String("server", serverID),
+				zap.String("backup_id", record.ID),
+				zap.Error(err))
+			return
+		}
+	}
+
 	s.updateJob(job.ID, "running", 50, "Restoring files...")
 
 	for i, path := range record.Paths {
@@ -298,6 +311,30 @@ func (s *Service) executeRestore(ctx context.Context, serverID string, record *R
 
 	s.updateJob(job.ID, "success", 100, "Restore complete")
 	s.logger.Info("Restore complete", zap.String("server", serverID), zap.String("backup_id", record.ID))
+}
+
+// verifyChecksum recomputes the SHA-256 over all archive files in the backup
+// and compares it against the stored checksum in the record.
+func (s *Service) verifyChecksum(record *Record) error {
+	h := sha256.New()
+	for _, path := range record.Paths {
+		archiveFile := filepath.Join(s.localArchiveDir(record.Target, record.ID), filepath.Base(path)+".tar.zst")
+		f, err := os.Open(archiveFile)
+		if err != nil {
+			return fmt.Errorf("cannot open archive for %q: %w", path, err)
+		}
+		if _, err := io.Copy(h, f); err != nil {
+			f.Close()
+			return fmt.Errorf("cannot read archive for %q: %w", path, err)
+		}
+		f.Close()
+		io.WriteString(h, s.localArchiveDir(record.Target, record.ID)+"\n")
+	}
+	computed := fmt.Sprintf("sha256:%x", h.Sum(nil))
+	if computed != record.Checksum {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", record.Checksum, computed)
+	}
+	return nil
 }
 
 // localArchiveDir returns the directory where backup archives are stored.
@@ -459,6 +496,14 @@ func (s *Service) pruneOldBackups(serverID string) {
 		if r.CreatedAt.After(cutoff) {
 			kept = append(kept, r)
 		} else {
+			archiveDir := s.localArchiveDir(r.Target, r.ID)
+			if err := os.RemoveAll(archiveDir); err != nil {
+				s.logger.Warn("Failed to delete pruned backup archive",
+					zap.String("server", serverID),
+					zap.String("backup_id", r.ID),
+					zap.String("path", archiveDir),
+					zap.Error(err))
+			}
 			pruned++
 		}
 	}

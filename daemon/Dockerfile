@@ -42,7 +42,9 @@ EXPOSE 8443
 # The docker group GID must match the host's /var/run/docker.sock group (typically 999).
 RUN groupadd -g 999 docker || true && \
     groupadd -g 65532 nonroot && \
-    useradd -u 65532 -g nonroot -G docker -s /bin/false nonroot
+    useradd -u 65532 -g nonroot -G docker -s /bin/false nonroot && \
+    mkdir -p /etc/games-dashboard /var/lib/games-dashboard && \
+    chown -R nonroot:nonroot /etc/games-dashboard /var/lib/games-dashboard
 USER nonroot
 
 ENTRYPOINT ["/games-daemon"]
