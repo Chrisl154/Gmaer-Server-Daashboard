@@ -297,6 +297,12 @@ func (s *Server) ListenAndServeTLS() error {
 	return s.srv.ListenAndServeTLS(s.cfg.TLSCert, s.cfg.TLSKey)
 }
 
+// ListenAndServe starts the server on plain HTTP (no TLS). Intended for local
+// testing only — do not use in production.
+func (s *Server) ListenAndServe() error {
+	return s.srv.ListenAndServe()
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }

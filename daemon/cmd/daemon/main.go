@@ -34,6 +34,7 @@ var (
 	tlsCert  string
 	tlsKey   string
 	bindAddr string
+	noTLS    bool
 )
 
 func main() {
@@ -50,6 +51,7 @@ mods, networking, and exposes a secure REST/WebSocket API.`,
 	rootCmd.PersistentFlags().StringVar(&tlsCert, "tls-cert", "", "path to TLS certificate PEM")
 	rootCmd.PersistentFlags().StringVar(&tlsKey, "tls-key", "", "path to TLS private key PEM")
 	rootCmd.PersistentFlags().StringVar(&bindAddr, "bind", ":8443", "daemon bind address")
+	rootCmd.PersistentFlags().BoolVar(&noTLS, "no-tls", false, "run plain HTTP (testing only — do not use in production)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -241,9 +243,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Start API server
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("API server listening", zap.String("addr", bindAddr))
-		if err := apiServer.ListenAndServeTLS(); err != nil {
-			errCh <- err
+		logger.Info("API server listening", zap.String("addr", bindAddr), zap.Bool("tls", !noTLS))
+		var serveErr error
+		if noTLS {
+			serveErr = apiServer.ListenAndServe()
+		} else {
+			serveErr = apiServer.ListenAndServeTLS()
+		}
+		if serveErr != nil {
+			errCh <- serveErr
 		}
 	}()
 
