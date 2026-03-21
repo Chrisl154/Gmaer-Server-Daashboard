@@ -231,12 +231,10 @@ func (s *Server) registerRoutes() {
 	v1.GET("/auth/totp/recovery-codes/download", s.downloadRecoveryCodes)
 	v1.GET("/users/me", s.getMe)
 
-	// Cluster nodes
+	// Cluster nodes — reads and heartbeat are open to any authenticated user/node;
+	// writes require admin role.
 	v1.GET("/nodes", s.listNodes)
-	v1.POST("/nodes", s.registerNode)
-	v1.POST("/nodes/join-token", s.issueJoinToken) // generate a one-time worker join token
 	v1.GET("/nodes/:nodeId", s.getNode)
-	v1.DELETE("/nodes/:nodeId", s.deregisterNode)
 	v1.POST("/nodes/:nodeId/heartbeat", s.nodeHeartbeat)
 
 	// Admin (requires admin role)
@@ -250,6 +248,11 @@ func (s *Server) registerRoutes() {
 	admin.POST("/secrets/rotate", s.rotateSecrets)
 	admin.GET("/settings", s.getSettings)
 	admin.PATCH("/settings", s.patchSettings)
+
+	// Cluster node management (admin-only writes)
+	admin.POST("/nodes", s.registerNode)
+	admin.POST("/nodes/join-token", s.issueJoinToken)
+	admin.DELETE("/nodes/:nodeId", s.deregisterNode)
 
 	// Self-update (admin-only)
 	admin.GET("/update/status", s.getUpdateStatus)
