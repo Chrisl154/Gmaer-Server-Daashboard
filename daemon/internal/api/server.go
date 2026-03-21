@@ -394,7 +394,13 @@ func (s *Server) startServer(c *gin.Context) {
 	id := c.Param("id")
 	if err := s.cfg.Broker.StartServer(c.Request.Context(), id); err != nil {
 		s.recordEvent(c, "start_server", id, false, gin.H{"error": err.Error()})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		msg := err.Error()
+		if strings.Contains(msg, "already running") || strings.Contains(msg, "already starting") ||
+			strings.Contains(msg, "is stopping") || strings.Contains(msg, "is deploying") {
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": msg})
 		return
 	}
 	s.recordEvent(c, "start_server", id, true, nil)

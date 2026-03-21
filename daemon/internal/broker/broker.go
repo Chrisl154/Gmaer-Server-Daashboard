@@ -1054,9 +1054,19 @@ func (b *Broker) StartServer(ctx context.Context, id string) error {
 		b.mu.Unlock()
 		return fmt.Errorf("server not found: %s", id)
 	}
-	if s.State == StateRunning {
+	switch s.State {
+	case StateRunning:
 		b.mu.Unlock()
 		return fmt.Errorf("server already running")
+	case StateStarting:
+		b.mu.Unlock()
+		return fmt.Errorf("server is already starting")
+	case StateStopping:
+		b.mu.Unlock()
+		return fmt.Errorf("server is stopping; wait for it to stop before starting again")
+	case StateDeploying:
+		b.mu.Unlock()
+		return fmt.Errorf("server is deploying; wait for deployment to finish")
 	}
 	s.State = StateStarting
 	b.mu.Unlock()
