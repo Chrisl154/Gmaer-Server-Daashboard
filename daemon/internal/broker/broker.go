@@ -300,6 +300,10 @@ type Broker struct {
 	schedCron    *cron.Cron
 	schedEntries map[string][2]cron.EntryID // [startEntryID, stopEntryID]; zero value = not scheduled
 	schedMu      sync.Mutex
+	// P47: file-backed ban list for games that do not support RCON ban commands.
+	fileBanLists map[string][]string // serverID -> banned player names
+	banMu        sync.Mutex
+
 	// per-server rotating log writers
 	logWriters map[string]*rotatingWriter
 	logWriteMu sync.Mutex // protects logWriters map
@@ -411,6 +415,7 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		prevNetTime:   make(map[string]time.Time),
 		logWriters:    make(map[string]*rotatingWriter),
 		serverCancels: make(map[string]context.CancelFunc),
+		fileBanLists:  make(map[string][]string),
 	}, nil
 }
 

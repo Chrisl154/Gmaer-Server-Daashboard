@@ -2,7 +2,10 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +17,96 @@ import (
 // ErrBanlistNotSupported is returned when the game adapter does not support
 // banlist or whitelist management via RCON.
 var ErrBanlistNotSupported = fmt.Errorf("banlist management is not supported for this game type")
+
+// ── P47: file-backed ban list for RCON-less games ─────────────────────────────
+
+// banlistDir returns the directory used to persist per-server ban files.
+func (b *Broker) banlistDir() string {
+	dir := "/opt/gdash/data/banlists"
+	if b.cfg != nil && b.cfg.Storage.DataDir != "" {
+		dir = filepath.Join(b.cfg.Storage.DataDir, "banlists")
+	}
+	return dir
+}
+
+// banlistPath returns the JSON file path for a server's file-backed ban list.
+func (b *Broker) banlistPath(serverID string) string {
+	return filepath.Join(b.banlistDir(), serverID+".json")
+}
+
+// loadFileBanList reads the ban list from disk into the in-memory cache.
+// Returns an empty slice when the file doesn't exist yet.
+func (b *Broker) loadFileBanList(serverID string) []string {
+	data, err := os.ReadFile(b.banlistPath(serverID)) //nolint:gosec
+	if err != nil {
+		return []string{}
+	}
+	var players []string
+	if err := json.Unmarshal(data, &players); err != nil {
+		return []string{}
+	}
+	return players
+}
+
+// saveFileBanList persists the in-memory ban list to disk.
+func (b *Broker) saveFileBanList(serverID string, players []string) {
+	dir := b.banlistDir()
+	_ = os.MkdirAll(dir, 0o700)
+	data, err := json.Marshal(players)
+	if err != nil {
+		return
+	}
+	tmp := b.banlistPath(serverID) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, b.banlistPath(serverID))
+}
+
+// getFileBanList returns the cached ban list, loading from disk on first access.
+func (b *Broker) getFileBanList(serverID string) []string {
+	b.banMu.Lock()
+	defer b.banMu.Unlock()
+	if players, ok := b.fileBanLists[serverID]; ok {
+		return players
+	}
+	players := b.loadFileBanList(serverID)
+	b.fileBanLists[serverID] = players
+	return players
+}
+
+// addFileBan adds a player to the file-backed ban list.
+func (b *Broker) addFileBan(serverID, player string) {
+	b.banMu.Lock()
+	defer b.banMu.Unlock()
+	if _, ok := b.fileBanLists[serverID]; !ok {
+		b.fileBanLists[serverID] = b.loadFileBanList(serverID)
+	}
+	for _, p := range b.fileBanLists[serverID] {
+		if strings.EqualFold(p, player) {
+			return // already banned
+		}
+	}
+	b.fileBanLists[serverID] = append(b.fileBanLists[serverID], player)
+	b.saveFileBanList(serverID, b.fileBanLists[serverID])
+}
+
+// removeFileBan removes a player from the file-backed ban list.
+func (b *Broker) removeFileBan(serverID, player string) {
+	b.banMu.Lock()
+	defer b.banMu.Unlock()
+	if _, ok := b.fileBanLists[serverID]; !ok {
+		b.fileBanLists[serverID] = b.loadFileBanList(serverID)
+	}
+	updated := b.fileBanLists[serverID][:0]
+	for _, p := range b.fileBanLists[serverID] {
+		if !strings.EqualFold(p, player) {
+			updated = append(updated, p)
+		}
+	}
+	b.fileBanLists[serverID] = updated
+	b.saveFileBanList(serverID, updated)
+}
 
 // supportsBanlist returns true for adapters with RCON ban support.
 func supportsBanlist(adapter string) bool {
@@ -64,7 +157,8 @@ func (b *Broker) execRCON(ctx context.Context, id, command string) (string, erro
 }
 
 // ListBannedPlayers returns the list of banned player names for the server.
-// Returns ErrBanlistNotSupported for games that do not support RCON ban management.
+// For games with RCON ban support, queries the live server. For all others
+// (P47) returns the persisted file-backed ban list.
 func (b *Broker) ListBannedPlayers(ctx context.Context, id string) ([]string, error) {
 	b.mu.RLock()
 	s, ok := b.servers[id]
@@ -72,8 +166,9 @@ func (b *Broker) ListBannedPlayers(ctx context.Context, id string) ([]string, er
 	if !ok {
 		return nil, fmt.Errorf("server not found: %s", id)
 	}
+	// P47: fall back to file store for games without RCON ban support.
 	if !supportsBanlist(s.Adapter) {
-		return nil, ErrBanlistNotSupported
+		return b.getFileBanList(id), nil
 	}
 
 	switch s.Adapter {
@@ -90,7 +185,8 @@ func (b *Broker) ListBannedPlayers(ctx context.Context, id string) ([]string, er
 }
 
 // BanPlayer bans a player from the server.
-// The command is echoed to the console stream for audit purposes.
+// For RCON-enabled games the command is sent to the server console.
+// For all others (P47) the player is recorded in a persisted file-backed list.
 func (b *Broker) BanPlayer(ctx context.Context, id, player, reason string) error {
 	b.mu.RLock()
 	s, ok := b.servers[id]
@@ -98,8 +194,10 @@ func (b *Broker) BanPlayer(ctx context.Context, id, player, reason string) error
 	if !ok {
 		return fmt.Errorf("server not found: %s", id)
 	}
+	// P47: persist in file store for games without RCON ban support.
 	if !supportsBanlist(s.Adapter) {
-		return ErrBanlistNotSupported
+		b.addFileBan(id, player)
+		return nil
 	}
 
 	safePlayer, err := sanitizePlayerName(s.Adapter, player)
@@ -124,6 +222,7 @@ func (b *Broker) BanPlayer(ctx context.Context, id, player, reason string) error
 }
 
 // UnbanPlayer removes a player from the server's ban list.
+// For RCON-less games (P47) the record is removed from the file-backed store.
 func (b *Broker) UnbanPlayer(ctx context.Context, id, player string) error {
 	b.mu.RLock()
 	s, ok := b.servers[id]
@@ -131,8 +230,10 @@ func (b *Broker) UnbanPlayer(ctx context.Context, id, player string) error {
 	if !ok {
 		return fmt.Errorf("server not found: %s", id)
 	}
+	// P47: remove from file store for games without RCON ban support.
 	if !supportsBanlist(s.Adapter) {
-		return ErrBanlistNotSupported
+		b.removeFileBan(id, player)
+		return nil
 	}
 
 	safePlayer, err := sanitizePlayerName(s.Adapter, player)
