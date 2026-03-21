@@ -302,7 +302,10 @@ type Broker struct {
 	// per-server rotating log writers
 	logWriters map[string]*rotatingWriter
 	logWriteMu sync.Mutex // protects logWriters map
-	mu         sync.RWMutex
+	// serverCancels holds a cancel func per server to stop its doStart goroutine.
+	// Protected by mu.
+	serverCancels map[string]context.CancelFunc
+	mu            sync.RWMutex
 }
 
 // NewBroker creates a new Broker
@@ -402,9 +405,10 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 		processes:    make(map[string]*exec.Cmd),
 		metricsData:  metricsData,
 		diskWarnedAt: make(map[string]time.Time),
-		prevNetBytes: make(map[string][2]uint64),
-		prevNetTime:  make(map[string]time.Time),
-		logWriters:   make(map[string]*rotatingWriter),
+		prevNetBytes:  make(map[string][2]uint64),
+		prevNetTime:   make(map[string]time.Time),
+		logWriters:    make(map[string]*rotatingWriter),
+		serverCancels: make(map[string]context.CancelFunc),
 	}, nil
 }
 
@@ -1003,14 +1007,19 @@ func (b *Broker) DeleteServer(ctx context.Context, id string) error {
 		b.mu.Unlock()
 		return fmt.Errorf("server not found: %s", id)
 	}
-	if s.State == StateRunning {
+	if s.State == StateRunning || s.State == StateStarting {
 		b.mu.Unlock()
-		return fmt.Errorf("cannot delete running server; stop it first")
+		return fmt.Errorf("cannot delete a running or starting server; stop it first")
 	}
 	nodeID := s.NodeID
 	resources := s.Resources
 	deployMethod := s.DeployMethod
 	containerID := s.ContainerID
+	// Cancel the doStart goroutine for this server if one is running.
+	if cancel, ok := b.serverCancels[id]; ok {
+		cancel()
+		delete(b.serverCancels, id)
+	}
 	delete(b.servers, id)
 	b.saveServersLocked()
 	if ch, ok := b.consoleChs[id]; ok {
@@ -1068,10 +1077,16 @@ func (b *Broker) StartServer(ctx context.Context, id string) error {
 		b.mu.Unlock()
 		return fmt.Errorf("server is deploying; wait for deployment to finish")
 	}
+	// Cancel any previous doStart goroutine for this server (e.g. from a failed start).
+	if cancel, ok := b.serverCancels[id]; ok {
+		cancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	b.serverCancels[id] = cancel
 	s.State = StateStarting
 	b.mu.Unlock()
 
-	go b.doStart(context.Background(), id)
+	go b.doStart(ctx, id)
 	return nil
 }
 
@@ -1375,6 +1390,10 @@ func (b *Broker) doStop(ctx context.Context, id string) {
 
 	b.mu.Lock()
 	delete(b.processes, id)
+	if cancel, ok := b.serverCancels[id]; ok {
+		cancel()
+		delete(b.serverCancels, id)
+	}
 	if s, ok := b.servers[id]; ok {
 		s.State = StateStopped
 		now := time.Now()
