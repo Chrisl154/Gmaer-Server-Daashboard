@@ -309,6 +309,8 @@ function MFASection() {
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [regenCode, setRegenCode] = useState('');
   const [showRegen, setShowRegen] = useState(false);
+  const [showReenrollConfirm, setShowReenrollConfirm] = useState(false);
+  const [reenrollCode, setReenrollCode] = useState('');
 
   const { data: rcData } = useQuery({
     queryKey: ['totp-recovery-count'],
@@ -326,11 +328,23 @@ function MFASection() {
     onError: () => toast.error('Invalid TOTP code'),
   });
 
-  const handleSetup = async () => {
+  const handleSetup = async (currentCode?: string) => {
     setLoading(true);
-    try { const data = await setupTOTP(); setSetupData(data); }
-    catch { toast.error('Failed to setup TOTP'); }
+    try {
+      const data = await setupTOTP(currentCode);
+      setSetupData(data);
+      setShowReenrollConfirm(false);
+      setReenrollCode('');
+    } catch { toast.error(currentCode ? 'Invalid TOTP code' : 'Failed to setup TOTP'); }
     finally { setLoading(false); }
+  };
+
+  const handleReenrollClick = () => {
+    if (user?.totp_enabled) {
+      setShowReenrollConfirm(true);
+    } else {
+      handleSetup();
+    }
   };
 
   const handleVerify = async () => {
@@ -380,14 +394,42 @@ function MFASection() {
 
             {!setupData ? (
               <div className="space-y-3">
+                {showReenrollConfirm ? (
+                  <div className="space-y-2">
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Enter your current TOTP code to re-enroll:
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={reenrollCode}
+                        onChange={e => setReenrollCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="000000"
+                        maxLength={6}
+                        className="input font-mono tracking-widest text-center text-sm"
+                      />
+                      <button
+                        onClick={() => handleSetup(reenrollCode)}
+                        disabled={reenrollCode.length !== 6 || loading}
+                        className="btn-primary text-xs px-3"
+                      >
+                        {loading ? '…' : 'Continue'}
+                      </button>
+                      <button onClick={() => { setShowReenrollConfirm(false); setReenrollCode(''); }} className="btn-ghost text-xs px-3">
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
                 <button
-                  onClick={handleSetup}
+                  onClick={handleReenrollClick}
                   disabled={loading}
                   className="btn-ghost w-full justify-center"
                 >
                   <Shield className="w-4 h-4" />
                   {user?.totp_enabled ? 'Regenerate TOTP' : 'Enable TOTP'}
                 </button>
+                )}
 
                 {/* Recovery codes info — only when TOTP is enabled */}
                 {user?.totp_enabled && (

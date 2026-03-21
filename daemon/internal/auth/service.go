@@ -428,8 +428,9 @@ func (s *Service) validateAPIKey(raw string) (*Claims, error) {
 	return nil, fmt.Errorf("invalid API key")
 }
 
-// SetupTOTP initializes TOTP for a user
-func (s *Service) SetupTOTP(ctx context.Context, claims *Claims) (*TOTPSetupResponse, error) {
+// SetupTOTP initializes TOTP for a user. If TOTP is already enabled,
+// currentCode must be a valid TOTP code to prevent account takeover.
+func (s *Service) SetupTOTP(ctx context.Context, claims *Claims, currentCode string) (*TOTPSetupResponse, error) {
 	if claims == nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
@@ -437,6 +438,12 @@ func (s *Service) SetupTOTP(ctx context.Context, claims *Claims) (*TOTPSetupResp
 	user, exists := s.getUserByID(claims.UserID)
 	if !exists {
 		return nil, fmt.Errorf("user not found")
+	}
+
+	if user.TOTPEnabled {
+		if currentCode == "" || !totp.Validate(currentCode, user.TOTPSecret) {
+			return nil, fmt.Errorf("current TOTP code required to re-enroll 2FA")
+		}
 	}
 
 	secret := generateTOTPSecret()

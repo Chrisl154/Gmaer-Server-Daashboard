@@ -19,7 +19,7 @@ interface AuthState {
   loginWithToken: (token: string, user: User) => void;
   logout: () => void;
   checkAuth: () => void;
-  setupTOTP: () => Promise<{ secret: string; qr_code_url: string }>;
+  setupTOTP: (currentCode?: string) => Promise<{ secret: string; qr_code_url: string }>;
   verifyTOTP: (code: string) => Promise<{ recovery_codes: string[] }>;
 }
 
@@ -78,8 +78,8 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      setupTOTP: async () => {
-        const response = await api.post('/api/v1/auth/totp/setup');
+      setupTOTP: async (currentCode?: string) => {
+        const response = await api.post('/api/v1/auth/totp/setup', currentCode ? { current_code: currentCode } : {});
         return response.data;
       },
 

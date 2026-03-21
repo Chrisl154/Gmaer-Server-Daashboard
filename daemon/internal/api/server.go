@@ -865,9 +865,14 @@ func (s *Server) logout(c *gin.Context) {
 
 func (s *Server) setupTOTP(c *gin.Context) {
 	user := s.getUser(c)
-	setup, err := s.cfg.AuthSvc.SetupTOTP(c.Request.Context(), user)
+	var req struct {
+		CurrentCode string `json:"current_code"`
+	}
+	// body is optional — ignore parse errors (first-time setup has no body)
+	_ = c.ShouldBindJSON(&req)
+	setup, err := s.cfg.AuthSvc.SetupTOTP(c.Request.Context(), user, req.CurrentCode)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, setup)

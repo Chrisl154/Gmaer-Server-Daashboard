@@ -19,8 +19,8 @@ func TestLoad_MissingFile_ReturnsDefaults(t *testing.T) {
 	if cfg.ShutdownTimeout != 30*time.Second {
 		t.Errorf("ShutdownTimeout = %v, want 30s", cfg.ShutdownTimeout)
 	}
-	if cfg.Auth.TokenTTL != 24*time.Hour {
-		t.Errorf("TokenTTL = %v, want 24h", cfg.Auth.TokenTTL)
+	if cfg.Auth.TokenTTL != 2*time.Hour {
+		t.Errorf("TokenTTL = %v, want 2h", cfg.Auth.TokenTTL)
 	}
 	if cfg.Backup.RetainDays != 30 {
 		t.Errorf("Backup.RetainDays = %d, want 30", cfg.Backup.RetainDays)
