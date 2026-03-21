@@ -343,7 +343,11 @@ func (s *Server) createServer(c *gin.Context) {
 	server, err := s.cfg.Broker.CreateServer(c.Request.Context(), req)
 	if err != nil {
 		s.recordEvent(c, "create_server", req.ID, false, gin.H{"name": req.Name, "adapter": req.Adapter, "error": err.Error()})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "invalid server ID") || strings.Contains(err.Error(), "already exists") {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	s.recordEvent(c, "create_server", server.ID, true, gin.H{"name": server.Name, "adapter": server.Adapter})

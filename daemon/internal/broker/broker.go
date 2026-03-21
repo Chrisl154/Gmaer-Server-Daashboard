@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,10 @@ import (
 
 // ServerState represents the lifecycle state of a game server
 type ServerState string
+
+// validServerID matches safe server IDs: 1-64 chars, alphanumeric plus hyphens and underscores.
+// This prevents path traversal when the ID is used as a directory component.
+var validServerID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 const (
 	StateIdle      ServerState = "idle"
@@ -760,6 +765,10 @@ func (b *Broker) ListServers(ctx context.Context) ([]*Server, error) {
 
 // CreateServer creates a new server record
 func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Server, error) {
+	if !validServerID.MatchString(req.ID) {
+		return nil, fmt.Errorf("invalid server ID %q: must be 1-64 characters, alphanumeric, hyphens, or underscores", req.ID)
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
