@@ -274,7 +274,7 @@ collect_config_tui() {
 
   wt_input BACKUP_SCHEDULE \
     "Storage & Backup (3/5)" \
-    "Default backup schedule (cron syntax):" \
+    "Default backup schedule.\n\nFormat:  minute  hour  day-of-month  month  day-of-week\n\nPresets:\n  0 3 * * *     Daily at 3 AM\n  0 */6 * * *   Every 6 hours\n  0 3 * * 0     Weekly (Sunday 3 AM)\n  30 4 1 * *    Monthly (1st at 4:30 AM)\n\nEnter cron expression:" \
     "0 3 * * *"
 
   wt_input BACKUP_RETAIN_DAYS \
@@ -353,7 +353,9 @@ collect_config_readline() {
   echo -e "  ${BOLD}-- Storage & Backup -----------------------------${NC}"
   local _default_data="${INSTALL_DIR}/data"
   rl_input DATA_DIR          "Data directory"          "$_default_data"
-  rl_input BACKUP_SCHEDULE   "Backup cron schedule"    "0 3 * * *"
+  echo -e "  ${DIM}Cron format: minute  hour  day-of-month  month  day-of-week${NC}"
+  echo -e "  ${DIM}Examples:  0 3 * * *  (daily 3 AM)   0 */6 * * *  (every 6 h)   0 3 * * 0  (weekly Sun)${NC}"
+  rl_input BACKUP_SCHEDULE   "Backup schedule (cron)"  "0 3 * * *"
   rl_input BACKUP_RETAIN_DAYS "Backup retention (days)" "30"
 
   echo ""
@@ -726,13 +728,15 @@ BIN_DIR="$INSTALL_DIR/bin"
 mkdir -p "$BIN_DIR"
 
 log "Building daemon..."
-(cd "$REPO_DIR/daemon" && "$GO_BIN" mod tidy -e 2>/dev/null; \
-  "$GO_BIN" build -o "$BIN_DIR/games-daemon" ./cmd/daemon)
+(cd "$REPO_DIR/daemon" && \
+  GONOSUMDB="*" GOFLAGS="-mod=mod" "$GO_BIN" mod download 2>&1 | grep -v "^$" || true && \
+  GONOSUMDB="*" "$GO_BIN" build -o "$BIN_DIR/games-daemon" ./cmd/daemon)
 ok "Daemon → $BIN_DIR/games-daemon"
 
 log "Building CLI..."
-(cd "$REPO_DIR/cli" && "$GO_BIN" mod tidy -e 2>/dev/null; \
-  "$GO_BIN" build -o "$BIN_DIR/gdash" ./cmd)
+(cd "$REPO_DIR/cli" && \
+  GONOSUMDB="*" GOFLAGS="-mod=mod" "$GO_BIN" mod download 2>&1 | grep -v "^$" || true && \
+  GONOSUMDB="*" "$GO_BIN" build -o "$BIN_DIR/gdash" ./cmd)
 $SUDO ln -sf "$BIN_DIR/gdash" /usr/local/bin/gdash 2>/dev/null || true
 ok "CLI → $BIN_DIR/gdash (linked to /usr/local/bin/gdash)"
 
@@ -1070,13 +1074,15 @@ echo "Repository updated to: $(git -C "$REPO_DIR" rev-parse --short HEAD)"
 
 # ── Rebuild daemon ───────────────────────────────────────────────────────────
 echo "Building daemon..."
-$GO_BIN build -o "${BIN_DIR}/games-daemon.new" "${REPO_DIR}/daemon/cmd/daemon"
+(cd "${REPO_DIR}/daemon" && GONOSUMDB="*" GOFLAGS="-mod=mod" $GO_BIN mod download 2>&1 | grep -v "^$" || true)
+GONOSUMDB="*" $GO_BIN build -o "${BIN_DIR}/games-daemon.new" "${REPO_DIR}/daemon/cmd/daemon"
 mv "${BIN_DIR}/games-daemon.new" "${BIN_DIR}/games-daemon"
 echo "Daemon binary updated."
 
 # ── Rebuild CLI ──────────────────────────────────────────────────────────────
 echo "Building CLI..."
-$GO_BIN build -o "${BIN_DIR}/gdash.new" "${REPO_DIR}/cli/cmd"
+(cd "${REPO_DIR}/cli" && GONOSUMDB="*" GOFLAGS="-mod=mod" $GO_BIN mod download 2>&1 | grep -v "^$" || true)
+GONOSUMDB="*" $GO_BIN build -o "${BIN_DIR}/gdash.new" "${REPO_DIR}/cli/cmd"
 mv "${BIN_DIR}/gdash.new" "${BIN_DIR}/gdash"
 echo "CLI binary updated."
 
