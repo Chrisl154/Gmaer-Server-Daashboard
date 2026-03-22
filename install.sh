@@ -272,10 +272,30 @@ collect_config_tui() {
     "Data directory (server files, world saves, logs):" \
     "$_default_data"
 
-  wt_input BACKUP_SCHEDULE \
-    "Storage & Backup (3/5)" \
-    "Default backup schedule.\n\nFormat:  minute  hour  day-of-month  month  day-of-week\n\nPresets:\n  0 3 * * *     Daily at 3 AM\n  0 */6 * * *   Every 6 hours\n  0 3 * * 0     Weekly (Sunday 3 AM)\n  30 4 1 * *    Monthly (1st at 4:30 AM)\n\nEnter cron expression:" \
-    "0 3 * * *"
+  local _sched_pick
+  _sched_pick=$(whiptail --title "Storage & Backup (3/5)" \
+    --menu "How often should automatic backups run?" 18 68 6 \
+    "1" "Daily at 3 AM  (recommended)" \
+    "2" "Every 6 hours" \
+    "3" "Every hour" \
+    "4" "Weekly — Sunday at 3 AM" \
+    "5" "Monthly — 1st of month at 4:30 AM" \
+    "c" "Custom — enter your own schedule" \
+    3>&1 1>&2 2>&3) || true
+  case "${_sched_pick:-1}" in
+    1) BACKUP_SCHEDULE="0 3 * * *" ;;
+    2) BACKUP_SCHEDULE="0 */6 * * *" ;;
+    3) BACKUP_SCHEDULE="0 * * * *" ;;
+    4) BACKUP_SCHEDULE="0 3 * * 0" ;;
+    5) BACKUP_SCHEDULE="30 4 1 * *" ;;
+    c|C)
+      wt_input BACKUP_SCHEDULE \
+        "Storage & Backup (3/5)" \
+        "Enter a cron expression (minute hour day month weekday):" \
+        "0 3 * * *"
+      ;;
+    *) BACKUP_SCHEDULE="0 3 * * *" ;;
+  esac
 
   wt_input BACKUP_RETAIN_DAYS \
     "Storage & Backup (3/5)" \
@@ -352,10 +372,29 @@ collect_config_readline() {
   echo ""
   echo -e "  ${BOLD}-- Storage & Backup -----------------------------${NC}"
   local _default_data="${INSTALL_DIR}/data"
-  rl_input DATA_DIR          "Data directory"          "$_default_data"
-  echo -e "  ${DIM}Cron format: minute  hour  day-of-month  month  day-of-week${NC}"
-  echo -e "  ${DIM}Examples:  0 3 * * *  (daily 3 AM)   0 */6 * * *  (every 6 h)   0 3 * * 0  (weekly Sun)${NC}"
-  rl_input BACKUP_SCHEDULE   "Backup schedule (cron)"  "0 3 * * *"
+  rl_input DATA_DIR "Data directory" "$_default_data"
+
+  echo -e "\n  ${BOLD}Backup schedule — pick a number or press Enter for default:${NC}"
+  echo -e "    1) Daily at 3 AM          (recommended)"
+  echo -e "    2) Every 6 hours"
+  echo -e "    3) Every hour"
+  echo -e "    4) Weekly — Sunday at 3 AM"
+  echo -e "    5) Monthly — 1st at 4:30 AM"
+  echo -e "    c) Custom (enter cron expression)"
+  local _sched_rl=""
+  IFS= read -r -p "  Choice [1]: " _sched_rl </dev/tty 2>/dev/null || true
+  case "${_sched_rl:-1}" in
+    1) BACKUP_SCHEDULE="0 3 * * *" ;;
+    2) BACKUP_SCHEDULE="0 */6 * * *" ;;
+    3) BACKUP_SCHEDULE="0 * * * *" ;;
+    4) BACKUP_SCHEDULE="0 3 * * 0" ;;
+    5) BACKUP_SCHEDULE="30 4 1 * *" ;;
+    c|C)
+      rl_input BACKUP_SCHEDULE "Cron expression (minute hour day month weekday)" "0 3 * * *"
+      ;;
+    *) BACKUP_SCHEDULE="0 3 * * *" ;;
+  esac
+
   rl_input BACKUP_RETAIN_DAYS "Backup retention (days)" "30"
 
   echo ""
