@@ -9,6 +9,26 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security — Audit Round 2 HIGH findings
+
+- **H1 — RCON ban reason injection** (`broker/banlist.go`): `reason` parameter in
+  `BanPlayer` is now sanitized with `rconDangerousChars.Replace()` before being
+  interpolated into the RCON command, stripping `\n`, `\r`, `\x00`, and `;`.
+- **H2 — Race condition on `s.users` map** (`auth/service.go`, `auth/persist.go`):
+  Added `usersMu sync.RWMutex` to `Service` and applied it at every `s.users`
+  access site (14 call sites across Login, CreateUser, UpdateUser, DeleteUser,
+  OIDCCallback, SteamCallback, push subscriptions, API key methods, and
+  `saveUsers()`). Removed the narrower `subsMu` and `apiKeysMu` fields — all user
+  data is now protected by a single consistent mutex, eliminating lock-ordering
+  risk. `saveUsers()` now snapshots under `RLock` before marshaling.
+- **H3 — Tailscale `AuthKey` JSON tag** (`config/config.go`): Changed
+  `json:"auth_key"` → `json:"-"` so the Tailscale auth key cannot leak into
+  any JSON API response.
+- **H4 — Non-atomic `servers.json` write** (`broker/broker.go`): `saveServersLocked()`
+  now writes to `servers.json.tmp` and renames atomically, matching the same
+  pattern used by `saveUsers()`. A daemon crash mid-write no longer truncates
+  server state.
+
 ### Added
 - **Tailscale integration** (`tailscale.com/tsnet`) — daemon joins your Tailnet
   as an embedded node; TLS is automatic via `*.ts.net` certs (no cert files

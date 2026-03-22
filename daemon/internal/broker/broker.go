@@ -466,8 +466,14 @@ func (b *Broker) saveServersLocked() {
 		b.logger.Warn("Failed to marshal server state", zap.Error(err))
 		return
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		b.logger.Warn("Failed to write server state", zap.Error(err))
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		b.logger.Warn("Failed to write server state temp file", zap.Error(err))
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		b.logger.Warn("Failed to rename server state file", zap.Error(err))
+		_ = os.Remove(tmp)
 	}
 }
 

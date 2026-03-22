@@ -105,16 +105,18 @@ func (s *Service) usersPath() string {
 	return filepath.Join(s.cfg.DataDir, "users.json")
 }
 
-// saveUsers atomically writes all users to disk. Must be called with s.mu held
-// or from a context where no concurrent mutations are possible.
+// saveUsers atomically writes all users to disk. Safe to call from any
+// goroutine — takes a snapshot under s.usersMu before marshaling.
 func (s *Service) saveUsers() {
 	if s.cfg.DataDir == "" {
 		return
 	}
+	s.usersMu.RLock()
 	stored := make([]storedUser, 0, len(s.users))
 	for _, u := range s.users {
 		stored = append(stored, toStoredUser(u))
 	}
+	s.usersMu.RUnlock()
 	data, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
 		s.logger.Sugar().Warnf("auth: failed to marshal users: %v", err)

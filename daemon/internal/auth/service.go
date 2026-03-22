@@ -199,7 +199,8 @@ type Service struct {
 	cfg      Config
 	secrets  *secrets.Manager
 	logger   *zap.Logger
-	users      map[string]*User
+	users    map[string]*User
+	usersMu  sync.RWMutex // protects users map and all User field mutations
 	auditLog   []AuditEntry
 	auditLogMu sync.RWMutex
 
@@ -217,12 +218,6 @@ type Service struct {
 
 	// Steam — nonce map prevents replay attacks on the callback
 	steamStates sync.Map // state nonce -> expiry time.Time
-
-	// Push subscription management
-	subsMu sync.RWMutex
-
-	// API key management
-	apiKeysMu sync.RWMutex
 }
 
 // NewService creates a new auth service
@@ -258,7 +253,9 @@ func NewService(cfg Config, secretsMgr *secrets.Manager, logger *zap.Logger) (*S
 
 // Login authenticates a user
 func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, error) {
+	s.usersMu.RLock()
 	user, exists := s.users[req.Username]
+	s.usersMu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("invalid credentials")
 	}
@@ -317,7 +314,9 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 		return nil, fmt.Errorf("failed to sign token: %w", err)
 	}
 
+	s.usersMu.Lock()
 	user.LastLogin = time.Now()
+	s.usersMu.Unlock()
 	go s.saveUsers()
 
 	s.audit(user.ID, user.Username, "login", "auth", "", true, nil)
@@ -416,8 +415,8 @@ func (s *Service) validateAPIKey(raw string) (*Claims, error) {
 	hash := hashAPIKey(raw)
 	now := time.Now()
 
-	s.apiKeysMu.Lock()
-	defer s.apiKeysMu.Unlock()
+	s.usersMu.Lock()
+	defer s.usersMu.Unlock()
 
 	for _, u := range s.users {
 		for i, key := range u.APIKeys {
@@ -632,6 +631,7 @@ func (s *Service) OIDCCallback(ctx context.Context, code, state string) (*LoginR
 	}
 
 	// Find or create a local user record for this OIDC identity
+	s.usersMu.Lock()
 	user, exists := s.users[username]
 	if !exists {
 		user = &User{
@@ -644,6 +644,7 @@ func (s *Service) OIDCCallback(ctx context.Context, code, state string) (*LoginR
 		s.logger.Info("Created user from OIDC", zap.String("username", username))
 	}
 	user.LastLogin = time.Now()
+	s.usersMu.Unlock()
 	go s.saveUsers()
 
 	// Issue a Games Dashboard JWT
@@ -682,15 +683,19 @@ func (s *Service) OIDCCallback(ctx context.Context, code, state string) (*LoginR
 
 // ListUsers returns all users
 func (s *Service) ListUsers(ctx context.Context) ([]*User, error) {
+	s.usersMu.RLock()
 	users := make([]*User, 0, len(s.users))
 	for _, u := range s.users {
 		users = append(users, sanitizeUser(u))
 	}
+	s.usersMu.RUnlock()
 	return users, nil
 }
 
 // IsInitialized returns true when at least one user account exists.
 func (s *Service) IsInitialized() bool {
+	s.usersMu.RLock()
+	defer s.usersMu.RUnlock()
 	return len(s.users) > 0
 }
 
@@ -706,13 +711,18 @@ func (s *Service) BootstrapAdmin(ctx context.Context, req CreateUserRequest) (*U
 	if err != nil {
 		return nil, "", err
 	}
+	s.usersMu.RLock()
 	hash := s.users[req.Username].PasswordHash
+	s.usersMu.RUnlock()
 	return user, hash, nil
 }
 
 // CreateUser creates a new user
 func (s *Service) CreateUser(ctx context.Context, req CreateUserRequest) (*User, error) {
-	if _, exists := s.users[req.Username]; exists {
+	s.usersMu.Lock()
+	_, exists := s.users[req.Username]
+	s.usersMu.Unlock()
+	if exists {
 		return nil, fmt.Errorf("user already exists")
 	}
 
@@ -730,15 +740,19 @@ func (s *Service) CreateUser(ctx context.Context, req CreateUserRequest) (*User,
 		CreatedAt:      time.Now(),
 	}
 
+	s.usersMu.Lock()
 	s.users[req.Username] = user
+	s.usersMu.Unlock()
 	go s.saveUsers()
 	return sanitizeUser(user), nil
 }
 
 // UpdateUser updates user fields
 func (s *Service) UpdateUser(ctx context.Context, userID string, req UpdateUserRequest) (*User, error) {
+	s.usersMu.Lock()
 	user, exists := s.getUserByID(userID)
 	if !exists {
+		s.usersMu.Unlock()
 		return nil, fmt.Errorf("user not found")
 	}
 
@@ -757,20 +771,23 @@ func (s *Service) UpdateUser(ctx context.Context, userID string, req UpdateUserR
 	if req.AllowedServers != nil {
 		user.AllowedServers = *req.AllowedServers
 	}
-
+	s.usersMu.Unlock()
 	go s.saveUsers()
 	return sanitizeUser(user), nil
 }
 
 // DeleteUser removes a user
 func (s *Service) DeleteUser(ctx context.Context, userID string) error {
+	s.usersMu.Lock()
 	for username, u := range s.users {
 		if u.ID == userID {
 			delete(s.users, username)
+			s.usersMu.Unlock()
 			go s.saveUsers()
 			return nil
 		}
 	}
+	s.usersMu.Unlock()
 	return fmt.Errorf("user not found")
 }
 
@@ -810,6 +827,7 @@ func (s *Service) RecordEvent(userID, username, action, resource, ip string, suc
 	s.audit(userID, username, action, resource, ip, success, details)
 }
 
+// getUserByID finds a user by ID. Caller must hold s.usersMu (read or write).
 func (s *Service) getUserByID(id string) (*User, bool) {
 	for _, u := range s.users {
 		if u.ID == id {
@@ -985,6 +1003,7 @@ func (s *Service) SteamCallback(ctx context.Context, rawQuery string) (*LoginRes
 
 	// Find or create local user keyed on "steam:<steamID>"
 	userKey := "steam:" + steamID
+	s.usersMu.Lock()
 	user, exists := s.users[userKey]
 	if !exists {
 		user = &User{
@@ -997,6 +1016,7 @@ func (s *Service) SteamCallback(ctx context.Context, rawQuery string) (*LoginRes
 		s.logger.Info("Created user from Steam", zap.String("steam_id", steamID), zap.String("username", displayName))
 	}
 	user.LastLogin = time.Now()
+	s.usersMu.Unlock()
 	go s.saveUsers()
 
 	expiresAt := time.Now().Add(s.cfg.TokenTTL)
@@ -1068,8 +1088,8 @@ func parseQuery(rawQuery string) (map[string]string, error) {
 // AddPushSubscription saves a Web Push subscription for the given user.
 // If the endpoint is already registered it is replaced (idempotent).
 func (s *Service) AddPushSubscription(userID string, sub PushSubscription) error {
-	s.subsMu.Lock()
-	defer s.subsMu.Unlock()
+	s.usersMu.Lock()
+	defer s.usersMu.Unlock()
 	for _, u := range s.users {
 		if u.ID == userID {
 			// Replace existing entry with same endpoint, or append.
@@ -1089,8 +1109,8 @@ func (s *Service) AddPushSubscription(userID string, sub PushSubscription) error
 
 // RemovePushSubscription deletes the subscription with the given endpoint for a user.
 func (s *Service) RemovePushSubscription(userID, endpoint string) {
-	s.subsMu.Lock()
-	defer s.subsMu.Unlock()
+	s.usersMu.Lock()
+	defer s.usersMu.Unlock()
 	for _, u := range s.users {
 		if u.ID == userID {
 			subs := u.PushSubscriptions[:0]
@@ -1109,8 +1129,8 @@ func (s *Service) RemovePushSubscription(userID, endpoint string) {
 // RemovePushSubscriptionByEndpoint removes the subscription with the given endpoint
 // across all users. Called by the push service when a 410 Gone is received. P50.
 func (s *Service) RemovePushSubscriptionByEndpoint(endpoint string) {
-	s.subsMu.Lock()
-	defer s.subsMu.Unlock()
+	s.usersMu.Lock()
+	defer s.usersMu.Unlock()
 	for _, u := range s.users {
 		n := u.PushSubscriptions[:0]
 		for _, sub := range u.PushSubscriptions {
@@ -1126,8 +1146,8 @@ func (s *Service) RemovePushSubscriptionByEndpoint(endpoint string) {
 // GetAllWebPushSubs returns a flat list of all push subscriptions across all users.
 // This is used by the notifications service to fan out to every subscriber.
 func (s *Service) GetAllWebPushSubs() []notifications.WebPushSub {
-	s.subsMu.RLock()
-	defer s.subsMu.RUnlock()
+	s.usersMu.RLock()
+	defer s.usersMu.RUnlock()
 	var all []notifications.WebPushSub
 	for _, u := range s.users {
 		for _, sub := range u.PushSubscriptions {
@@ -1210,8 +1230,8 @@ func (s *Service) CreateAPIKey(ctx context.Context, callerClaims *Claims, req Cr
 		ExpiresAt: req.ExpiresAt,
 	}
 
-	s.apiKeysMu.Lock()
-	defer s.apiKeysMu.Unlock()
+	s.usersMu.Lock()
+	defer s.usersMu.Unlock()
 	for _, u := range s.users {
 		if u.ID == callerClaims.UserID {
 			u.APIKeys = append(u.APIKeys, key)
@@ -1225,8 +1245,8 @@ func (s *Service) CreateAPIKey(ctx context.Context, callerClaims *Claims, req Cr
 
 // ListAPIKeys returns the API keys for the given user (hashes omitted).
 func (s *Service) ListAPIKeys(userID string) ([]APIKey, error) {
-	s.apiKeysMu.RLock()
-	defer s.apiKeysMu.RUnlock()
+	s.usersMu.RLock()
+	defer s.usersMu.RUnlock()
 	for _, u := range s.users {
 		if u.ID == userID {
 			out := make([]APIKey, len(u.APIKeys))
@@ -1239,8 +1259,8 @@ func (s *Service) ListAPIKeys(userID string) ([]APIKey, error) {
 
 // RevokeAPIKey removes an API key by ID for the given user.
 func (s *Service) RevokeAPIKey(ctx context.Context, userID, keyID string) error {
-	s.apiKeysMu.Lock()
-	defer s.apiKeysMu.Unlock()
+	s.usersMu.Lock()
+	defer s.usersMu.Unlock()
 	for _, u := range s.users {
 		if u.ID == userID {
 			orig := len(u.APIKeys)

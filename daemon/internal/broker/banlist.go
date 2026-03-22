@@ -209,7 +209,8 @@ func (b *Broker) BanPlayer(ctx context.Context, id, player, reason string) error
 	switch s.Adapter {
 	case "minecraft":
 		if reason != "" {
-			cmd = fmt.Sprintf("ban %s %s", safePlayer, reason)
+			safeReason := strings.TrimSpace(rconDangerousChars.Replace(reason))
+			cmd = fmt.Sprintf("ban %s %s", safePlayer, safeReason)
 		} else {
 			cmd = fmt.Sprintf("ban %s", safePlayer)
 		}

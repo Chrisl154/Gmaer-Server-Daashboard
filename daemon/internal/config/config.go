@@ -45,7 +45,7 @@ type TailscaleConfig struct {
 	// AuthKey is a Tailscale auth key (tskey-auth-…). On first boot it
 	// authenticates the node; subsequent starts reuse the persisted state in
 	// StateDir. Alternatively set TAILSCALE_AUTH_KEY in the environment.
-	AuthKey string `yaml:"auth_key" json:"auth_key"`
+	AuthKey string `yaml:"auth_key" json:"-"`
 	// Hostname is the Tailnet hostname for this node (default: gmaer-dashboard).
 	Hostname string `yaml:"hostname" json:"hostname"`
 	// StateDir is where tsnet persists keys and identity across restarts.
