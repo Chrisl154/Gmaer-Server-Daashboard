@@ -14,25 +14,45 @@ import (
 )
 
 const (
-	updateScriptPath = "/opt/gdash/bin/gdash-update.sh"
-	repoDirPath      = "/opt/gdash/repo"
-	updateLogPath    = "/opt/gdash/logs/gdash-update.log"
+	updateScriptPath   = "/opt/gdash/bin/gdash-update.sh"
+	defaultRepoDirPath = "/opt/gdash/repo"
+	updateLogPath      = "/opt/gdash/logs/gdash-update.log"
 )
+
+// resolveRepoDirPath returns the git repo path for update checks.
+// It prefers /opt/gdash/repo (production install), falling back to the
+// current working directory's repo root (development mode).
+func resolveRepoDirPath() string {
+	// Production path exists — use it.
+	if fi, err := os.Stat(defaultRepoDirPath); err == nil && fi.IsDir() {
+		return defaultRepoDirPath
+	}
+	// Fall back to the git repo root of the daemon's working directory.
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output() //nolint:gosec
+	if err == nil {
+		if dir := strings.TrimSpace(string(out)); dir != "" {
+			return dir
+		}
+	}
+	return defaultRepoDirPath
+}
 
 // getUpdateStatus returns current branch, commit, and whether updates are available
 // on the requested target branch (query param ?branch=dev|main; defaults to current branch).
 func (s *Server) getUpdateStatus(c *gin.Context) {
-	hashOut, err := exec.Command("git", "-C", repoDirPath, "rev-parse", "--short", "HEAD").Output() //nolint:gosec
+	repoDir := resolveRepoDirPath()
+
+	hashOut, err := exec.Command("git", "-C", repoDir, "rev-parse", "--short", "HEAD").Output() //nolint:gosec
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"error":            "could not read git state — is the repo at " + repoDirPath + "?",
+			"error":            "could not read git state — is the repo at " + repoDir + "?",
 			"update_available": false,
 		})
 		return
 	}
 	currentCommit := strings.TrimSpace(string(hashOut))
 
-	branchOut, _ := exec.Command("git", "-C", repoDirPath, "rev-parse", "--abbrev-ref", "HEAD").Output() //nolint:gosec
+	branchOut, _ := exec.Command("git", "-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD").Output() //nolint:gosec
 	currentBranch := strings.TrimSpace(string(branchOut))
 	if currentBranch == "" {
 		currentBranch = "main"
@@ -45,14 +65,14 @@ func (s *Server) getUpdateStatus(c *gin.Context) {
 	}
 
 	// Fetch so behind-count is accurate (best-effort; ignore errors — no internet, etc.)
-	_ = exec.Command("git", "-C", repoDirPath, "fetch", "origin", "--quiet").Run() //nolint:gosec
+	_ = exec.Command("git", "-C", repoDir, "fetch", "origin", "--quiet").Run() //nolint:gosec
 
 	// Compare HEAD against origin/<targetBranch> so switching to dev shows dev's commits.
-	behindOut, _ := exec.Command("git", "-C", repoDirPath, "rev-list", //nolint:gosec
+	behindOut, _ := exec.Command("git", "-C", repoDir, "rev-list", //nolint:gosec
 		"HEAD..origin/"+targetBranch, "--count").Output()
 	commitsBehind, _ := strconv.Atoi(strings.TrimSpace(string(behindOut)))
 
-	latestOut, _ := exec.Command("git", "-C", repoDirPath, "log", //nolint:gosec
+	latestOut, _ := exec.Command("git", "-C", repoDir, "log", //nolint:gosec
 		"origin/"+targetBranch, "-1", "--pretty=format:%s").Output()
 	latestMsg := strings.TrimSpace(string(latestOut))
 

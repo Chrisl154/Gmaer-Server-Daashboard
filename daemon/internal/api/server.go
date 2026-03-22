@@ -1033,7 +1033,8 @@ func (s *Server) getVersion(c *gin.Context) {
 }
 
 func runGit(args ...string) string {
-	out, err := exec.Command("git", append([]string{"-C", repoDirPath}, args...)...).Output() //nolint:gosec
+	repoDir := resolveRepoDirPath()
+	out, err := exec.Command("git", append([]string{"-C", repoDir}, args...)...).Output() //nolint:gosec
 	if err != nil {
 		return ""
 	}
