@@ -8,32 +8,99 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// NotificationsConfig holds webhook and email notification settings.
+type NotificationsConfig struct {
+	WebhookURL    string       `yaml:"webhook_url" json:"webhook_url"`
+	WebhookFormat string       `yaml:"webhook_format" json:"webhook_format"` // discord|slack|generic
+	Events        []string     `yaml:"events" json:"events"`                 // server.crash|server.restart|disk.warning|backup.failed|backup.complete
+	Email         *EmailConfig `yaml:"email,omitempty" json:"email,omitempty"`
+}
+
+// EmailConfig holds SMTP settings for email notifications.
+type EmailConfig struct {
+	Enabled  bool     `yaml:"enabled" json:"enabled"`
+	SMTPHost string   `yaml:"smtp_host" json:"smtp_host"`
+	SMTPPort int      `yaml:"smtp_port" json:"smtp_port"` // 587 (STARTTLS) or 465 (implicit TLS)
+	Username string   `yaml:"username" json:"username"`
+	Password string   `yaml:"password" json:"password"`
+	From     string   `yaml:"from" json:"from"`
+	To       []string `yaml:"to" json:"to"`
+	// UseTLS switches between STARTTLS (false, port 587) and implicit TLS (true, port 465).
+	UseTLS bool `yaml:"use_tls" json:"use_tls"`
+}
+
+// LogRotationConfig controls per-server daemon event log rotation.
+type LogRotationConfig struct {
+	MaxSizeMB  int  `yaml:"max_size_mb" json:"max_size_mb"`   // rotate when file exceeds this (default 100)
+	MaxBackups int  `yaml:"max_backups" json:"max_backups"`   // keep this many rotated files (default 5)
+	MaxAgeDays int  `yaml:"max_age_days" json:"max_age_days"` // delete rotated files older than this (default 30)
+	Compress   bool `yaml:"compress" json:"compress"`         // gzip rotated files (default true)
+}
+
+// TailscaleConfig controls the embedded tsnet node.
+type TailscaleConfig struct {
+	// Enabled activates the Tailscale listener. When true the daemon joins your
+	// Tailnet and listens on its Tailscale IP. TLS is automatic via *.ts.net certs.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// AuthKey is a Tailscale auth key (tskey-auth-…). On first boot it
+	// authenticates the node; subsequent starts reuse the persisted state in
+	// StateDir. Alternatively set TAILSCALE_AUTH_KEY in the environment.
+	AuthKey string `yaml:"auth_key" json:"-"`
+	// Hostname is the Tailnet hostname for this node (default: gmaer-dashboard).
+	Hostname string `yaml:"hostname" json:"hostname"`
+	// StateDir is where tsnet persists keys and identity across restarts.
+	// Defaults to {data_dir}/tailscale.
+	StateDir string `yaml:"state_dir" json:"state_dir"`
+	// Dual, when true, also starts the standard bind-addr listener in addition
+	// to the Tailscale one — useful for LAN or WAN access alongside Tailscale.
+	Dual bool `yaml:"dual" json:"dual"`
+}
+
 // Config is the top-level daemon configuration
 type Config struct {
-	BindAddr        string          `yaml:"bind_addr" json:"bind_addr"`
-	TLS             TLSConfig       `yaml:"tls" json:"tls"`
-	Auth            AuthConfig      `yaml:"auth" json:"auth"`
-	Secrets         SecretsConfig   `yaml:"secrets" json:"secrets"`
-	Storage         StorageConfig   `yaml:"storage" json:"storage"`
-	ShutdownTimeout time.Duration   `yaml:"shutdown_timeout" json:"shutdown_timeout"`
-	Adapters        AdaptersConfig  `yaml:"adapters" json:"adapters"`
-	Backup          BackupConfig    `yaml:"backup" json:"backup"`
-	Metrics         MetricsConfig   `yaml:"metrics" json:"metrics"`
-	Cluster         ClusterConfig   `yaml:"cluster" json:"cluster"`
-	LogLevel        string          `yaml:"log_level" json:"log_level"`
-	DataDir         string          `yaml:"data_dir" json:"data_dir"`
+	BindAddr        string              `yaml:"bind_addr" json:"bind_addr"`
+	TLS             TLSConfig           `yaml:"tls" json:"tls"`
+	Tailscale       TailscaleConfig     `yaml:"tailscale" json:"tailscale"`
+	Auth            AuthConfig          `yaml:"auth" json:"auth"`
+	Secrets         SecretsConfig       `yaml:"secrets" json:"secrets"`
+	Storage         StorageConfig       `yaml:"storage" json:"storage"`
+	ShutdownTimeout time.Duration       `yaml:"shutdown_timeout" json:"shutdown_timeout"`
+	Adapters        AdaptersConfig      `yaml:"adapters" json:"adapters"`
+	Backup          BackupConfig        `yaml:"backup" json:"backup"`
+	Metrics         MetricsConfig       `yaml:"metrics" json:"metrics"`
+	Cluster         ClusterConfig       `yaml:"cluster" json:"cluster"`
+	Notifications   NotificationsConfig `yaml:"notifications" json:"notifications"`
+	LogRotation     LogRotationConfig   `yaml:"log_rotation" json:"log_rotation"`
+	LogLevel        string              `yaml:"log_level" json:"log_level"`
+	DataDir         string              `yaml:"data_dir" json:"data_dir"`
+	Updates         UpdateConfig        `yaml:"updates" json:"updates"`
+}
+
+// UpdateConfig controls self-update behaviour.
+type UpdateConfig struct {
+	// RequireSignedCommits rejects updates whose tip commit is not GPG-signed.
+	// Set to false only if the repository does not use commit signing.
+	RequireSignedCommits bool `yaml:"require_signed_commits" json:"require_signed_commits"`
 }
 
 type TLSConfig struct {
-	CertFile string `yaml:"cert_file" json:"cert_file"`
-	KeyFile  string `yaml:"key_file" json:"key_file"`
-	AutoTLS  bool   `yaml:"auto_tls" json:"auto_tls"`
+	CertFile     string `yaml:"cert_file" json:"cert_file"`
+	KeyFile      string `yaml:"key_file" json:"key_file"`
+	// AutoTLS enables Let's Encrypt certificate issuance and automatic renewal
+	// via the ACME HTTP-01 challenge. Requires ACMEDomain and ACMEEmail to be set,
+	// and port 80 to be reachable from the internet.
+	AutoTLS      bool   `yaml:"auto_tls" json:"auto_tls"`
+	ACMEDomain   string `yaml:"acme_domain" json:"acme_domain"`     // domain to issue the cert for
+	ACMEEmail    string `yaml:"acme_email" json:"acme_email"`       // contact email for Let's Encrypt account
+	ACMECacheDir string `yaml:"acme_cache_dir" json:"acme_cache_dir"` // where to persist ACME state (default /etc/games-dashboard/tls/acme)
+	ACMEStaging  bool   `yaml:"acme_staging" json:"acme_staging"`   // use Let's Encrypt staging CA (for testing)
 }
 
 type AuthConfig struct {
 	Local       LocalAuthConfig  `yaml:"local" json:"local"`
 	OIDC        *OIDCConfig      `yaml:"oidc,omitempty" json:"oidc,omitempty"`
 	SAML        *SAMLConfig      `yaml:"saml,omitempty" json:"saml,omitempty"`
+	Steam       *SteamConfig     `yaml:"steam,omitempty" json:"steam,omitempty"`
 	JWTSecret   string           `yaml:"jwt_secret" json:"jwt_secret"`
 	TokenTTL    time.Duration    `yaml:"token_ttl" json:"token_ttl"`
 	MFARequired bool             `yaml:"mfa_required" json:"mfa_required"`
@@ -55,6 +122,14 @@ type OIDCConfig struct {
 type SAMLConfig struct {
 	MetadataURL string `yaml:"metadata_url" json:"metadata_url"`
 	EntityID    string `yaml:"entity_id" json:"entity_id"`
+}
+
+type SteamConfig struct {
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	APIKey      string `yaml:"api_key" json:"api_key"`
+	ReturnURL   string `yaml:"return_url" json:"return_url"`
+	Realm       string `yaml:"realm" json:"realm"`
+	FrontendURL string `yaml:"frontend_url" json:"frontend_url"`
 }
 
 type SecretsConfig struct {
@@ -147,9 +222,11 @@ func defaults() *Config {
 			KeyFile:  "/etc/games-dashboard/tls/server.key",
 		},
 		Auth: AuthConfig{
-			Local: LocalAuthConfig{Enabled: true},
-			TokenTTL: 24 * time.Hour,
-			JWTSecret: "change-me-in-production",
+			Local:    LocalAuthConfig{Enabled: true},
+			TokenTTL: 2 * time.Hour,
+			// JWTSecret intentionally left empty — main.go calls resolveJWTSecret
+			// which loads an existing secret from data_dir/jwt_secret or generates
+			// a fresh 64-character random secret and persists it.
 		},
 		Secrets: SecretsConfig{
 			Backend: "local",
@@ -170,7 +247,19 @@ func defaults() *Config {
 			Enabled: true,
 			Path:    "/metrics",
 		},
+		LogRotation: LogRotationConfig{
+			MaxSizeMB:  100,
+			MaxBackups: 5,
+			MaxAgeDays: 30,
+			Compress:   true,
+		},
+		Tailscale: TailscaleConfig{
+			Hostname: "gmaer-dashboard",
+		},
 		LogLevel: "info",
 		DataDir:  "/var/lib/games-dashboard",
+		Updates: UpdateConfig{
+			RequireSignedCommits: true,
+		},
 	}
 }

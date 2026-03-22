@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Play, Square, RotateCcw, Terminal } from 'lucide-react';
+import { Play, Square, RotateCcw, Terminal, AlertTriangle, X, HelpCircle } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-hot-toast';
 import { api } from '../../utils/api';
@@ -16,6 +16,10 @@ interface Server {
   ports: Array<{ internal: number; external: number; protocol: string }>;
   resources: { cpu_cores: number; ram_gb: number; disk_gb: number };
   last_started?: string;
+  last_error?: string;
+  restart_count?: number;
+  last_crash_at?: string;
+  disk_pct?: number;
 }
 
 const STATE_CLASS: Record<string, string> = {
@@ -38,9 +42,46 @@ const STATE_LABELS: Record<string, string> = {
   idle:      'Idle',
 };
 
+function ErrorHelpModal({ message, onClose }: { message: string; onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.6)' }}
+      onClick={onClose}
+    >
+      <div
+        className="relative max-w-md w-full rounded-xl p-6 shadow-2xl"
+        style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+        onClick={e => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 btn-ghost p-1"
+          style={{ padding: '4px' }}
+        >
+          <X className="w-4 h-4" />
+        </button>
+        <div className="flex items-start gap-3 mb-4">
+          <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" style={{ color: '#f87171' }} />
+          <h3 className="font-semibold" style={{ color: 'var(--text-primary)' }}>What does this mean?</h3>
+        </div>
+        <p className="text-sm leading-relaxed mb-4" style={{ color: 'var(--text-secondary)' }}>
+          {message}
+        </p>
+        <div className="text-xs p-3 rounded-lg" style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
+          <strong style={{ color: 'var(--text-secondary)' }}>Next steps:</strong> Check the Console tab for detailed
+          output, then try Deploy → Start again. If the problem persists, verify your install directory has enough
+          disk space and the correct file permissions.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ServerCard({ server }: { server: Server }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [showErrorHelp, setShowErrorHelp] = useState(false);
 
   const startMutation = useMutation({
     mutationFn: () => api.post(`/api/v1/servers/${server.id}/start`),
@@ -80,6 +121,8 @@ export function ServerCard({ server }: { server: Server }) {
   // Mock CPU/RAM percentages based on resources for display
   const cpuPct = isRunning ? Math.min(95, (server.resources?.cpu_cores ?? 1) * 12 + 15) : 0;
   const ramPct = isRunning ? Math.min(90, (server.resources?.ram_gb ?? 1) * 8 + 20) : 0;
+  const diskPct = server.disk_pct ?? 0;
+  const diskColor = diskPct >= 95 ? '#ef4444' : diskPct >= 85 ? '#f97316' : diskPct >= 70 ? '#eab308' : '#22c55e';
 
   return (
     <div
@@ -138,6 +181,28 @@ export function ServerCard({ server }: { server: Server }) {
         </span>
       </div>
 
+      {/* Error banner — shown only in error state */}
+      {server.state === 'error' && server.last_error && (
+        <div
+          className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
+          style={{
+            background: 'rgba(239,68,68,0.1)',
+            border: '1px solid rgba(239,68,68,0.25)',
+            color: '#fca5a5',
+          }}
+        >
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <span className="flex-1 line-clamp-2">{server.last_error}</span>
+          <button
+            onClick={e => { e.stopPropagation(); setShowErrorHelp(true); }}
+            title="What does this mean?"
+            style={{ color: '#fb923c', flexShrink: 0 }}
+          >
+            <HelpCircle className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Deploy method + ports */}
       <div className="flex flex-wrap items-center gap-2">
         {server.deploy_method && (
@@ -172,48 +237,28 @@ export function ServerCard({ server }: { server: Server }) {
         )}
       </div>
 
-      {/* CPU / RAM progress bars */}
+      {/* CPU / RAM / Disk progress bars */}
       <div className="space-y-2.5">
-        <div>
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>CPU</span>
-            <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-              {isRunning ? `${cpuPct}%` : '—'}
-            </span>
+        {[
+          { label: 'CPU', pct: cpuPct, show: isRunning, color: 'linear-gradient(90deg, #f97316, #ea580c)' },
+          { label: 'RAM', pct: ramPct, show: isRunning, color: 'linear-gradient(90deg, #f97316, #ea580c)' },
+          { label: 'Disk', pct: diskPct, show: diskPct > 0, color: diskColor },
+        ].map(({ label, pct, show, color }) => (
+          <div key={label}>
+            <div className="flex justify-between items-center mb-1">
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{label}</span>
+              <span className="text-xs font-medium" style={{ color: label === 'Disk' && diskPct >= 85 ? diskColor : 'var(--text-secondary)' }}>
+                {show ? `${Math.round(pct)}%` : '—'}
+              </span>
+            </div>
+            <div className="h-1 rounded-full w-full" style={{ background: 'var(--bg-elevated)' }}>
+              <div
+                className="h-full rounded-full transition-all duration-700"
+                style={{ width: show ? `${pct}%` : '0%', background: color }}
+              />
+            </div>
           </div>
-          <div
-            className="h-1 rounded-full w-full"
-            style={{ background: 'var(--bg-elevated)' }}
-          >
-            <div
-              className="h-full rounded-full transition-all duration-700"
-              style={{
-                width: `${cpuPct}%`,
-                background: 'linear-gradient(90deg, #f97316, #ea580c)',
-              }}
-            />
-          </div>
-        </div>
-        <div>
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>RAM</span>
-            <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-              {isRunning ? `${ramPct}%` : '—'}
-            </span>
-          </div>
-          <div
-            className="h-1 rounded-full w-full"
-            style={{ background: 'var(--bg-elevated)' }}
-          >
-            <div
-              className="h-full rounded-full transition-all duration-700"
-              style={{
-                width: `${ramPct}%`,
-                background: 'linear-gradient(90deg, #f97316, #ea580c)',
-              }}
-            />
-          </div>
-        </div>
+        ))}
       </div>
 
       {/* Action buttons footer */}
@@ -265,6 +310,10 @@ export function ServerCard({ server }: { server: Server }) {
           <span className="text-xs">Console</span>
         </Link>
       </div>
+
+      {showErrorHelp && server.last_error && (
+        <ErrorHelpModal message={server.last_error} onClose={() => setShowErrorHelp(false)} />
+      )}
     </div>
   );
 }

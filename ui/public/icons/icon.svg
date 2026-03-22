@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="80" fill="#1a1a2e"/>
+  <!-- Server rack -->
+  <rect x="120" y="140" width="272" height="52" rx="8" fill="#16213e"/>
+  <rect x="130" y="150" width="192" height="32" rx="4" fill="#0f3460"/>
+  <circle cx="360" cy="166" r="10" fill="#e94560"/>
+  <circle cx="336" cy="166" r="10" fill="#f5a623"/>
+  <!-- Server rack 2 -->
+  <rect x="120" y="206" width="272" height="52" rx="8" fill="#16213e"/>
+  <rect x="130" y="216" width="192" height="32" rx="4" fill="#0f3460"/>
+  <circle cx="360" cy="232" r="10" fill="#4ecca3"/>
+  <circle cx="336" cy="232" r="10" fill="#4ecca3"/>
+  <!-- Server rack 3 -->
+  <rect x="120" y="272" width="272" height="52" rx="8" fill="#16213e"/>
+  <rect x="130" y="282" width="192" height="32" rx="4" fill="#0f3460"/>
+  <circle cx="360" cy="298" r="10" fill="#4ecca3"/>
+  <circle cx="336" cy="298" r="10" fill="#f5a623"/>
+  <!-- Gamepad icon overlay -->
+  <rect x="168" y="340" width="176" height="90" rx="30" fill="#e94560"/>
+  <circle cx="220" cy="385" r="12" fill="#1a1a2e"/>
+  <circle cx="292" cy="385" r="12" fill="#1a1a2e"/>
+  <rect x="209" y="374" width="22" height="10" rx="2" fill="#e94560"/>
+  <rect x="214" y="369" width="10" height="22" rx="2" fill="#e94560"/>
+</svg>
