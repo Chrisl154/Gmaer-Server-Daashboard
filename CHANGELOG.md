@@ -9,6 +9,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Tailscale integration** (`tailscale.com/tsnet`) — daemon joins your Tailnet
+  as an embedded node; TLS is automatic via `*.ts.net` certs (no cert files
+  needed). Configure via `tailscale:` block in `daemon.yaml` or set
+  `TAILSCALE_AUTH_KEY` in the environment. Tailscale is the default network
+  transport when enabled; set `dual: true` to also expose the standard
+  bind-addr listener simultaneously for LAN/WAN access.
+- **`--no-tls` CLI flag** — run the daemon over plain HTTP for local testing
+  (not for production use).
+- **`test/smoke.sh`** — self-contained curl-based smoke test suite (18 checks):
+  health, login, wrong-password rejection, RBAC, user lifecycle, API key
+  create/use/revoke, persistence, and version endpoint. Configurable via
+  `BASE_URL`, `ADMIN_USER`, `ADMIN_PASS`, `GDASH_DATA_DIR` env vars.
+
 ### Security — Full audit remediation (63 findings, 2 CRITICAL / 13 HIGH / 33 MEDIUM / 13 LOW)
 
 #### Critical & High fixes

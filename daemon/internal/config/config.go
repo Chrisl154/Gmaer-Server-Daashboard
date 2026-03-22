@@ -37,10 +37,30 @@ type LogRotationConfig struct {
 	Compress   bool `yaml:"compress" json:"compress"`         // gzip rotated files (default true)
 }
 
+// TailscaleConfig controls the embedded tsnet node.
+type TailscaleConfig struct {
+	// Enabled activates the Tailscale listener. When true the daemon joins your
+	// Tailnet and listens on its Tailscale IP. TLS is automatic via *.ts.net certs.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// AuthKey is a Tailscale auth key (tskey-auth-…). On first boot it
+	// authenticates the node; subsequent starts reuse the persisted state in
+	// StateDir. Alternatively set TAILSCALE_AUTH_KEY in the environment.
+	AuthKey string `yaml:"auth_key" json:"auth_key"`
+	// Hostname is the Tailnet hostname for this node (default: gmaer-dashboard).
+	Hostname string `yaml:"hostname" json:"hostname"`
+	// StateDir is where tsnet persists keys and identity across restarts.
+	// Defaults to {data_dir}/tailscale.
+	StateDir string `yaml:"state_dir" json:"state_dir"`
+	// Dual, when true, also starts the standard bind-addr listener in addition
+	// to the Tailscale one — useful for LAN or WAN access alongside Tailscale.
+	Dual bool `yaml:"dual" json:"dual"`
+}
+
 // Config is the top-level daemon configuration
 type Config struct {
 	BindAddr        string              `yaml:"bind_addr" json:"bind_addr"`
 	TLS             TLSConfig           `yaml:"tls" json:"tls"`
+	Tailscale       TailscaleConfig     `yaml:"tailscale" json:"tailscale"`
 	Auth            AuthConfig          `yaml:"auth" json:"auth"`
 	Secrets         SecretsConfig       `yaml:"secrets" json:"secrets"`
 	Storage         StorageConfig       `yaml:"storage" json:"storage"`
@@ -232,6 +252,9 @@ func defaults() *Config {
 			MaxBackups: 5,
 			MaxAgeDays: 30,
 			Compress:   true,
+		},
+		Tailscale: TailscaleConfig{
+			Hostname: "gmaer-dashboard",
 		},
 		LogLevel: "info",
 		DataDir:  "/var/lib/games-dashboard",

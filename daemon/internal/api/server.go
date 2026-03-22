@@ -303,6 +303,14 @@ func (s *Server) ListenAndServe() error {
 	return s.srv.ListenAndServe()
 }
 
+// Serve accepts connections from ln and serves them with the existing HTTP
+// server. The listener is responsible for any TLS handshake (e.g.
+// tsnet.ListenTLS returns an already-TLS-wrapped listener). Blocks until ln
+// is closed or Shutdown is called.
+func (s *Server) Serve(ln net.Listener) error {
+	return s.srv.Serve(ln)
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }

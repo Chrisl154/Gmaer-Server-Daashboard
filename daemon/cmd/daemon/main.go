@@ -26,6 +26,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
+	"tailscale.com/tsnet"
 )
 
 var (
@@ -240,20 +241,64 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		logger.Info("Cluster manager started")
 	}
 
-	// Start API server
-	errCh := make(chan error, 1)
-	go func() {
-		logger.Info("API server listening", zap.String("addr", bindAddr), zap.Bool("tls", !noTLS))
-		var serveErr error
-		if noTLS {
-			serveErr = apiServer.ListenAndServe()
-		} else {
-			serveErr = apiServer.ListenAndServeTLS()
+	// Start API server — Tailscale and/or standard listener.
+	errCh := make(chan error, 2)
+	startStdListener := true
+
+	tsCfg := cfg.Tailscale
+	if tsCfg.Enabled {
+		authKey := tsCfg.AuthKey
+		if authKey == "" {
+			authKey = os.Getenv("TAILSCALE_AUTH_KEY")
 		}
-		if serveErr != nil {
-			errCh <- serveErr
+		stateDir := tsCfg.StateDir
+		if stateDir == "" {
+			stateDir = filepath.Join(dataDir, "tailscale")
 		}
-	}()
+		hostname := tsCfg.Hostname
+		if hostname == "" {
+			hostname = "gmaer-dashboard"
+		}
+		ts := &tsnet.Server{
+			Dir:      stateDir,
+			Hostname: hostname,
+			AuthKey:  authKey,
+			Logf: func(format string, args ...any) {
+				logger.Sugar().Debugf("[tsnet] "+format, args...)
+			},
+		}
+		defer ts.Close()
+
+		tsLn, err := ts.ListenTLS("tcp", ":443")
+		if err != nil {
+			return fmt.Errorf("tailscale listen failed: %w", err)
+		}
+		logger.Info("Tailscale listener active",
+			zap.String("hostname", hostname),
+			zap.String("addr", tsLn.Addr().String()),
+		)
+		go func() {
+			if err := apiServer.Serve(tsLn); err != nil && err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("tailscale serve: %w", err)
+			}
+		}()
+		startStdListener = tsCfg.Dual
+	}
+
+	if startStdListener {
+		go func() {
+			logger.Info("Standard listener active", zap.String("addr", bindAddr), zap.Bool("tls", !noTLS))
+			var serveErr error
+			if noTLS {
+				serveErr = apiServer.ListenAndServe()
+			} else {
+				serveErr = apiServer.ListenAndServeTLS()
+			}
+			if serveErr != nil && serveErr != http.ErrServerClosed {
+				errCh <- serveErr
+			}
+		}()
+	}
 
 	// Wait for signals
 	sigCh := make(chan os.Signal, 1)
