@@ -73,6 +73,16 @@ func NewServer(cfg Config) (*Server, error) {
 	router := gin.New()
 	router.Use(gin.Recovery())
 
+	// Limit request bodies to 1 MB for all JSON endpoints to prevent memory
+	// exhaustion DoS. File upload handlers apply their own higher limit via
+	// MaxBytesReader and are exempt because gin reads multipart separately.
+	router.Use(func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+		}
+		c.Next()
+	})
+
 	// Build the set of allowed WebSocket origin hostnames.
 	allowed := map[string]bool{
 		"localhost": true,
@@ -151,7 +161,7 @@ func (s *Server) registerRoutes() {
 
 	// First-run bootstrap (public; guarded internally when already initialised)
 	r.GET("/api/v1/system/init-status", s.getInitStatus)
-	r.POST("/api/v1/system/bootstrap", s.bootstrapSystem)
+	r.POST("/api/v1/system/bootstrap", rateLimitMiddleware(1.0/60, 3), s.bootstrapSystem)
 
 	// Version (public — useful for health checks without credentials)
 	r.GET("/api/v1/version", s.getVersion)
@@ -1295,9 +1305,20 @@ func (s *Server) patchSettings(c *gin.Context) {
 		}
 	}
 
-	// Persist to disk if a config path is configured
+	// Persist to disk if a config path is configured.
+	// Zero out runtime-resolved secrets so they are not re-written to the file
+	// (JWT secret is stored encrypted separately; Tailscale key comes from env).
 	if s.cfg.ConfigPath != "" {
-		data, err := yaml.Marshal(cfg)
+		cfgToWrite := *cfg
+		cfgToWrite.Auth.JWTSecret = ""
+		cfgToWrite.Secrets.VaultToken = ""
+		cfgToWrite.Tailscale.AuthKey = ""
+		if cfgToWrite.Storage.S3 != nil {
+			s3copy := *cfgToWrite.Storage.S3
+			s3copy.SecretKey = ""
+			cfgToWrite.Storage.S3 = &s3copy
+		}
+		data, err := yaml.Marshal(&cfgToWrite)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to serialise config: " + err.Error()})
 			return

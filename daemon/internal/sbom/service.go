@@ -419,7 +419,7 @@ func (s *Service) writeSBOM(bom *cdx.BOM) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.sbomPath, data, 0644)
+	return os.WriteFile(s.sbomPath, data, 0600)
 }
 
 func (s *Service) writeReport(report *Report) {
@@ -428,7 +428,7 @@ func (s *Service) writeReport(report *Report) {
 		s.logger.Warn("Failed to marshal CVE report", zap.Error(err))
 		return
 	}
-	if err := os.WriteFile(s.reportPath, data, 0644); err != nil {
+	if err := os.WriteFile(s.reportPath, data, 0600); err != nil {
 		s.logger.Warn("Failed to write CVE report", zap.Error(err))
 	}
 }

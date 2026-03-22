@@ -726,7 +726,7 @@ func (s *Service) CreateUser(ctx context.Context, req CreateUserRequest) (*User,
 		return nil, fmt.Errorf("user already exists")
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
 	if err != nil {
 		return nil, err
 	}
@@ -757,7 +757,7 @@ func (s *Service) UpdateUser(ctx context.Context, userID string, req UpdateUserR
 	}
 
 	if req.Password != "" {
-		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
 		if err != nil {
 			return nil, err
 		}
@@ -925,7 +925,7 @@ func generateRecoveryCodes(n int) []string {
 func hashRecoveryCodes(codes []string) ([]string, error) {
 	hashes := make([]string, len(codes))
 	for i, c := range codes {
-		h, err := bcrypt.GenerateFromPassword([]byte(c), bcrypt.MinCost)
+		h, err := bcrypt.GenerateFromPassword([]byte(c), 12)
 		if err != nil {
 			return nil, err
 		}

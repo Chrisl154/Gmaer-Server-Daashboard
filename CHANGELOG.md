@@ -9,6 +9,40 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security — Audit Round 2 (all findings remediated)
+
+#### MEDIUM fixes
+- **M3 — Firewall From/Comment injection** (`firewall/service.go`): `From` field
+  validated against a CIDR/IP regex; `Comment` restricted to safe printable ASCII
+  (128 chars max) before being passed to UFW.
+- **M4 — `--no-tls` on public addresses** (`cmd/daemon/main.go`): logs a WARN
+  when `--no-tls` is active with a non-localhost bind address.
+- **M5 — bcrypt cost too low for passwords** (`auth/service.go`): cost raised from
+  `DefaultCost` (10) to 12 for all user password hashes (OWASP recommendation).
+- **M6 — recovery codes hashed at `MinCost` (4)** (`auth/service.go`): cost raised
+  to 12, matching user passwords.
+- **M7 — VAPID keys non-atomic write** (`notifications/push.go`): write now uses
+  temp file + rename, consistent with `saveUsers()` and `saveServersLocked()`.
+- **M8 — no request body size limit** (`api/server.go`): global gin middleware
+  applies `http.MaxBytesReader` (1 MB) to all requests before routing.
+
+#### LOW fixes
+- **L1 — Tailscale state dir permissions** (`cmd/daemon/main.go`): `os.MkdirAll`
+  with mode 0700 now called before `tsnet.Server` is created.
+- **L2 — SBOM/CVE report world-readable** (`sbom/service.go`): both `writeSBOM`
+  and `writeReport` now use mode 0600 instead of 0644.
+- **L3 — audit log scanner 64 KB limit** (`auth/persist.go`): `scanner.Buffer`
+  raised to 256 KB so oversized lines don't silently truncate audit log loading.
+- **L4 — `patchSettings` re-writes secrets** (`api/server.go`): config snapshot
+  zeroes `JWTSecret`, `VaultToken`, `S3.SecretKey`, and `Tailscale.AuthKey`
+  before marshaling to disk — secrets provided via env/encrypted files are not
+  re-persisted in plaintext.
+- **L6 — no rate limit on bootstrap** (`api/server.go`): `POST /system/bootstrap`
+  now rate-limited at 1 req/min burst 3 (matching login endpoint precedent).
+- **L5 — JWT in WebSocket URL** (`api/server.go`): documented as accepted risk;
+  WebSocket clients cannot set Authorization headers; ensure access logs strip
+  query strings in production.
+
 ### Security — Audit Round 2 HIGH findings
 
 - **H1 — RCON ban reason injection** (`broker/banlist.go`): `reason` parameter in

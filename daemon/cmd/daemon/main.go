@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -82,6 +83,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 	if tlsKey != "" {
 		cfg.TLS.KeyFile = tlsKey
+	}
+	if noTLS {
+		host, _, _ := net.SplitHostPort(bindAddr)
+		if host != "localhost" && host != "127.0.0.1" && host != "::1" && host != "" {
+			logger.Warn("⚠ --no-tls is active on a non-localhost address — plain HTTP in production exposes credentials",
+				zap.String("bind", bindAddr))
+		}
 	}
 
 	// Initialize secrets manager
@@ -258,6 +266,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		hostname := tsCfg.Hostname
 		if hostname == "" {
 			hostname = "gmaer-dashboard"
+		}
+		if err := os.MkdirAll(stateDir, 0700); err != nil {
+			return fmt.Errorf("failed to create tailscale state dir: %w", err)
 		}
 		ts := &tsnet.Server{
 			Dir:      stateDir,

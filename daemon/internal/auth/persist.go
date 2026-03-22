@@ -222,6 +222,7 @@ func (s *Service) loadAuditLog() {
 	// Collect all lines into a circular buffer of size maxAuditMemory.
 	buf := make([]AuditEntry, 0, maxAuditMemory)
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024) // 256 KB max per line
 	for scanner.Scan() {
 		var entry AuditEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {

@@ -43,8 +43,12 @@ func LoadOrGenerateVAPIDKeys(path string, logger *zap.Logger) (*VAPIDKeys, error
 	if err != nil {
 		return nil, err
 	}
-	if writeErr := os.WriteFile(path, data, 0600); writeErr != nil {
+	tmp := path + ".tmp"
+	if writeErr := os.WriteFile(tmp, data, 0600); writeErr != nil {
 		logger.Warn("Failed to persist VAPID keys", zap.String("path", path), zap.Error(writeErr))
+	} else if renameErr := os.Rename(tmp, path); renameErr != nil {
+		_ = os.Remove(tmp)
+		logger.Warn("Failed to rename VAPID keys file", zap.String("path", path), zap.Error(renameErr))
 	} else {
 		logger.Info("Generated VAPID keys", zap.String("path", path))
 	}
