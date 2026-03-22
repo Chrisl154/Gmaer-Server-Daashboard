@@ -1063,9 +1063,9 @@ echo "Using Node: $(node --version)"
 
 # ── Pull latest code ─────────────────────────────────────────────────────────
 echo "Updating repository (branch: $BRANCH)..."
-git -C "$REPO_DIR" fetch origin
+git -C "$REPO_DIR" fetch --prune origin
 git -C "$REPO_DIR" checkout "$BRANCH"
-git -C "$REPO_DIR" pull --ff-only origin "$BRANCH"
+git -C "$REPO_DIR" reset --hard "origin/$BRANCH"
 echo "Repository updated to: $(git -C "$REPO_DIR" rev-parse --short HEAD)"
 
 # ── Rebuild daemon ───────────────────────────────────────────────────────────

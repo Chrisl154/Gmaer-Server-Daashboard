@@ -7,7 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [Unreleased]
+## [1.0.0] - 2026-03-22
+
+### Fixed
+- **Self-update stale remote ref** (`install.sh`): `git fetch origin` replaced with
+  `git fetch --prune origin` so stale `refs/remotes/origin/*` entries (left behind
+  after a PR merge re-targets the tip commit) are pruned before the checkout step.
+  `git pull --ff-only` replaced with `git reset --hard origin/<branch>` so the
+  working tree always matches the remote tip even when fast-forward is not possible.
 
 ### Security — Audit Round 2 (all findings remediated)
 
