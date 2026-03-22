@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   X, ChevronRight, ChevronLeft, Check,
-  Server, Gamepad2, Clock, HardDrive,
+  Server, Gamepad2, Clock, HardDrive, AlertTriangle,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { clsx } from 'clsx';
@@ -228,6 +228,13 @@ export function CreateServerWizard({
 
   const qc = useQueryClient();
 
+  // Fetch host resources once for the pre-flight check in step 2.
+  const { data: sysRes } = useQuery({
+    queryKey: ['system-resources'],
+    queryFn: () => api.get('/api/v1/system/resources').then(r => r.data),
+    staleTime: 60_000,
+  });
+
   const createMutation = useMutation({
     mutationFn: async () => {
       const g = state.game!;
@@ -316,7 +323,7 @@ export function CreateServerWizard({
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
           {step === 0 && <StepPickGame    state={state} update={update} />}
-          {step === 1 && <StepNameDeploy  state={state} update={update} />}
+          {step === 1 && <StepNameDeploy  state={state} update={update} sysRes={sysRes} />}
           {step === 2 && <StepGameConfig  state={state} update={update} />}
           {step === 3 && <StepBackups     state={state} update={update} />}
           {step === 4 && <StepReview      state={state} />}
@@ -420,12 +427,61 @@ function StepPickGame({
 
 // ── Step 2: Name & Deploy ──────────────────────────────────────────────────────
 
+function ResourceWarning({ game, sysRes }: { game: GameDef; sysRes: any }) {
+  if (!sysRes) return null;
+
+  const warnings: string[] = [];
+
+  if (sysRes.cpu_cores < game.resources.cpu) {
+    warnings.push(
+      `CPU: ${game.resources.cpu} cores recommended, this machine has ${sysRes.cpu_cores}.`
+    );
+  }
+  if (sysRes.free_ram_gb < game.resources.ram) {
+    warnings.push(
+      `RAM: ${game.resources.ram} GB recommended, only ${sysRes.free_ram_gb.toFixed(1)} GB free right now.`
+    );
+  }
+  if (sysRes.free_disk_gb < game.resources.disk) {
+    warnings.push(
+      `Disk: ${game.resources.disk} GB recommended, only ${sysRes.free_disk_gb.toFixed(1)} GB free.`
+    );
+  }
+
+  if (warnings.length === 0) return null;
+
+  return (
+    <div
+      className="flex gap-3 rounded-xl px-4 py-3"
+      style={{
+        background: 'rgba(234,179,8,0.08)',
+        border: '1px solid rgba(234,179,8,0.25)',
+      }}
+    >
+      <AlertTriangle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
+      <div className="space-y-1">
+        <p className="text-xs font-semibold text-yellow-300">
+          This server may struggle on the current hardware
+        </p>
+        {warnings.map((w, i) => (
+          <p key={i} className="text-xs" style={{ color: '#fbbf24' }}>{w}</p>
+        ))}
+        <p className="text-[11px] mt-1" style={{ color: '#a16207' }}>
+          You can still deploy — this is a warning, not a blocker.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function StepNameDeploy({
   state,
   update,
+  sysRes,
 }: {
   state: WizardState;
   update: (p: Partial<WizardState>) => void;
+  sysRes?: any;
 }) {
   const g = state.game!;
 
@@ -439,6 +495,7 @@ function StepNameDeploy({
 
   return (
     <div className="space-y-4">
+      <ResourceWarning game={g} sysRes={sysRes} />
       <Field label="Server Name" hint="Display name shown in the dashboard">
         <input
           type="text"

@@ -1,0 +1,78 @@
+# Helm values for kind smoke testing
+# Use locally-built images (loaded with `kind load docker-image`) and strip
+# out everything that requires external infrastructure.
+
+image:
+  daemon:
+    repository: gdash-daemon-test
+    tag: latest
+    pullPolicy: Never  # image is pre-loaded into kind — never pull from registry
+  ui:
+    repository: gdash-ui-test
+    tag: latest
+    pullPolicy: Never
+
+daemon:
+  tls:
+    enabled: true
+    autoGenerate: true  # daemon generates its own self-signed cert at startup
+  auth:
+    local:
+      enabled: true
+      adminUser: admin
+    oidc:
+      enabled: false
+    mfaRequired: false
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "50m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+ui:
+  resources:
+    requests:
+      memory: "32Mi"
+      cpu: "25m"
+    limits:
+      memory: "64Mi"
+      cpu: "100m"
+
+# ClusterIP only — kind has no cloud LoadBalancer
+service:
+  daemon:
+    type: ClusterIP
+    port: 8443
+    targetPort: 8443
+  ui:
+    type: ClusterIP
+    port: 80
+    targetPort: 80
+  http:
+    type: ClusterIP
+    port: 80
+    targetPort: 80
+
+ingress:
+  enabled: false
+
+# No persistent storage in kind smoke test — use emptyDir
+storage:
+  persistence:
+    enabled: false
+
+# Disable all optional heavyweight dependencies
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+operator:
+  enabled: false
+modManager:
+  enabled: false
+autoscaling:
+  enabled: false
+podDisruptionBudget:
+  enabled: false

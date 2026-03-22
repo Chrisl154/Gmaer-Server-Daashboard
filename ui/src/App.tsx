@@ -1,8 +1,9 @@
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Toaster } from 'react-hot-toast';
+import toast, { Toaster } from 'react-hot-toast';
 import { useAuthStore } from './store/authStore';
+import { useInactivityTimer } from './hooks/useInactivityTimer';
 import { api } from './utils/api';
 import { Layout } from './components/shared/Layout';
 import { LoginPage } from './pages/LoginPage';
@@ -32,6 +33,21 @@ const queryClient = new QueryClient({
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuthStore();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
+  return <>{children}</>;
+}
+
+// Wraps all authenticated pages. Logs the user out after 29m 50s of inactivity.
+function InactivityGuard({ children }: { children: React.ReactNode }) {
+  const logout = useAuthStore(s => s.logout);
+  const navigate = useNavigate();
+
+  const handleTimeout = useCallback(() => {
+    logout();
+    navigate('/login', { replace: true });
+    toast('Logged out due to inactivity.');
+  }, [logout, navigate]);
+
+  useInactivityTimer(handleTimeout);
   return <>{children}</>;
 }
 
@@ -66,7 +82,9 @@ export function App() {
             path="/"
             element={
               <ProtectedRoute>
-                <Layout />
+                <InactivityGuard>
+                  <Layout />
+                </InactivityGuard>
               </ProtectedRoute>
             }
           >

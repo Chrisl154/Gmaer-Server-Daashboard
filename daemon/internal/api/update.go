@@ -2,12 +2,15 @@ package api
 
 import (
 	"bufio"
+	"context"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -116,17 +119,80 @@ func (s *Server) applyUpdate(c *gin.Context) {
 		return
 	}
 
+	// Verify the tip commit is GPG-signed before applying unless the operator
+	// has explicitly opted out via updates.require_signed_commits: false.
+	requireSigned := s.cfg.DaemonCfg == nil || s.cfg.DaemonCfg.Updates.RequireSignedCommits
+	if requireSigned {
+		// Fetch so we have the latest remote refs.
+		_ = exec.Command("git", "-C", repoDirPath, "fetch", "origin", "--quiet").Run() //nolint:gosec
+
+		// Resolve the tip commit of origin/<branch>.
+		tipOut, err := exec.Command("git", "-C", repoDirPath, "rev-parse", "origin/"+req.Branch).Output() //nolint:gosec
+		if err != nil {
+			s.recordEvent(c, "update.apply", "daemon", false, map[string]any{"branch": req.Branch, "error": "could not resolve tip commit"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not resolve tip commit for branch " + req.Branch})
+			return
+		}
+		tipCommit := strings.TrimSpace(string(tipOut))
+
+		// Verify the commit carries a valid GPG signature.
+		verifyCmd := exec.Command("git", "-C", repoDirPath, "verify-commit", tipCommit) //nolint:gosec
+		if out, err := verifyCmd.CombinedOutput(); err != nil {
+			s.cfg.Logger.Warn("Update blocked — tip commit is not GPG-signed",
+				zap.String("branch", req.Branch),
+				zap.String("commit", tipCommit),
+				zap.String("gpg_output", string(out)),
+			)
+			s.recordEvent(c, "update.apply", "daemon", false, map[string]any{
+				"branch": req.Branch,
+				"commit": tipCommit,
+				"reason": "unsigned commit",
+			})
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "Update blocked: the tip commit on " + req.Branch + " is not GPG-signed. " +
+					"Set updates.require_signed_commits: false in daemon.yaml to allow unsigned updates.",
+			})
+			return
+		}
+	}
+
+	// P52: copy the current daemon binary before overwriting so a failed update
+	// can be manually recovered by restoring from the .bak file.
+	if self, exErr := os.Executable(); exErr == nil {
+		_ = func() error {
+			src, err := os.Open(self) //nolint:gosec
+			if err != nil {
+				return err
+			}
+			defer src.Close()
+			dst, err := os.OpenFile(self+".bak", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+			if err != nil {
+				return err
+			}
+			defer dst.Close()
+			_, err = io.Copy(dst, src)
+			return err
+		}()
+	}
+
 	s.cfg.Logger.Info("Starting self-update", zap.String("branch", req.Branch))
+	s.recordEvent(c, "update.apply", "daemon", true, map[string]any{"branch": req.Branch})
 
 	// Setsid detaches the child into its own session so it survives when systemd
 	// kills the current daemon process during the restart step.
-	cmd := exec.Command("bash", updateScriptPath, req.Branch) //nolint:gosec
+	// 10-minute timeout guards against a hung update script.
+	updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	cmd := exec.CommandContext(updateCtx, "bash", updateScriptPath, req.Branch) //nolint:gosec
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
+		updateCancel()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to launch update script: " + err.Error()})
 		return
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		defer updateCancel()
+		_ = cmd.Wait()
+	}()
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"status": "update_started",

@@ -226,7 +226,7 @@ func TestAuditLog(t *testing.T) {
 	_, _ = svc.Login(context.Background(), LoginRequest{Username: "admin", Password: "testpassword"})
 	_, _ = svc.Login(context.Background(), LoginRequest{Username: "admin", Password: "wrongpass"})
 
-	logs, err := svc.GetAuditLog(context.Background())
+	logs, _, err := svc.GetAuditLog(context.Background(), 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -210,7 +210,8 @@ function StepTOTP({ onNext }: { onNext: () => void }) {
 
       <button
         onClick={onNext}
-        className="w-full px-4 py-2 text-sm text-gray-400 hover:text-gray-200 bg-[#1a1a1a] hover:bg-[#252525] rounded-lg transition-colors"
+        disabled={loading || verifying}
+        className="w-full px-4 py-2 text-sm text-gray-400 hover:text-gray-200 bg-[#1a1a1a] hover:bg-[#252525] rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         Skip for now
       </button>
@@ -334,7 +335,8 @@ function StepSettings({ onFinish }: { onFinish: () => void }) {
         <button
           type="button"
           onClick={onFinish}
-          className="flex-1 px-4 py-2 text-sm text-gray-400 hover:text-gray-200 bg-[#1a1a1a] hover:bg-[#252525] rounded-lg transition-colors"
+          disabled={loading}
+          className="flex-1 px-4 py-2 text-sm text-gray-400 hover:text-gray-200 bg-[#1a1a1a] hover:bg-[#252525] rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Skip
         </button>

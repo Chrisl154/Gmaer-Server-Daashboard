@@ -418,6 +418,8 @@ helm upgrade games-dashboard games-dashboard/games-dashboard \
 | WebSocket disconnects | Proxy timeout | Increase proxy read timeout to 300s |
 | Port conflict on :8443 | `lsof -ti:8443` | Change `bind_addr` in `daemon.yaml` |
 | `gdash: command not found` | CLI not built or not in PATH | `cd cli && go build -o ~/.local/bin/gdash ./cmd` |
+| Player count shows "—" | `rcon_password` not set in server config | Add `rcon_password` under Server Settings → Config for RCON-supported games; player count is only available for games with RCON/Telnet enabled |
+| Server crashed, not restarting | `auto_restart` may be disabled or retries exhausted | Check `auto_restart`, `max_restarts` fields in server config; `RestartCount` resets after 60 s of clean uptime |
 
 ### Collect Diagnostic Bundle
 

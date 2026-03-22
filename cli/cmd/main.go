@@ -115,7 +115,7 @@ func main() {
 
 	// Node commands
 	nodeCmd := &cobra.Command{Use: "node", Short: "Manage cluster nodes"}
-	nodeCmd.AddCommand(nodeListCmd(), nodeAddCmd(), nodeRemoveCmd(), nodeStatusCmd())
+	nodeCmd.AddCommand(nodeListCmd(), nodeAddCmd(), nodeRemoveCmd(), nodeStatusCmd(), nodeTokenCmd())
 
 	// Config commands
 	configCmd := &cobra.Command{Use: "config", Short: "Manage CLI configuration (~/.gdash/config.yaml)"}
@@ -791,7 +791,7 @@ func flt(v any) float64 {
 }
 
 func nodeAddCmd() *cobra.Command {
-	var address, version string
+	var address, version, joinToken string
 	var cpu, mem, disk float64
 	cmd := &cobra.Command{
 		Use:   "add <hostname>",
@@ -810,6 +810,9 @@ func nodeAddCmd() *cobra.Command {
 			if version != "" {
 				body["version"] = version
 			}
+			if joinToken != "" {
+				body["join_token"] = joinToken
+			}
 			resp, err := apiPost("/api/v1/nodes", body)
 			if err != nil {
 				return err
@@ -823,8 +826,31 @@ func nodeAddCmd() *cobra.Command {
 	cmd.Flags().Float64Var(&mem, "mem", 8, "RAM capacity in GB")
 	cmd.Flags().Float64Var(&disk, "disk", 100, "Disk capacity in GB")
 	cmd.Flags().StringVar(&version, "version", "", "Agent version string")
+	cmd.Flags().StringVar(&joinToken, "token", "", "Join token issued by 'gdash node token' on the master")
 	_ = cmd.MarkFlagRequired("address")
 	return cmd
+}
+
+func nodeTokenCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "token",
+		Short: "Generate a single-use join token for registering a new node",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := apiPost("/api/v1/nodes/join-token", nil)
+			if err != nil {
+				return err
+			}
+			if cfg.Output == "text" {
+				if m, ok := resp.(map[string]any); ok {
+					fmt.Printf("Join token : %v\n", m["token"])
+					fmt.Printf("Expires in : %v\n", m["expires_in"])
+					fmt.Printf("\nTo register a new node, run on the master:\n  %v\n", m["usage"])
+					return nil
+				}
+			}
+			return printResponse(resp)
+		},
+	}
 }
 
 func nodeRemoveCmd() *cobra.Command {

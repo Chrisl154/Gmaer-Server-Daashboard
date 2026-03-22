@@ -95,6 +95,12 @@ func (s *Service) AddRule(ctx context.Context, req AddRuleRequest) error {
 	if req.Proto != "tcp" && req.Proto != "udp" {
 		return fmt.Errorf("protocol must be tcp or udp, got %q", req.Proto)
 	}
+	if req.From != "" && !cidrRe.MatchString(req.From) {
+		return fmt.Errorf("from %q is not a valid IP or CIDR", req.From)
+	}
+	if req.Comment != "" && !commentSafeRe.MatchString(req.Comment) {
+		return fmt.Errorf("comment contains disallowed characters")
+	}
 
 	// Build: ufw allow [from <cidr>] to any port <port> proto <proto> comment '<comment>'
 	args := []string{"allow"}
@@ -174,6 +180,13 @@ func (s *Service) SetEnabled(ctx context.Context, enable bool) error {
 //	[ 1] 22/tcp                     ALLOW IN    Anywhere             # SSH
 //	[ 2] 8443/tcp                   ALLOW IN    Anywhere
 //	[ 3] 22/tcp (v6)                ALLOW IN    Anywhere (v6)        # SSH
+// cidrRe validates the From field — must be empty (Anywhere), a bare IPv4/IPv6,
+// or a CIDR block. Rejects anything that could confuse UFW's argument parser.
+var cidrRe = regexp.MustCompile(`^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$|^[0-9a-fA-F:]+(:\/\d{1,3})?$`)
+
+// commentSafeRe allows only printable ASCII minus shell-special chars.
+var commentSafeRe = regexp.MustCompile(`^[a-zA-Z0-9 _\-\.,:/@#\(\)]{0,128}$`)
+
 var ruleLineRe = regexp.MustCompile(
 	`^\[\s*(\d+)\]\s+(\S[\S ]*?)\s{2,}(ALLOW|DENY|REJECT)(?:\s+(?:IN|OUT|FWD))?\s{1,}(\S[\S ]*?)(?:\s{2,}#\s+(.+))?$`,
 )

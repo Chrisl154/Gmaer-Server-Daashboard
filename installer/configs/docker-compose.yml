@@ -16,7 +16,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      GDASH_ADMIN_PASSWORD: ${GDASH_ADMIN_PASSWORD:-changeme}
+      GDASH_ADMIN_PASSWORD: ${GDASH_ADMIN_PASSWORD:?GDASH_ADMIN_PASSWORD must be set — run the installer or set it in your .env file}
     networks:
       - games-dashboard
     healthcheck:

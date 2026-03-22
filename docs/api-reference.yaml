@@ -27,6 +27,12 @@ tags:
   - name: Ports
   - name: SBOM
   - name: Auth
+  - name: APIKeys
+  - name: Admin
+  - name: Nodes
+  - name: Push
+  - name: Updates
+  - name: System
 
 paths:
   # ─────────────────────────── Health ───────────────────────────
@@ -368,6 +374,427 @@ paths:
                 properties:
                   status: { type: string }
 
+  # ─────────────────────────── Cluster Nodes ───────────────────────────
+  /api/v1/nodes:
+    get:
+      tags: [Nodes]
+      summary: List cluster nodes
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes: { type: array, items: { $ref: '#/components/schemas/Node' } }
+
+  /api/v1/admin/nodes:
+    post:
+      tags: [Nodes]
+      summary: Register a new cluster node (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, address]
+              properties:
+                token: { type: string }
+                address: { type: string }
+                hostname: { type: string }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Node' }
+        "401":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/admin/nodes/join-token:
+    post:
+      tags: [Nodes]
+      summary: Generate a single-use 24 h join token (admin)
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expires_in: { type: string }
+                  usage: { type: string }
+
+  /api/v1/nodes/{nodeId}:
+    parameters:
+      - { name: nodeId, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Nodes]
+      summary: Get node by ID
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Node' }
+        "404":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/admin/nodes/{nodeId}:
+    parameters:
+      - { name: nodeId, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [Nodes]
+      summary: Deregister a node (admin)
+      responses:
+        "204": { description: Deregistered }
+
+  /api/v1/nodes/{nodeId}/heartbeat:
+    parameters:
+      - { name: nodeId, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Nodes]
+      summary: Worker node heartbeat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cpu_used: { type: number }
+                memory_used_gb: { type: number }
+                disk_used_gb: { type: number }
+      responses:
+        "204": { description: Accepted }
+
+  # ─────────────────────────── API Keys ───────────────────────────
+  /api/v1/auth/api-keys:
+    get:
+      tags: [APIKeys]
+      summary: List API keys for the current user
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys: { type: array, items: { $ref: '#/components/schemas/APIKey' } }
+    post:
+      tags: [APIKeys]
+      summary: Create a new API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                role: { type: string, enum: [viewer, operator, admin] }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string, description: "Shown only once" }
+                  key: { $ref: '#/components/schemas/APIKey' }
+
+  /api/v1/auth/api-keys/{keyId}:
+    parameters:
+      - { name: keyId, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [APIKeys]
+      summary: Revoke an API key
+      responses:
+        "204": { description: Revoked }
+
+  # ─────────────────────────── Admin ───────────────────────────
+  /api/v1/admin/users:
+    get:
+      tags: [Admin]
+      summary: List all users (admin)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users: { type: array, items: { type: object } }
+    post:
+      tags: [Admin]
+      summary: Create user (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+                roles: { type: array, items: { type: string } }
+                allowed_servers: { type: array, items: { type: string } }
+      responses:
+        "201": { description: Created }
+
+  /api/v1/admin/users/{userId}:
+    parameters:
+      - { name: userId, in: path, required: true, schema: { type: string } }
+    put:
+      tags: [Admin]
+      summary: Update user (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password: { type: string }
+                roles: { type: array, items: { type: string } }
+                allowed_servers: { type: array, items: { type: string } }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Admin]
+      summary: Delete user (admin)
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/admin/audit:
+    get:
+      tags: [Admin]
+      summary: Get paginated audit log (admin)
+      parameters:
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit_log: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }
+                  total: { type: integer }
+                  offset: { type: integer }
+                  limit: { type: integer }
+
+  /api/v1/admin/secrets/rotate:
+    post:
+      tags: [Admin]
+      summary: Rotate encryption secrets (admin)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+
+  # ─────────────────────────── Self-Update ───────────────────────────
+  /api/v1/admin/update/status:
+    get:
+      tags: [Updates]
+      summary: Check for available updates (admin)
+      parameters:
+        - { name: branch, in: query, schema: { type: string, enum: [main, dev] } }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  current_branch: { type: string }
+                  target_branch: { type: string }
+                  current_commit: { type: string }
+                  commits_behind: { type: integer }
+                  update_available: { type: boolean }
+                  latest_message: { type: string }
+
+  /api/v1/admin/update/apply:
+    post:
+      tags: [Updates]
+      summary: Apply update (admin) — restarts daemon
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                branch: { type: string, enum: [main, dev] }
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  branch: { type: string }
+                  msg: { type: string }
+        "403":
+          description: Unsigned commit rejected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/admin/update/log:
+    get:
+      tags: [Updates]
+      summary: Get recent update log lines (admin)
+      parameters:
+        - { name: lines, in: query, schema: { type: integer, default: 80, maximum: 500 } }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lines: { type: array, items: { type: string } }
+
+  # ─────────────────────────── Web Push ───────────────────────────
+  /api/v1/push/vapid-key:
+    get:
+      tags: [Push]
+      summary: Get VAPID public key for Web Push subscription
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  public_key: { type: string }
+
+  /api/v1/push/subscribe:
+    post:
+      tags: [Push]
+      summary: Register a Web Push subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint, keys]
+              properties:
+                endpoint: { type: string }
+                keys:
+                  type: object
+                  properties:
+                    p256dh: { type: string }
+                    auth: { type: string }
+      responses:
+        "200": { description: Subscribed }
+
+  /api/v1/push/unsubscribe:
+    post:
+      tags: [Push]
+      summary: Remove a Web Push subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint]
+              properties:
+                endpoint: { type: string }
+      responses:
+        "200": { description: Unsubscribed }
+
+  # ─────────────────────────── Server extras ───────────────────────────
+  /api/v1/servers/{id}/clone:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Servers]
+      summary: Clone a server (deep copy with new ID)
+      responses:
+        "201":
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+
+  /api/v1/servers/{id}/mods/test:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Mods]
+      summary: Run mod compatibility test
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  passed: { type: boolean }
+                  results: { type: array, items: { type: object } }
+
+  /api/v1/servers/{id}/mods/rollback:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Mods]
+      summary: Rollback mods to a previous snapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [snapshot_id]
+              properties:
+                snapshot_id: { type: string }
+      responses:
+        "200": { description: Rolled back }
+
+  # ─────────────────────────── System ───────────────────────────
+  /api/v1/system/resources:
+    get:
+      tags: [System]
+      summary: System resource pre-flight check
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cpu_cores: { type: integer }
+                  memory_gb: { type: number }
+                  disk_gb: { type: number }
+                  warnings: { type: array, items: { type: string } }
+
+  /api/v1/system/init-status:
+    get:
+      tags: [System]
+      summary: Check whether first-run bootstrap is complete
+      security: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  initialized: { type: boolean }
+
 # ─────────────────────────── Schemas ───────────────────────────
 components:
   securitySchemes:
@@ -583,3 +1010,48 @@ components:
       type: object
       properties:
         error: { type: string }
+
+    Job:
+      type: object
+      properties:
+        id: { type: string }
+        server_id: { type: string }
+        type: { type: string }
+        status: { type: string, enum: [pending, running, success, failed] }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        message: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Node:
+      type: object
+      properties:
+        id: { type: string }
+        address: { type: string }
+        state: { type: string }
+        cpu_cores: { type: number }
+        memory_gb: { type: number }
+        disk_gb: { type: number }
+        last_seen: { type: string, format: date-time }
+
+    APIKey:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        role: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time }
+
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: string }
+        user_id: { type: string }
+        username: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        ip: { type: string }
+        success: { type: boolean }
+        timestamp: { type: string, format: date-time }
+        details: { type: object }

@@ -39,7 +39,10 @@ func Exec(addr, password, command string, timeout time.Duration) (string, error)
 	dialer := websocket.Dialer{HandshakeTimeout: timeout}
 	conn, _, err := dialer.Dial(url, nil)
 	if err != nil {
-		return "", fmt.Errorf("webrcon connect %s: %w", addr, err)
+		// Do not wrap the underlying dialer error — the URL contains the
+		// RCON password and gorilla/websocket includes the full URL in its
+		// error messages.
+		return "", fmt.Errorf("webrcon connect %s: connection failed", addr)
 	}
 	defer conn.Close()
 	_ = conn.SetReadDeadline(time.Now().Add(timeout))
