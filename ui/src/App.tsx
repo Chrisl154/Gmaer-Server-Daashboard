@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import toast, { Toaster } from 'react-hot-toast';
 import { useAuthStore } from './store/authStore';
 import { useInactivityTimer } from './hooks/useInactivityTimer';
+import { useConnectionStatus } from './hooks/useConnectionStatus';
 import { api } from './utils/api';
 import { Layout } from './components/shared/Layout';
 import { LoginPage } from './pages/LoginPage';
@@ -51,6 +52,26 @@ function InactivityGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function ConnectionBanner() {
+  const connected = useConnectionStatus();
+  if (connected) return null;
+  return (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
+      background: 'linear-gradient(90deg, #b91c1c, #dc2626)',
+      color: '#fff', textAlign: 'center',
+      padding: '8px 16px', fontSize: '13px', fontWeight: 500,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+    }}>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}>
+        <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+      </svg>
+      Reconnecting to daemon — the dashboard is restarting and will be back shortly.
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+    </div>
+  );
+}
+
 function InitCheck() {
   const navigate = useNavigate();
   const { checkAuth, isAuthenticated } = useAuthStore();
@@ -73,6 +94,7 @@ function InitCheck() {
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <ConnectionBanner />
       <BrowserRouter>
         <InitCheck />
         <Routes>

@@ -1540,6 +1540,10 @@ func (b *Broker) doDeploy(ctx context.Context, id string, req DeployRequest, job
 		b.updateJob(job.ID, "failed", 0, deployErr.Error())
 		b.logger.Error("Deployment failed", zap.String("id", id), zap.Error(deployErr))
 		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(deployErr.Error()), time.Now().Unix()))
+	} else {
+		// Stage default config files from adapter templates so the server can
+		// start immediately after deploy without manual config creation.
+		b.stageDefaultConfigs(id)
 	}
 }
 
@@ -1619,8 +1623,8 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 		"--entrypoint", "/home/steam/steamcmd/steamcmd.sh",
 		"cm2network/steamcmd",
 		"+@ShutdownOnFailedCommand", "1",
-		"+login", "anonymous",
 		"+force_install_dir", "/games",
+		"+login", "anonymous",
 		"+app_update", appID, "validate",
 	}
 	if req.SteamCMD != nil && req.SteamCMD.Beta != "" {
@@ -1689,6 +1693,56 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 	b.updateJob(job.ID, "success", 100, "SteamCMD (Docker) deployment complete")
 	b.logger.Info("SteamCMD deployment complete", zap.String("server", id))
 	return nil
+}
+
+// stageDefaultConfigs writes adapter-defined config file templates into the
+// server's install directory for any config that doesn't already exist on disk.
+// This runs automatically after a successful deploy so the server can start
+// without the user having to manually create config files first.
+func (b *Broker) stageDefaultConfigs(serverID string) {
+	b.mu.RLock()
+	s, ok := b.servers[serverID]
+	b.mu.RUnlock()
+	if !ok || s.InstallDir == "" {
+		return
+	}
+
+	templates := b.adapters.ConfigTemplates(s.Adapter)
+	if len(templates) == 0 {
+		return
+	}
+
+	for _, t := range templates {
+		if t.Sample == "" {
+			continue
+		}
+		rel := configTemplatePath(t.Path)
+		abs := filepath.Join(s.InstallDir, rel)
+
+		// Don't overwrite existing configs — the user may have customized them.
+		if _, err := os.Stat(abs); err == nil {
+			b.logger.Debug("Config already exists, skipping", zap.String("file", rel))
+			continue
+		}
+
+		// Ensure parent directory exists.
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			b.logger.Warn("Could not create config directory",
+				zap.String("file", rel), zap.Error(err))
+			continue
+		}
+
+		if err := os.WriteFile(abs, []byte(t.Sample), 0o644); err != nil {
+			b.logger.Warn("Could not stage default config",
+				zap.String("file", rel), zap.Error(err))
+		} else {
+			b.logger.Info("Staged default config from adapter template",
+				zap.String("server", serverID), zap.String("file", rel))
+			b.sendConsoleMessage(serverID, fmt.Sprintf(
+				`{"type":"deploy","msg":%s,"ts":%d}`,
+				jsonStr("Staged default config: "+rel), time.Now().Unix()))
+		}
+	}
 }
 
 func (b *Broker) deployManual(ctx context.Context, id string, req DeployRequest, job *Job) error {
