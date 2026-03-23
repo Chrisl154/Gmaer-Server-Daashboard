@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -121,6 +122,11 @@ func (s *Server) getUpdateLog(c *gin.Context) {
 
 // applyUpdate kicks off the update script in a detached process and returns 202 immediately.
 // The script rebuilds the daemon/UI binaries and restarts the systemd service.
+//
+// Robustness strategy: the handler always fetches the target branch first,
+// then copies the latest update script from the repo to the bin dir before
+// launching it. This ensures a stale on-disk script is replaced even if the
+// daemon itself is outdated — the very next update "heals" the pipeline.
 func (s *Server) applyUpdate(c *gin.Context) {
 	var req struct {
 		Branch string `json:"branch"`
@@ -133,6 +139,29 @@ func (s *Server) applyUpdate(c *gin.Context) {
 		return
 	}
 
+	repoDir := resolveRepoDirPath()
+
+	// Always fetch the target branch first — shallow clones only have refs for
+	// the originally-cloned branch. This creates origin/<branch> if missing.
+	fetchCmd := exec.Command("git", "-C", repoDir, "fetch", "origin", req.Branch, "--quiet") //nolint:gosec
+	if out, err := fetchCmd.CombinedOutput(); err != nil {
+		s.cfg.Logger.Warn("git fetch failed (continuing anyway)",
+			zap.String("branch", req.Branch), zap.String("output", string(out)), zap.Error(err))
+	}
+
+	// Refresh the on-disk update script from the repo so it's always current.
+	// This is the key to self-healing: even if the old script was broken,
+	// we replace it with the version from the branch we just fetched.
+	repoScript := filepath.Join(repoDir, "scripts", "gdash-update.sh")
+	if data, readErr := os.ReadFile(repoScript); readErr == nil { //nolint:gosec
+		if writeErr := os.WriteFile(updateScriptPath, data, 0o755); writeErr != nil {
+			s.cfg.Logger.Warn("Could not refresh update script", zap.Error(writeErr))
+		} else {
+			s.cfg.Logger.Info("Update script refreshed from repo")
+		}
+	}
+
+	// Check that the update script exists (either pre-installed or just refreshed).
 	if _, err := os.Stat(updateScriptPath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "update script not found at " + updateScriptPath + " — re-run the installer to restore it",
@@ -144,11 +173,8 @@ func (s *Server) applyUpdate(c *gin.Context) {
 	// has explicitly opted out via updates.require_signed_commits: false.
 	requireSigned := s.cfg.DaemonCfg == nil || s.cfg.DaemonCfg.Updates.RequireSignedCommits
 	if requireSigned {
-		// Fetch the target branch so the ref exists even in shallow clones.
-		_ = exec.Command("git", "-C", resolveRepoDirPath(), "fetch", "origin", req.Branch, "--quiet").Run() //nolint:gosec
-
 		// Resolve the tip commit of origin/<branch>.
-		tipOut, err := exec.Command("git", "-C", resolveRepoDirPath(), "rev-parse", "origin/"+req.Branch).Output() //nolint:gosec
+		tipOut, err := exec.Command("git", "-C", repoDir, "rev-parse", "origin/"+req.Branch).Output() //nolint:gosec
 		if err != nil {
 			s.recordEvent(c, "update.apply", "daemon", false, map[string]any{"branch": req.Branch, "error": "could not resolve tip commit"})
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not resolve tip commit for branch " + req.Branch})
@@ -157,7 +183,7 @@ func (s *Server) applyUpdate(c *gin.Context) {
 		tipCommit := strings.TrimSpace(string(tipOut))
 
 		// Verify the commit carries a valid GPG signature.
-		verifyCmd := exec.Command("git", "-C", resolveRepoDirPath(), "verify-commit", tipCommit) //nolint:gosec
+		verifyCmd := exec.Command("git", "-C", repoDir, "verify-commit", tipCommit) //nolint:gosec
 		if out, err := verifyCmd.CombinedOutput(); err != nil {
 			s.cfg.Logger.Warn("Update blocked — tip commit is not GPG-signed",
 				zap.String("branch", req.Branch),
