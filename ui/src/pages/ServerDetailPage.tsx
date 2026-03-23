@@ -54,6 +54,11 @@ export function ServerDetailPage() {
     mutationFn: () => api.post(`/api/v1/servers/${id}/restart`),
     onSuccess: () => { toast.success('Server restarting...'); queryClient.invalidateQueries({ queryKey: ['server', id] }); },
   });
+  const deployMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/servers/${id}/deploy`),
+    onSuccess: () => { toast.success('Deploy started — game files are downloading...'); queryClient.invalidateQueries({ queryKey: ['server', id] }); },
+    onError: (e: any) => toast.error(e?.response?.data?.error ?? 'Deploy failed'),
+  });
 
   if (isLoading) {
     return (
@@ -145,13 +150,24 @@ export function ServerDetailPage() {
               </button>
             </>
           ) : (
-            <button
-              onClick={() => startMutation.mutate()}
-              disabled={isBusy}
-              className="btn-primary"
-            >
-              <Play className="w-4 h-4" /> Start
-            </button>
+            <>
+              <button
+                onClick={() => deployMutation.mutate()}
+                disabled={isBusy || deployMutation.isPending}
+                className="btn-ghost py-2"
+                style={{ borderColor: 'var(--primary-border)' }}
+              >
+                <Download className="w-4 h-4" />
+                {server.state === 'deploying' ? 'Deploying…' : 'Deploy'}
+              </button>
+              <button
+                onClick={() => startMutation.mutate()}
+                disabled={isBusy}
+                className="btn-primary"
+              >
+                <Play className="w-4 h-4" /> Start
+              </button>
+            </>
           )}
           <button
             onClick={() => api.post(`/api/v1/servers/${id}/backup`, { type: 'full' }).then(() => toast.success('Backup triggered'))}
@@ -1413,14 +1429,15 @@ function ConfigTab({ server }: { server: any }) {
 
   const { data: templates } = useQuery<{ templates: ConfigTemplate[] }>({
     queryKey: ['adapter-templates', server.adapter],
-    queryFn: () => api.get(`/api/v1/adapters/${server.adapter}/config-templates`).then(r => r.data),
+    queryFn: () => api.get(`/api/v1/adapters/${server.adapter}/config-templates`).then(r => r.data).catch(() => ({ templates: [] })),
     staleTime: 60_000,
   });
 
-  const { data: filesData, isLoading: filesLoading } = useQuery<{ files: ConfigFileInfo[] }>({
+  const { data: filesData, isLoading: filesLoading, isError: filesError } = useQuery<{ files: ConfigFileInfo[] }>({
     queryKey: ['config-files', server.id],
     queryFn: () => api.get(`/api/v1/servers/${server.id}/config/files`).then(r => r.data),
     staleTime: 30_000,
+    retry: 1,
   });
 
   useEffect(() => {
@@ -1495,6 +1512,16 @@ function ConfigTab({ server }: { server: any }) {
     return (
       <div className="flex items-center justify-center h-40" style={{ color: 'var(--text-muted)' }}>
         <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading config files…
+      </div>
+    );
+  }
+
+  if (filesError) {
+    return (
+      <div className="card p-8 text-center" style={{ color: 'var(--text-muted)' }}>
+        <AlertCircle className="w-8 h-8 mx-auto mb-3 opacity-40 text-yellow-500" />
+        <p className="text-sm">Could not load config files.</p>
+        <p className="text-xs mt-1 opacity-70">Deploy the server first so its install directory is created, then come back to edit config files.</p>
       </div>
     );
   }
