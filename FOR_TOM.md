@@ -50,7 +50,7 @@ cd ui && node_modules/.bin/vite build     # full build (optional; tsc is enough)
 # If node_modules/.bin/* aren't executable:  chmod +x ui/node_modules/.bin/*
 ```
 
-**Always run tests before committing.** All 5 packages must show `ok`.
+**Always run tests before committing.** All 18 packages must show `ok`.
 
 ---
 
@@ -72,171 +72,80 @@ git checkout main && git merge dev --no-edit
 
 ---
 
-## Current State (as of handoff)
+## Current State (as of handoff — 2026-03-22)
 
 Everything listed under **Shipped** in `README.md → Roadmap` is complete and
-on `main`. The test suite is clean. Notable recent work:
+on `main`. The test suite is clean (18 packages, go vet clean, TypeScript clean).
+Both `main` and `dev` branches are in sync. Notable shipped features:
 
-- **In-UI config file editor** (Config tab on server detail page)
-- **Update progress bar** (Settings → Updates; polls log for `PROGRESS:N` markers)
-- **UFW firewall GUI** (Ports page)
-- **Self-update branch selection + log viewer** (Settings → Updates)
-- **Valheim SteamCMD start-command fix**
+- **In-UI config file editor** — Config tab with template support, path-traversal safe
+- **In-UI file browser** — browse/upload/download/delete server files
+- **Update progress bar** — Settings → Updates polls `PROGRESS:N` markers
+- **UFW firewall GUI** — Ports page with full rule CRUD
+- **Crash recovery, webhooks, player count, onboarding** — all shipped
+- **Security audit remediation** — all HIGH/MEDIUM/LOW findings fixed
+- **Tailscale integration, SBOM/CVE scanning, CI/CD pipeline**
+- **24 game adapters** (was 7 at original handoff)
 
 ---
 
 ## Suggested Next Tasks (pick one)
 
+> **Note:** Tasks 1–4 from the original handoff (crash recovery, webhooks,
+> player count, onboarding wizard) were all shipped by Codex/Qwen. The tasks
+> below are what remains on the roadmap.
+
 Each task below is self-contained and well-scoped.
 
 ---
 
-### TASK 1 — Automatic Crash Recovery ⭐ (Near-term roadmap item)
+### TASK 1 — Web Push Notifications (Up Next roadmap item)
 
-**What:** When a server process dies unexpectedly (not via Stop), auto-restart
-it up to N times with exponential back-off.
-
-**Where the crash happens** — `daemon/internal/broker/broker.go` lines 851–870:
-
-```go
-// Wait for the process to exit, then update state.
-if err := cmd.Wait(); err != nil { ... }
-
-b.mu.Lock()
-delete(b.processes, id)
-if sv, ok2 := b.servers[id]; ok2 && sv.State != StateStopping {
-    sv.State = StateStopped   // ← unexpected exit lands here
-    ...
-}
-b.mu.Unlock()
-```
-
-**What to add:**
-
-1. New struct on `Server` (broker.go, around line 50):
-```go
-CrashRecovery *CrashRecoveryConfig `json:"crash_recovery,omitempty"`
-```
-
-2. New type (same file):
-```go
-type CrashRecoveryConfig struct {
-    Enabled    bool `json:"enabled"`
-    MaxRetries int  `json:"max_retries"`   // 0 = unlimited
-    BackoffSec int  `json:"backoff_sec"`   // base delay; doubles each attempt
-}
-```
-
-3. Track state on Server:
-```go
-CrashCount    int        `json:"crash_count"`
-LastCrashAt   *time.Time `json:"last_crash_at,omitempty"`
-```
-
-4. In the crash-detection block (after `sv.State = StateStopped`), if
-   `sv.CrashRecovery != nil && sv.CrashRecovery.Enabled` and state was
-   `StateRunning` (not `StateStopping`), increment crash count and schedule
-   a restart goroutine with `time.AfterFunc(backoff, func() { b.StartServer(...) })`.
-   Back-off formula: `backoff = base * 2^(crashCount-1)`, capped at 5 min.
-   Stop retrying when `MaxRetries > 0 && crashCount >= MaxRetries`.
-
-5. Reset `CrashCount` to 0 when the server runs stably for > 10 min
-   (check `time.Since(*sv.LastStarted) > 10*time.Minute` at start time).
-
-6. Add `crash_recovery` to `UpdateServerRequest` so the UI can configure it.
-
-7. **UI** — in `ServerDetailPage.tsx`, add a small "Crash Recovery" section
-   to the Overview tab or a settings panel. Just a toggle + max-retries input.
-   Uses `PUT /api/v1/servers/:id` with `{ crash_recovery: {...} }`.
-
-8. Add `b.saveServersLocked()` after updating crash state (it's already called
-   in other mutation paths — just follow the same pattern).
-
-**Tests** — Add a test in `broker_test.go`:
-```go
-func TestCrashRecovery(t *testing.T) { ... }
-```
-The test broker uses a temp dir, so no persistent state leaks.
-
----
-
-### TASK 2 — Discord / Webhook Alerts (Medium-term roadmap)
-
-**What:** POST a JSON payload to a user-configured webhook URL when:
-- Server crashes / auto-restarts
-- Server start / stop
-- Backup completes or fails
-- Disk usage > 90%
+**What:** Device push alerts for crash/restart events via the Web Push API.
+Works when the PWA is installed and even when the browser tab is closed.
 
 **Where:**
-
-1. Add `WebhookURL string` to `Server.Config` (already `map[string]any`) —
-   or add a dedicated `Notifications *NotificationConfig` struct to `Server`.
-
-2. Create `daemon/internal/notify/webhook.go`:
-```go
-package notify
-
-type WebhookPayload struct {
-    Event     string    `json:"event"`       // "server_crash", "server_start", etc.
-    ServerID  string    `json:"server_id"`
-    ServerName string   `json:"server_name"`
-    Message   string    `json:"message"`
-    Timestamp time.Time `json:"timestamp"`
-}
-
-func Send(ctx context.Context, url string, payload WebhookPayload) error {
-    // json.Marshal + http.Post
-}
-```
-
-3. Call `notify.Send(...)` from the relevant broker methods.
-
-4. **UI** — Add a "Notifications" section to the server Overview or Settings tab.
-   A text input for webhook URL + checkboxes for which events to notify on.
-
-**No new API routes needed** — the webhook URL is just stored in server config
-and the daemon calls it internally.
+- VAPID keys are already generated in `daemon/internal/notifications/push.go`
+- Need: subscription endpoint in the API, client-side `PushManager.subscribe()`,
+  hook into broker crash/restart events to trigger pushes
 
 ---
 
-### TASK 3 — Player Count Display (Medium-term roadmap)
+### TASK 2 — API Keys / Personal Access Tokens
 
-**What:** Show a live player count on the server overview card by querying the
-game server using the Source Query Protocol (used by Valve games: CS2, TF2,
-Rust, etc.) and Minecraft's server list ping protocol.
+**What:** Long-lived tokens scoped to a user+role for external automation
+(CI pipelines, monitoring, custom scripts).
 
 **Where:**
-
-1. Create `daemon/internal/query/source.go` — implements
-   [Source Query Protocol](https://developer.valvesoftware.com/wiki/Server_queries#A2S_INFO)
-   (UDP, port usually 27015). Returns `{ players_online, max_players, map_name }`.
-
-2. Create `daemon/internal/query/minecraft.go` — implements Minecraft's
-   server list ping (TCP, port 25565). Returns `{ players_online, max_players }`.
-
-3. Add `GET /api/v1/servers/:id/players` route in `server.go` and handler
-   that calls the right query method based on the adapter ID.
-
-4. **UI** — In `ServerDetailPage.tsx` Overview tab, add a "Players" row that
-   fetches `/api/v1/servers/:id/players` every 60 s while server is `running`.
-
-**Adapters that use Source protocol:** `rust`, `counter-strike-2`, `team-fortress-2`,
-`garrys-mod`, `left-4-dead-2`, `7-days-to-die`, `squad`, `dayz`, `conan-exiles`
-
-**Adapters that use Minecraft protocol:** `minecraft`
+- Add a `tokens` table/map in the auth service
+- `POST /api/v1/auth/tokens` to create, `DELETE` to revoke
+- Accept `Authorization: Bearer <pat>` on all existing routes
+- UI: Settings → Security page, token list with create/revoke
 
 ---
 
-### TASK 4 — Onboarding Wizard (Medium-term roadmap)
+### TASK 3 — Server Scheduling
 
-**What:** First-login modal (3 steps): pick a game → name the server → deploy.
-Show this when the user has 0 servers.
+**What:** Per-server cron schedule for automatic start/stop (e.g. "start at
+18:00, stop at 23:00 Mon–Fri").
 
-**Where:** `ui/src/pages/DashboardPage.tsx` (or wherever the server list is).
+**Where:**
+- `daemon/internal/broker/schedule.go` already exists with basic scaffolding
+- UI: Schedule tab already exists in `ServerDetailPage.tsx`
+- Wire up the existing `robfig/cron` scheduler to broker start/stop methods
 
-This is a pure UI task — no backend changes needed. Use the existing
-`POST /api/v1/servers` and `POST /api/v1/servers/:id/deploy` endpoints.
+---
+
+### TASK 4 — Steam Credentials for Paid Games
+
+**What:** Securely store Steam credentials (encrypted at rest) for games that
+require a paid account (DayZ, ARK, etc.). SteamCMD deployment uses stored
+credentials automatically.
+
+**Where:**
+- Add encrypted credential storage in `daemon/internal/secrets/`
+- Pass credentials to SteamCMD Docker container via env vars
+- UI: per-server "Steam Account" field in deploy settings
 
 ---
 
@@ -318,13 +227,24 @@ const mut = useMutation({
 ## Test Results at Handoff
 
 ```
-ok  github.com/games-dashboard/daemon/internal/adapters   0.008s
-ok  github.com/games-dashboard/daemon/internal/auth       (cached)
-ok  github.com/games-dashboard/daemon/internal/broker     6.175s  (17/17 pass)
-ok  github.com/games-dashboard/daemon/internal/cluster    (cached)
-ok  github.com/games-dashboard/daemon/internal/networking (cached)
+ok  github.com/games-dashboard/daemon/internal/adapters     0.009s
+ok  github.com/games-dashboard/daemon/internal/auth         0.817s
+ok  github.com/games-dashboard/daemon/internal/backup       0.020s
+ok  github.com/games-dashboard/daemon/internal/broker       6.142s
+ok  github.com/games-dashboard/daemon/internal/cluster      0.013s
+ok  github.com/games-dashboard/daemon/internal/config       0.010s
+ok  github.com/games-dashboard/daemon/internal/health       1.106s
+ok  github.com/games-dashboard/daemon/internal/metrics      0.016s
+ok  github.com/games-dashboard/daemon/internal/modmanager   0.039s
+ok  github.com/games-dashboard/daemon/internal/networking   0.020s
+ok  github.com/games-dashboard/daemon/internal/rcon         0.010s
+ok  github.com/games-dashboard/daemon/internal/sbom         0.017s
+ok  github.com/games-dashboard/daemon/internal/secrets      0.019s
+ok  github.com/games-dashboard/daemon/internal/telnet       0.007s
+ok  github.com/games-dashboard/daemon/internal/webrcon      0.011s
+Go vet: clean
 UI TypeScript: clean (0 errors)
 ```
 
 Good luck Tom! Ask questions by reading the code — it's well-commented.
-The broker.go is the biggest file (~2200 lines) but each method is self-contained.
+The broker.go is the biggest file (~3100 lines) but each method is self-contained.

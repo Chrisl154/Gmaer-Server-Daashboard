@@ -79,17 +79,22 @@ The uninstaller:
 
 ---
 
-## Supported games
+## Supported games (24 adapters)
 
-| Game | Adapter |
-|------|---------|
-| Valheim | `valheim` |
-| Minecraft | `minecraft` |
-| Satisfactory | `satisfactory` |
-| Palworld | `palworld` |
-| Eco | `eco` |
-| Enshrouded | `enshrouded` |
-| Riftbreaker | `riftbreaker` |
+| Game | Adapter | Game | Adapter |
+|------|---------|------|---------|
+| 7 Days to Die | `7-days-to-die` | Among Us | `among-us` |
+| ARK: Survival Ascended | `ark-survival-ascended` | Conan Exiles | `conan-exiles` |
+| Counter-Strike 2 | `counter-strike-2` | DayZ | `dayz` |
+| Don't Starve Together | `dont-starve-together` | Dota 2 | `dota2` |
+| Eco | `eco` | Enshrouded | `enshrouded` |
+| Factorio | `factorio` | Garry's Mod | `garrys-mod` |
+| Left 4 Dead 2 | `left-4-dead-2` | Minecraft | `minecraft` |
+| Palworld | `palworld` | Project Zomboid | `project-zomboid` |
+| Riftbreaker | `riftbreaker` | Risk of Rain 2 | `risk-of-rain-2` |
+| Rust | `rust` | Satisfactory | `satisfactory` |
+| Squad | `squad` | Team Fortress 2 | `team-fortress-2` |
+| Terraria | `terraria` | Valheim | `valheim` |
 
 ---
 
@@ -126,7 +131,7 @@ cd ui && npm test
 
 | Suite | Tests | Status |
 |---|---|---|
-| Go daemon unit tests | 5 packages | ✅ PASS |
+| Go daemon unit tests | 18 packages | ✅ PASS |
 | UI Vitest | 158 tests, 20 files | ✅ PASS |
 | UI production build | — | ✅ Clean |
 | CLI smoke tests | all commands | ✅ PASS |
@@ -172,8 +177,6 @@ gdash version                   # show local + daemon version, branch, commit
 See [CONTRIBUTING.md](docs/CONTRIBUTING.md) to get started contributing.
 
 See [ROADMAP.md](docs/ROADMAP.md) for planned features.
-
----
 
 ---
 
