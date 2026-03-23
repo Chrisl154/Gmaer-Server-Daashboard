@@ -73,8 +73,11 @@ echo "PROGRESS:30"
 
 # ── Self-update: copy the latest version of this script from the repo ─────
 if [[ -f "$REPO_DIR/scripts/gdash-update.sh" ]]; then
-  cp "$REPO_DIR/scripts/gdash-update.sh" "$BIN_DIR/gdash-update.sh"
-  chmod +x "$BIN_DIR/gdash-update.sh"
+  # Write to a temp file then atomic-mv so we don't corrupt the running
+  # script's file descriptor (cp truncates the inode bash is reading from).
+  cp "$REPO_DIR/scripts/gdash-update.sh" "$BIN_DIR/gdash-update.sh.new"
+  chmod +x "$BIN_DIR/gdash-update.sh.new"
+  mv "$BIN_DIR/gdash-update.sh.new" "$BIN_DIR/gdash-update.sh"
   echo "Update script refreshed from repo."
 fi
 
