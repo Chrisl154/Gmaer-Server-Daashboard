@@ -174,9 +174,22 @@ echo "Building UI..."
 progress=75
 echo "PROGRESS:$progress"
 cd "$UI_SRC"
-npm install --silent 2>/dev/null
+npm install --silent 2>&1
 chmod +x node_modules/.bin/* 2>/dev/null || true
-node_modules/.bin/vite build --outDir "${UI_DST}" --emptyOutDir 2>/dev/null
+# Build into a staging directory first.  Only replace the live UI once the
+# build succeeds — this prevents wiping the current UI if vite fails.
+UI_TMP="${UI_DST}.tmp"
+rm -rf "$UI_TMP"
+if ! node_modules/.bin/vite build --outDir "$UI_TMP" 2>&1; then
+  write_state "failed" "building_ui" 75 "vite build failed — see log above"
+  echo "ERROR: vite build failed. The existing UI has NOT been replaced." >&2
+  exit 1
+fi
+# Atomically swap in the new build.
+rm -rf "${UI_DST}.old"
+[[ -d "$UI_DST" ]] && mv "$UI_DST" "${UI_DST}.old"
+mv "$UI_TMP" "$UI_DST"
+rm -rf "${UI_DST}.old"
 echo "UI rebuilt."
 progress=90
 echo "PROGRESS:$progress"
