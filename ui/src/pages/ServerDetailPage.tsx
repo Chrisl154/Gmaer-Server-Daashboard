@@ -1440,9 +1440,9 @@ function ConfigTab({ server }: { server: any }) {
 
   const { data: filesData, isLoading: filesLoading, isError: filesError } = useQuery<{ files: ConfigFileInfo[] }>({
     queryKey: ['config-files', server.id],
-    queryFn: () => api.get(`/api/v1/servers/${server.id}/config/files`).then(r => r.data),
+    queryFn: () => api.get(`/api/v1/servers/${server.id}/config/files`, { timeout: 10_000 }).then(r => r.data),
     staleTime: 30_000,
-    retry: 1,
+    retry: 0,
   });
 
   useEffect(() => {

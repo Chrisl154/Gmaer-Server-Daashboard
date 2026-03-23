@@ -3082,12 +3082,27 @@ func (b *Broker) configFilePath(installDir, relPath string) (string, error) {
 	return abs, nil
 }
 
-// configTemplatePath converts an adapter template path (e.g. "/data/server.properties")
-// to a path relative to install_dir by stripping the "/data/" prefix used by Docker volumes.
+// configTemplatePath converts an adapter template path to a path relative to
+// install_dir.  Adapter manifests use several conventions for config paths:
+//   - "/data/server.properties"          → "server.properties"       (Docker volume style)
+//   - "/opt/valheim/start_valheim.sh"    → "start_valheim.sh"       (absolute install path)
+//   - "/opt/cs2/game/csgo/cfg/server.cfg" → "game/csgo/cfg/server.cfg"
+//   - "server.cfg"                       → "server.cfg"             (already relative)
 func configTemplatePath(p string) string {
 	p = filepath.Clean(p)
+	// Strip /data/ prefix (Docker volume convention).
 	if strings.HasPrefix(p, "/data/") {
 		return p[len("/data/"):]
+	}
+	// Strip /opt/<gamename>/ prefix (absolute install path convention).
+	// The pattern is: /opt/ + one directory component + /remainder
+	if strings.HasPrefix(p, "/opt/") {
+		rest := p[len("/opt/"):]
+		if idx := strings.Index(rest, "/"); idx >= 0 {
+			return rest[idx+1:]
+		}
+		// /opt/something with no subdirectory — just use the filename.
+		return filepath.Base(p)
 	}
 	return strings.TrimPrefix(p, "/")
 }
