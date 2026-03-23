@@ -12,9 +12,10 @@
 # Worker-node mode (no UI, no nginx, no admin account):
 #   bash install.sh --mode=node
 #
-# Install from dev branch:
-#   bash install.sh --branch=dev
-#   (auto-detected when piped from the dev raw URL)
+# Install from dev branch (any of these work):
+#   curl -fsSL .../dev/install.sh | bash          (auto-detected from URL)
+#   curl -fsSL .../main/install.sh | bash -s dev  (bare arg)
+#   bash install.sh --branch=dev                  (flag)
 #
 # Non-interactive (CI/scripted):
 #   GDASH_NONINTERACTIVE=1 bash install.sh
@@ -38,13 +39,15 @@ for _arg in "$@"; do
     --mode=node)      INSTALL_MODE="node" ;;
     --mode=full)      INSTALL_MODE="full" ;;
     --branch=*)       INSTALL_BRANCH="${_arg#--branch=}" ;;
+    dev|main)         INSTALL_BRANCH="$_arg" ;;
   esac
 done
-# Auto-detect branch when piped from GitHub raw URL (e.g. .../dev/install.sh)
+# Auto-detect branch when piped from GitHub raw URL (e.g. .../dev/install.sh).
+# When running `curl ... | bash`, check the process tree for a curl command
+# containing "/dev/" in the URL.
 if [[ "$INSTALL_BRANCH" == "main" ]] && [[ "${BASH_SOURCE[0]:-}" == "" || "${BASH_SOURCE[0]:-}" == "bash" ]]; then
-  # Script is being piped — check /proc/self/fd/0 or parent cmdline for "dev"
-  _parent_cmd="$(ps -o args= -p $PPID 2>/dev/null || true)"
-  if [[ "$_parent_cmd" == *"/dev/install.sh"* ]]; then
+  _pipe_cmds="$(ps -eo args= 2>/dev/null | grep -F 'raw.githubusercontent.com' | grep -v grep || true)"
+  if [[ "$_pipe_cmds" == *"/dev/install.sh"* ]]; then
     INSTALL_BRANCH="dev"
   fi
 fi
