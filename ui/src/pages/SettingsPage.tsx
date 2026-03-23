@@ -53,6 +53,16 @@ function usePatchSettings() {
 
 function GeneralSection() {
   const { data: status } = useSystemStatus();
+  const [confirmRestart, setConfirmRestart] = useState(false);
+
+  const restartMutation = useMutation({
+    mutationFn: () => api.post('/api/v1/admin/restart-daemon'),
+    onSuccess: () => {
+      toast.success('Daemon is restarting — the page will reconnect automatically.');
+      setConfirmRestart(false);
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.error ?? 'Restart failed'),
+  });
 
   return (
     <div className="space-y-5">
@@ -87,6 +97,42 @@ function GeneralSection() {
           </div>
         </div>
       )}
+
+      {/* Daemon Restart */}
+      <div className="card p-5 space-y-3">
+        <h3 className="label">Daemon Control</h3>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Restart the daemon to apply configuration changes (TLS, networking, etc.).
+          Running game servers are not affected — they continue independently.
+        </p>
+        {!confirmRestart ? (
+          <button
+            onClick={() => setConfirmRestart(true)}
+            className="btn-ghost text-sm flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Restart Daemon
+          </button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => restartMutation.mutate()}
+              disabled={restartMutation.isPending}
+              className="text-sm px-3 py-1.5 rounded-lg font-medium"
+              style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)' }}
+            >
+              {restartMutation.isPending ? (
+                <span className="flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Restarting...</span>
+              ) : 'Confirm Restart'}
+            </button>
+            <button
+              onClick={() => setConfirmRestart(false)}
+              className="btn-ghost text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
 
       <div className="card p-4 flex items-start gap-3">
         <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />

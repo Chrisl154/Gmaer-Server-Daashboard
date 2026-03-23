@@ -68,9 +68,11 @@ func (s *Server) getUpdateStatus(c *gin.Context) {
 		targetBranch = currentBranch
 	}
 
-	// Fetch the target branch so behind-count is accurate and the ref exists even
-	// in shallow clones where only the originally-cloned branch has a remote ref.
-	_ = exec.Command("git", "-C", repoDir, "fetch", "origin", targetBranch, "--quiet").Run() //nolint:gosec
+	// Fetch the target branch with an explicit refspec so origin/<branch> is
+	// always created — shallow clones only have refspecs for the originally-cloned
+	// branch, so `git fetch origin dev` alone won't create refs/remotes/origin/dev.
+	_ = exec.Command("git", "-C", repoDir, "fetch", "origin", //nolint:gosec
+		"+refs/heads/"+targetBranch+":refs/remotes/origin/"+targetBranch, "--quiet").Run()
 
 	// Compare HEAD against origin/<targetBranch> so switching to dev shows dev's commits.
 	behindOut, _ := exec.Command("git", "-C", repoDir, "rev-list", //nolint:gosec
@@ -141,9 +143,10 @@ func (s *Server) applyUpdate(c *gin.Context) {
 
 	repoDir := resolveRepoDirPath()
 
-	// Always fetch the target branch first — shallow clones only have refs for
-	// the originally-cloned branch. This creates origin/<branch> if missing.
-	fetchCmd := exec.Command("git", "-C", repoDir, "fetch", "origin", req.Branch, "--quiet") //nolint:gosec
+	// Always fetch the target branch first with an explicit refspec so
+	// origin/<branch> is created even in shallow clones.
+	fetchCmd := exec.Command("git", "-C", repoDir, "fetch", "origin", //nolint:gosec
+		"+refs/heads/"+req.Branch+":refs/remotes/origin/"+req.Branch, "--quiet")
 	if out, err := fetchCmd.CombinedOutput(); err != nil {
 		s.cfg.Logger.Warn("git fetch failed (continuing anyway)",
 			zap.String("branch", req.Branch), zap.String("output", string(out)), zap.Error(err))

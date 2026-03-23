@@ -59,10 +59,11 @@ echo "PROGRESS:10"
 # ── Pull latest code ─────────────────────────────────────────────────────────
 echo "Updating repository (branch: $BRANCH)..."
 echo "PROGRESS:15"
-# Fetch the specific branch — shallow clones (--depth=1) only have refs for
-# the branch that was originally cloned. A bare `git fetch origin` won't
-# create refs for other branches.
-git -C "$REPO_DIR" fetch origin "$BRANCH" --quiet
+# Fetch the specific branch with an explicit refspec so that origin/$BRANCH is
+# always created — shallow clones only have refspecs for the originally-cloned
+# branch, so `git fetch origin dev` alone writes to FETCH_HEAD but never
+# creates refs/remotes/origin/dev.
+git -C "$REPO_DIR" fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" --quiet
 git -C "$REPO_DIR" checkout "$BRANCH" 2>/dev/null \
   || git -C "$REPO_DIR" checkout -b "$BRANCH" "origin/$BRANCH" 2>/dev/null \
   || true

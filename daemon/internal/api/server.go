@@ -260,6 +260,7 @@ func (s *Server) registerRoutes() {
 	admin.POST("/secrets/rotate", s.rotateSecrets)
 	admin.GET("/settings", s.getSettings)
 	admin.PATCH("/settings", s.patchSettings)
+	admin.POST("/restart-daemon", s.restartDaemon)
 
 	// Cluster node management (admin-only writes)
 	admin.POST("/nodes", s.registerNode)
@@ -1385,6 +1386,30 @@ func (s *Server) patchSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "settings updated"})
+}
+
+// restartDaemon restarts the gdash-daemon systemd service. The current process
+// will be replaced, so we return 202 immediately and exec the restart in a
+// detached background process after a short delay.
+func (s *Server) restartDaemon(c *gin.Context) {
+	s.recordEvent(c, "restart_daemon", "daemon", true, nil)
+	s.cfg.Logger.Info("Admin-initiated daemon restart")
+
+	go func() {
+		// Short delay to let the HTTP response flush.
+		time.Sleep(500 * time.Millisecond)
+		cmd := exec.Command("systemctl", "restart", "gdash-daemon") //nolint:gosec
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			s.cfg.Logger.Error("Daemon restart failed",
+				zap.String("output", string(out)), zap.Error(err))
+		}
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"status": "restarting",
+		"msg":    "Daemon is restarting. The dashboard will reconnect automatically in a few seconds.",
+	})
 }
 
 func (s *Server) getSystemStatus(c *gin.Context) {
