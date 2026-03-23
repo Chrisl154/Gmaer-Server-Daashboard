@@ -1840,6 +1840,55 @@ function UpdatesSection() {
     staleTime: 0,
   });
 
+  // On mount, detect if an update is currently in progress (e.g. after a page
+  // refresh) by checking the log for a recent session with PROGRESS markers
+  // that hasn't completed or errored.  If found, resume polling automatically.
+  const resumeChecked = useRef(false);
+  useEffect(() => {
+    if (resumeChecked.current) return;
+    resumeChecked.current = true;
+    api.get('/api/v1/admin/update/log?lines=200').then(r => {
+      const lines: string[] = r.data?.lines ?? [];
+      if (lines.length === 0) return;
+
+      // Find the last session header to scope our search.
+      let sessionStart = 0;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (/^=== \d{4}-\d{2}-\d{2}/.test(lines[i])) { sessionStart = i; break; }
+      }
+      const session = lines.slice(sessionStart);
+
+      // Check if this session completed or errored.
+      const completed = session.some(l => l.includes('=== Update complete ===') || /^PROGRESS:100$/.test(l));
+      const errored = session.some(l => /^(ERROR:|fatal:|Permission denied)/i.test(l.trim()));
+      if (completed || errored) return;
+
+      // Find the highest progress marker in this session.
+      let maxProgress = 0;
+      for (const l of session) {
+        const m = l.match(/^PROGRESS:(\d+)$/);
+        if (m) maxProgress = Math.max(maxProgress, parseInt(m[1], 10));
+      }
+      if (maxProgress <= 0) return;
+
+      // Check the session timestamp is recent (within 10 minutes).
+      const headerMatch = session[0]?.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
+      if (headerMatch) {
+        const age = Date.now() - new Date(headerMatch[1]).getTime();
+        if (age > 10 * 60 * 1000) return; // session too old — ignore
+      }
+
+      // Resume: update is still running.
+      setUpdating(true);
+      setProgress(maxProgress);
+      setShowLog(true);
+      staleRef.current = 0;
+      lastProgressRef.current = maxProgress;
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      pollRef.current = setInterval(() => refetchLog(), 2_000);
+    }).catch(() => {}); // ignore — log endpoint may be unavailable
+  }, []);
+
   // Parse PROGRESS:N markers from the log while update is running.
   // Also detect failures: error lines in the log or no progress for ~20 s.
   useEffect(() => {
