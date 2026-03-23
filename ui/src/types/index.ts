@@ -297,6 +297,13 @@ export interface DaemonSettingsS3 {
   use_ssl: boolean;
 }
 
+export interface DaemonSettingsTailscale {
+  enabled: boolean;
+  hostname: string;
+  dual: boolean;
+  has_auth_key: boolean;
+}
+
 export interface DaemonSettings {
   bind_addr: string;
   shutdown_timeout_s: number;
@@ -321,6 +328,7 @@ export interface DaemonSettings {
     health_check_interval_s: number;
     node_timeout_s: number;
   };
+  tailscale: DaemonSettingsTailscale;
 }
 
 export interface SettingsPatch {
@@ -337,6 +345,12 @@ export interface SettingsPatch {
   cluster?: {
     health_check_interval_s?: number;
     node_timeout_s?: number;
+  };
+  tailscale?: {
+    enabled?: boolean;
+    auth_key?: string;
+    hostname?: string;
+    dual?: boolean;
   };
 }
 

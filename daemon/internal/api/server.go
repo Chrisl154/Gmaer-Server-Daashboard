@@ -1114,6 +1114,16 @@ type settingsResponse struct {
 	Backup            settingsBackup       `json:"backup"`
 	Metrics           settingsMetrics      `json:"metrics"`
 	Cluster           settingsCluster      `json:"cluster"`
+	Tailscale         settingsTailscale    `json:"tailscale"`
+}
+
+type settingsTailscale struct {
+	Enabled  bool   `json:"enabled"`
+	Hostname string `json:"hostname"`
+	Dual     bool   `json:"dual"`
+	// AuthKey is write-only — never returned in GET responses.
+	// The UI sends it via PATCH; the backend writes it to config and clears it from the response.
+	HasAuthKey bool `json:"has_auth_key"` // true when a key is configured (without revealing it)
 }
 
 type settingsStorage struct {
@@ -1155,10 +1165,18 @@ type settingsCluster struct {
 
 // settingsPatchRequest contains the mutable fields the UI can update.
 type settingsPatchRequest struct {
-	LogLevel *string             `json:"log_level,omitempty"`
-	Backup   *settingsBackup     `json:"backup,omitempty"`
-	Metrics  *settingsMetrics    `json:"metrics,omitempty"`
-	Cluster  *settingsClusterPatch `json:"cluster,omitempty"`
+	LogLevel  *string                `json:"log_level,omitempty"`
+	Backup    *settingsBackup        `json:"backup,omitempty"`
+	Metrics   *settingsMetrics       `json:"metrics,omitempty"`
+	Cluster   *settingsClusterPatch  `json:"cluster,omitempty"`
+	Tailscale *settingsTailscalePatch `json:"tailscale,omitempty"`
+}
+
+type settingsTailscalePatch struct {
+	Enabled  *bool   `json:"enabled,omitempty"`
+	AuthKey  *string `json:"auth_key,omitempty"`
+	Hostname *string `json:"hostname,omitempty"`
+	Dual     *bool   `json:"dual,omitempty"`
 }
 
 type settingsClusterPatch struct {
@@ -1194,6 +1212,12 @@ func (s *Server) getSettings(c *gin.Context) {
 			Enabled:              cfg.Cluster.Enabled,
 			HealthCheckIntervalS: int64(cfg.Cluster.HealthCheckInterval.Seconds()),
 			NodeTimeoutS:         int64(cfg.Cluster.NodeTimeout.Seconds()),
+		},
+		Tailscale: settingsTailscale{
+			Enabled:    cfg.Tailscale.Enabled,
+			Hostname:   cfg.Tailscale.Hostname,
+			Dual:       cfg.Tailscale.Dual,
+			HasAuthKey: cfg.Tailscale.AuthKey != "",
 		},
 	}
 
@@ -1263,6 +1287,20 @@ func (s *Server) patchSettings(c *gin.Context) {
 		}
 		if req.Cluster.NodeTimeoutS != nil {
 			cfg.Cluster.NodeTimeout = time.Duration(*req.Cluster.NodeTimeoutS) * time.Second
+		}
+	}
+	if req.Tailscale != nil {
+		if req.Tailscale.Enabled != nil {
+			cfg.Tailscale.Enabled = *req.Tailscale.Enabled
+		}
+		if req.Tailscale.AuthKey != nil && *req.Tailscale.AuthKey != "" {
+			cfg.Tailscale.AuthKey = *req.Tailscale.AuthKey
+		}
+		if req.Tailscale.Hostname != nil && *req.Tailscale.Hostname != "" {
+			cfg.Tailscale.Hostname = *req.Tailscale.Hostname
+		}
+		if req.Tailscale.Dual != nil {
+			cfg.Tailscale.Dual = *req.Tailscale.Dual
 		}
 	}
 

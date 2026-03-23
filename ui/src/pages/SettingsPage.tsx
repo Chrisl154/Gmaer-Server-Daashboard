@@ -4,7 +4,7 @@ import {
   Settings, Shield, Server, HardDrive, Network, Activity,
   Plus, Trash2, User, QrCode, Info, Loader2, Key, Save,
   Database, RefreshCw, Download, GitBranch, CheckCircle2, AlertCircle, Bell,
-  Copy, Check, X,
+  Copy, Check, X, Globe, ExternalLink, Eye, EyeOff,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { toast } from 'react-hot-toast';
@@ -1089,7 +1089,49 @@ function StorageSection() {
 // ── Networking section ───────────────────────────────────────────────────────
 
 function NetworkingSection() {
+  const queryClient = useQueryClient();
   const { data: settings, isLoading } = useSettings();
+
+  // Tailscale form state
+  const [tsEnabled, setTsEnabled] = useState(false);
+  const [tsHostname, setTsHostname] = useState('');
+  const [tsAuthKey, setTsAuthKey] = useState('');
+  const [tsDual, setTsDual] = useState(false);
+  const [showAuthKey, setShowAuthKey] = useState(false);
+  const [tsInitialized, setTsInitialized] = useState(false);
+
+  // Sync form state when settings load
+  useEffect(() => {
+    if (settings?.tailscale && !tsInitialized) {
+      setTsEnabled(settings.tailscale.enabled);
+      setTsHostname(settings.tailscale.hostname || 'gmaer-dashboard');
+      setTsDual(settings.tailscale.dual);
+      setTsInitialized(true);
+    }
+  }, [settings, tsInitialized]);
+
+  const tsMutation = useMutation({
+    mutationFn: (patch: { tailscale: { enabled?: boolean; auth_key?: string; hostname?: string; dual?: boolean } }) =>
+      api.patch('/api/v1/admin/settings', patch),
+    onSuccess: () => {
+      toast.success('Tailscale settings saved — restart the daemon to apply.');
+      setTsAuthKey('');
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.error ?? 'Failed to save Tailscale settings'),
+  });
+
+  const handleTsSave = () => {
+    const patch: any = {
+      enabled: tsEnabled,
+      hostname: tsHostname || undefined,
+      dual: tsDual,
+    };
+    if (tsAuthKey) {
+      patch.auth_key = tsAuthKey;
+    }
+    tsMutation.mutate({ tailscale: patch });
+  };
 
   if (isLoading) return <SectionSkeleton />;
 
@@ -1097,9 +1139,10 @@ function NetworkingSection() {
     <div className="space-y-5">
       <div>
         <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>Networking</h2>
-        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Bind address and connection settings</p>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Bind address, connection settings, and Tailscale VPN</p>
       </div>
 
+      {/* Standard connection settings */}
       <div className="card p-5 space-y-3">
         <h3 className="label">Connection Settings</h3>
         {[
@@ -1114,14 +1157,143 @@ function NetworkingSection() {
         ))}
       </div>
 
+      {/* Tailscale VPN */}
+      <div className="card p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Globe className="w-4 h-4" style={{ color: 'var(--primary)' }} />
+            <h3 className="label">Tailscale VPN</h3>
+          </div>
+          <button
+            onClick={() => {
+              setTsEnabled(!tsEnabled);
+            }}
+            className={cn('relative inline-flex h-5 w-9 rounded-full transition-colors',
+              tsEnabled ? 'bg-[var(--primary)]' : 'bg-[var(--border)]')}
+          >
+            <span className={cn('inline-block h-4 w-4 mt-0.5 rounded-full bg-white shadow transition-transform',
+              tsEnabled ? 'translate-x-4' : 'translate-x-0.5')} />
+          </button>
+        </div>
+
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Connect this dashboard to your Tailscale network for secure remote access without port forwarding.
+          Get an auth key from{' '}
+          <a href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noopener noreferrer"
+            className="text-blue-400 hover:text-blue-300 inline-flex items-center gap-1">
+            Tailscale Admin Console <ExternalLink className="w-3 h-3" />
+          </a>
+        </p>
+
+        {tsEnabled && (
+          <div className="space-y-3 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+            {/* Auth Key */}
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                Auth Key
+                {settings?.tailscale?.has_auth_key && (
+                  <span className="ml-2 text-green-400 text-xs font-normal">(configured)</span>
+                )}
+              </label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type={showAuthKey ? 'text' : 'password'}
+                    value={tsAuthKey}
+                    onChange={e => setTsAuthKey(e.target.value)}
+                    placeholder={settings?.tailscale?.has_auth_key ? 'Leave blank to keep current key' : 'tskey-auth-...'}
+                    className="input w-full pr-10 text-xs font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAuthKey(!showAuthKey)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-white/10"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    {showAuthKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                Generate a reusable auth key in the Tailscale admin. You can also set <code className="font-mono text-xs px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)' }}>TAILSCALE_AUTH_KEY</code> as an environment variable.
+              </p>
+            </div>
+
+            {/* Hostname */}
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                Tailnet Hostname
+              </label>
+              <input
+                type="text"
+                value={tsHostname}
+                onChange={e => setTsHostname(e.target.value)}
+                placeholder="gmaer-dashboard"
+                className="input w-full text-xs font-mono"
+              />
+              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                Your dashboard will be reachable at <code className="font-mono text-xs px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)' }}>https://{tsHostname || 'gmaer-dashboard'}.your-tailnet.ts.net</code>
+              </p>
+            </div>
+
+            {/* Dual-stack toggle */}
+            <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+              <div>
+                <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Also listen on LAN</span>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Keep the standard bind address active alongside Tailscale
+                </p>
+              </div>
+              <button
+                onClick={() => setTsDual(!tsDual)}
+                className={cn('relative inline-flex h-5 w-9 rounded-full transition-colors shrink-0',
+                  tsDual ? 'bg-[var(--primary)]' : 'bg-[var(--border)]')}
+              >
+                <span className={cn('inline-block h-4 w-4 mt-0.5 rounded-full bg-white shadow transition-transform',
+                  tsDual ? 'translate-x-4' : 'translate-x-0.5')} />
+              </button>
+            </div>
+
+            {/* Save button */}
+            <div className="flex items-center justify-between pt-2">
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                Changes require a daemon restart to take effect.
+              </p>
+              <button
+                onClick={handleTsSave}
+                disabled={tsMutation.isPending}
+                className="btn-primary text-sm flex items-center gap-1.5"
+              >
+                {tsMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                {tsMutation.isPending ? 'Saving...' : 'Save Tailscale Settings'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!tsEnabled && settings?.tailscale?.enabled && (
+          <div className="flex items-center justify-end pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+            <button
+              onClick={handleTsSave}
+              disabled={tsMutation.isPending}
+              className="btn-danger text-sm flex items-center gap-1.5"
+            >
+              {tsMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+              Disable Tailscale
+            </button>
+          </div>
+        )}
+      </div>
+
       <div className="card p-4 flex items-start gap-3">
         <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
         <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-          Network settings require a daemon restart to take effect. Edit{' '}
+          Bind address changes require editing{' '}
           <code className="font-mono text-xs px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
             daemon.yaml
           </code>{' '}
-          to change these values.
+          directly. Tailscale and other settings can be changed here and take effect after a daemon restart.
         </p>
       </div>
     </div>
