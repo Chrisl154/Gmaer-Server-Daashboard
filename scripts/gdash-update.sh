@@ -142,9 +142,13 @@ echo "UI rebuilt."
 echo "PROGRESS:90"
 
 # ── Restart service ──────────────────────────────────────────────────────────
-echo "Restarting gdash-daemon..."
+# Mark the update as complete BEFORE restarting — the pull/build/UI rebuild
+# are all done at this point.  If systemctl restart fails or times out,
+# set -e would kill the script before writing these markers, making the UI
+# think the update is still running forever.
 echo "PROGRESS:95"
-sleep 2
-systemctl restart gdash-daemon
 echo "=== Update complete ==="
 echo "PROGRESS:100"
+echo "Restarting gdash-daemon..."
+sleep 2
+systemctl restart gdash-daemon || echo "WARNING: systemctl restart returned non-zero (service may still be starting)"
