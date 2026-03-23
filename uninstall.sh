@@ -124,6 +124,20 @@ if systemctl is-active --quiet gdash-daemon 2>/dev/null; then
         info "No game server PID files found"
       fi
 
+      # Stop any game server Docker containers (named gd-*)
+      if command -v docker &>/dev/null; then
+        GAME_CONTAINERS=$(docker ps -q --filter "name=gd-" 2>/dev/null || true)
+        if [[ -n "$GAME_CONTAINERS" ]]; then
+          log "Stopping game server Docker containers..."
+          docker stop $GAME_CONTAINERS 2>/dev/null || true
+          sleep 2
+          docker rm -f $GAME_CONTAINERS 2>/dev/null || true
+          ok "Game server Docker containers stopped and removed"
+        else
+          info "No running game server Docker containers found"
+        fi
+      fi
+
       # Kill any processes running from the game install dirs
       GAME_DATA="$INSTALL_DIR/data"
       if [[ -d "$GAME_DATA" ]]; then
@@ -147,6 +161,20 @@ if systemctl is-active --quiet gdash-daemon 2>/dev/null; then
   fi
 else
   info "Daemon is not running — no game servers to stop"
+fi
+
+# Always check for game server Docker containers regardless of daemon state
+if command -v docker &>/dev/null; then
+  GAME_CONTAINERS=$(docker ps -q --filter "name=gd-" 2>/dev/null || true)
+  if [[ -n "$GAME_CONTAINERS" ]]; then
+    log "Stopping game server Docker containers..."
+    docker stop $GAME_CONTAINERS 2>/dev/null || true
+    sleep 2
+    docker rm -f $GAME_CONTAINERS 2>/dev/null || true
+    ok "Game server Docker containers stopped and removed"
+  else
+    info "No running game server Docker containers (gd-*) found"
+  fi
 fi
 
 ok "Game server cleanup complete"

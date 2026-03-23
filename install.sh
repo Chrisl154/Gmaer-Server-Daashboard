@@ -272,10 +272,30 @@ collect_config_tui() {
     "Data directory (server files, world saves, logs):" \
     "$_default_data"
 
-  wt_input BACKUP_SCHEDULE \
-    "Storage & Backup (3/5)" \
-    "Default backup schedule (cron syntax):" \
-    "0 3 * * *"
+  local _sched_pick
+  _sched_pick=$(whiptail --title "Storage & Backup (3/5)" \
+    --menu "How often should automatic backups run?" 18 68 6 \
+    "1" "Daily at 3 AM  (recommended)" \
+    "2" "Every 6 hours" \
+    "3" "Every hour" \
+    "4" "Weekly — Sunday at 3 AM" \
+    "5" "Monthly — 1st of month at 4:30 AM" \
+    "c" "Custom — enter your own schedule" \
+    3>&1 1>&2 2>&3) || true
+  case "${_sched_pick:-1}" in
+    1) BACKUP_SCHEDULE="0 3 * * *" ;;
+    2) BACKUP_SCHEDULE="0 */6 * * *" ;;
+    3) BACKUP_SCHEDULE="0 * * * *" ;;
+    4) BACKUP_SCHEDULE="0 3 * * 0" ;;
+    5) BACKUP_SCHEDULE="30 4 1 * *" ;;
+    c|C)
+      wt_input BACKUP_SCHEDULE \
+        "Storage & Backup (3/5)" \
+        "Enter a cron expression (minute hour day month weekday):" \
+        "0 3 * * *"
+      ;;
+    *) BACKUP_SCHEDULE="0 3 * * *" ;;
+  esac
 
   wt_input BACKUP_RETAIN_DAYS \
     "Storage & Backup (3/5)" \
@@ -352,8 +372,29 @@ collect_config_readline() {
   echo ""
   echo -e "  ${BOLD}-- Storage & Backup -----------------------------${NC}"
   local _default_data="${INSTALL_DIR}/data"
-  rl_input DATA_DIR          "Data directory"          "$_default_data"
-  rl_input BACKUP_SCHEDULE   "Backup cron schedule"    "0 3 * * *"
+  rl_input DATA_DIR "Data directory" "$_default_data"
+
+  echo -e "\n  ${BOLD}Backup schedule — pick a number or press Enter for default:${NC}"
+  echo -e "    1) Daily at 3 AM          (recommended)"
+  echo -e "    2) Every 6 hours"
+  echo -e "    3) Every hour"
+  echo -e "    4) Weekly — Sunday at 3 AM"
+  echo -e "    5) Monthly — 1st at 4:30 AM"
+  echo -e "    c) Custom (enter cron expression)"
+  local _sched_rl=""
+  IFS= read -r -p "  Choice [1]: " _sched_rl </dev/tty 2>/dev/null || true
+  case "${_sched_rl:-1}" in
+    1) BACKUP_SCHEDULE="0 3 * * *" ;;
+    2) BACKUP_SCHEDULE="0 */6 * * *" ;;
+    3) BACKUP_SCHEDULE="0 * * * *" ;;
+    4) BACKUP_SCHEDULE="0 3 * * 0" ;;
+    5) BACKUP_SCHEDULE="30 4 1 * *" ;;
+    c|C)
+      rl_input BACKUP_SCHEDULE "Cron expression (minute hour day month weekday)" "0 3 * * *"
+      ;;
+    *) BACKUP_SCHEDULE="0 3 * * *" ;;
+  esac
+
   rl_input BACKUP_RETAIN_DAYS "Backup retention (days)" "30"
 
   echo ""
@@ -726,13 +767,15 @@ BIN_DIR="$INSTALL_DIR/bin"
 mkdir -p "$BIN_DIR"
 
 log "Building daemon..."
-(cd "$REPO_DIR/daemon" && "$GO_BIN" mod tidy -e 2>/dev/null; \
-  "$GO_BIN" build -o "$BIN_DIR/games-daemon" ./cmd/daemon)
+(cd "$REPO_DIR/daemon" && \
+  GONOSUMDB="*" GOFLAGS="-mod=mod" "$GO_BIN" mod download 2>&1 | grep -v "^$" || true && \
+  GONOSUMDB="*" "$GO_BIN" build -o "$BIN_DIR/games-daemon" ./cmd/daemon)
 ok "Daemon → $BIN_DIR/games-daemon"
 
 log "Building CLI..."
-(cd "$REPO_DIR/cli" && "$GO_BIN" mod tidy -e 2>/dev/null; \
-  "$GO_BIN" build -o "$BIN_DIR/gdash" ./cmd)
+(cd "$REPO_DIR/cli" && \
+  GONOSUMDB="*" GOFLAGS="-mod=mod" "$GO_BIN" mod download 2>&1 | grep -v "^$" || true && \
+  GONOSUMDB="*" "$GO_BIN" build -o "$BIN_DIR/gdash" ./cmd)
 $SUDO ln -sf "$BIN_DIR/gdash" /usr/local/bin/gdash 2>/dev/null || true
 ok "CLI → $BIN_DIR/gdash (linked to /usr/local/bin/gdash)"
 
@@ -1075,14 +1118,16 @@ echo "PROGRESS:30"
 # ── Rebuild daemon ───────────────────────────────────────────────────────────
 echo "Building daemon..."
 echo "PROGRESS:35"
-$GO_BIN build -o "${BIN_DIR}/games-daemon.new" "${REPO_DIR}/daemon/cmd/daemon"
+(cd "${REPO_DIR}/daemon" && GONOSUMDB="*" GOFLAGS="-mod=mod" $GO_BIN mod download 2>&1 | grep -v "^$" || true)
+GONOSUMDB="*" $GO_BIN build -o "${BIN_DIR}/games-daemon.new" "${REPO_DIR}/daemon/cmd/daemon"
 mv "${BIN_DIR}/games-daemon.new" "${BIN_DIR}/games-daemon"
 echo "Daemon binary updated."
 echo "PROGRESS:60"
 
 # ── Rebuild CLI ──────────────────────────────────────────────────────────────
 echo "Building CLI..."
-$GO_BIN build -o "${BIN_DIR}/gdash.new" "${REPO_DIR}/cli/cmd"
+(cd "${REPO_DIR}/cli" && GONOSUMDB="*" GOFLAGS="-mod=mod" $GO_BIN mod download 2>&1 | grep -v "^$" || true)
+GONOSUMDB="*" $GO_BIN build -o "${BIN_DIR}/gdash.new" "${REPO_DIR}/cli/cmd"
 mv "${BIN_DIR}/gdash.new" "${BIN_DIR}/gdash"
 echo "CLI binary updated."
 echo "PROGRESS:70"

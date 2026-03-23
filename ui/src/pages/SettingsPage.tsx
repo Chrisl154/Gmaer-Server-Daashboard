@@ -1031,13 +1031,20 @@ function StorageSection() {
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="label">Schedule (cron)</label>
+            <label className="label">Backup Schedule</label>
             <input
               className="input font-mono"
               value={backup.default_schedule}
               onChange={e => handleBackupChange('default_schedule', e.target.value)}
               placeholder="0 3 * * *"
             />
+            <p className="text-xs text-gray-500 mt-1">
+              <span className="font-mono">minute  hour  day  month  weekday</span>
+              {' — '}e.g.{' '}
+              <span className="font-mono">0 3 * * *</span> = daily 3 AM &nbsp;·&nbsp;
+              <span className="font-mono">0 */6 * * *</span> = every 6 h &nbsp;·&nbsp;
+              <span className="font-mono">0 3 * * 0</span> = weekly Sun
+            </p>
           </div>
           <div>
             <label className="label">Retain (days)</label>
