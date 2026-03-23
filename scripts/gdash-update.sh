@@ -13,10 +13,14 @@ set -euo pipefail
 # removed the cwd, causing getcwd() failures in every child process.
 cd /tmp
 
+# Remember the invoking user's home before escalating — root won't have
+# Go/Node in its own $HOME, they live under the install user's home.
+ORIG_HOME="${HOME}"
+
 # Auto-escalate to root if not already — the update needs write access to
 # /opt/gdash and permission to restart the systemd service.
 if [[ $EUID -ne 0 ]]; then
-  exec sudo bash "$0" "$@"
+  exec sudo ORIG_HOME="$HOME" bash "$0" "$@"
 fi
 
 BRANCH="${1:-main}"
@@ -43,8 +47,10 @@ GO_BIN=""
 for candidate in \
     "/usr/local/go/bin/go" \
     "$HOME/.local/go/bin/go" \
+    "${ORIG_HOME:+$ORIG_HOME/.local/go/bin/go}" \
+    "/home/"*"/.local/go/bin/go" \
     "$(command -v go 2>/dev/null || true)"; do
-  [[ -x "$candidate" ]] && GO_BIN="$candidate" && break
+  [[ -n "$candidate" && -x "$candidate" ]] && GO_BIN="$candidate" && break
 done
 if [[ -z "$GO_BIN" ]]; then
   echo "ERROR: go binary not found. Install Go 1.22+ and retry." >&2
@@ -53,8 +59,13 @@ fi
 echo "Using Go: $GO_BIN ($($GO_BIN version))"
 
 # ── Find Node / npm ──────────────────────────────────────────────────────────
+# Check both root's and the original user's NVM install.
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 [[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
+if ! command -v node &>/dev/null && [[ -n "$ORIG_HOME" && -s "$ORIG_HOME/.nvm/nvm.sh" ]]; then
+  export NVM_DIR="$ORIG_HOME/.nvm"
+  source "$NVM_DIR/nvm.sh"
+fi
 if ! command -v node &>/dev/null; then
   echo "ERROR: node not found. Install Node 20 LTS and retry." >&2
   exit 1
