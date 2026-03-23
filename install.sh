@@ -24,6 +24,11 @@
 # =============================================================================
 set -euo pipefail
 
+# Ensure we're in a valid directory — if the user runs the installer from a
+# directory that will be deleted (e.g. /opt/gdash/repo during a re-install),
+# every tool that calls getcwd() fails. Move to /tmp unconditionally.
+cd /tmp
+
 # ── Mode flag ─────────────────────────────────────────────────────────────────
 # --mode=node  → worker-only install (daemon + Docker + SteamCMD, no UI/nginx)
 INSTALL_MODE="full"

@@ -9,6 +9,10 @@
 #   curl -fsSL https://raw.githubusercontent.com/Chrisl154/Gmaer-Server-Daashboard/main/scripts/gdash-update.sh | sudo bash -s main
 set -euo pipefail
 
+# Ensure we're in a valid directory — the daemon or a re-install may have
+# removed the cwd, causing getcwd() failures in every child process.
+cd /tmp
+
 BRANCH="${1:-main}"
 if [[ "$BRANCH" != "main" && "$BRANCH" != "dev" ]]; then
   echo "ERROR: branch must be 'main' or 'dev'" >&2
