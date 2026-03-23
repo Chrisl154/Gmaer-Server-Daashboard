@@ -270,6 +270,7 @@ func (s *Server) registerRoutes() {
 
 	// Self-update (admin-only)
 	admin.GET("/update/status", s.getUpdateStatus)
+	admin.POST("/update/check", s.checkForUpdates)
 	admin.POST("/update/apply", s.applyUpdate)
 	admin.GET("/update/log", s.getUpdateLog)
 
@@ -331,12 +332,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // --- Handler implementations ---
 
 func (s *Server) handleHealthz(c *gin.Context) {
-	status := s.cfg.HealthSvc.Check()
+	sys := s.cfg.HealthSvc.SystemStatus()
+	sys.Version = readVersionFile()
 	code := http.StatusOK
-	if !status.Healthy {
+	if !sys.Healthy {
 		code = http.StatusServiceUnavailable
 	}
-	c.JSON(code, status)
+	c.JSON(code, sys)
 }
 
 func (s *Server) handleMetrics(c *gin.Context) {
@@ -1470,7 +1472,7 @@ func (s *Server) getVersion(c *gin.Context) {
 		commit = "unknown"
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"version": "1.0.0",
+		"version": readVersionFile(),
 		"build":   "release",
 		"commit":  commit,
 		"branch":  branch,

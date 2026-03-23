@@ -1697,25 +1697,48 @@ function MonitoringSection() {
 // ── Updates section ──────────────────────────────────────────────────────────
 
 interface UpdateStatus {
+  version: string;
   current_branch: string;
-  target_branch: string;
   current_commit: string;
+  update_state?: {
+    status: string;   // running, complete, failed
+    phase: string;    // finding_go, building_daemon, etc.
+    progress: number;
+    branch: string;
+    error: string;
+    updated_at: string;
+  };
+}
+
+interface CheckResult {
+  target_branch: string;
   commits_behind: number;
   update_available: boolean;
   latest_message: string;
   error?: string;
 }
 
-function progressStage(p: number): string {
+const PHASE_LABELS: Record<string, string> = {
+  starting: 'Starting update…',
+  finding_go: 'Locating Go compiler…',
+  finding_node: 'Locating Node.js…',
+  pulling_code: 'Pulling latest code from GitHub…',
+  building_daemon: 'Building daemon binary…',
+  building_cli: 'Building CLI binary…',
+  building_ui: 'Building UI (npm + vite)…',
+  done: 'Complete!',
+};
+
+function progressStage(p: number, phase?: string): string {
+  if (phase && PHASE_LABELS[phase]) return PHASE_LABELS[phase];
   if (p < 5)  return 'Starting update…';
   if (p < 15) return 'Checking environment (Go, Node)…';
   if (p < 30) return 'Pulling latest code from GitHub…';
   if (p < 60) return 'Building daemon binary…';
   if (p < 70) return 'Building CLI binary…';
   if (p < 90) return 'Building UI (npm + vite build)…';
-  if (p < 95) return 'Wrapping up…';
-  if (p < 100) return 'Restarting service — page will reload shortly…';
-  return 'Complete!';
+  if (p >= 100) return 'Complete!';
+  return 'Restarting service — page will reload shortly…';
 }
 
 // Split raw log lines into individual update sessions keyed by their timestamp header.
@@ -1818,175 +1841,87 @@ function UpdatesSection() {
   const [branch, setBranch] = useState<'main' | 'dev'>('main');
   const [applyMsg, setApplyMsg] = useState('');
   const [showLog, setShowLog] = useState(false);
-  const [updating, setUpdating] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [updateFailed, setUpdateFailed] = useState(false);
-  const [failReason, setFailReason] = useState('');
+  const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const staleRef = useRef(0);      // consecutive polls with no progress change
-  const lastProgressRef = useRef(0);
 
-  // Pass selected branch so the status check compares HEAD vs origin/<branch>
-  const { data: status, isLoading, isFetching, refetch } = useQuery<UpdateStatus>({
-    queryKey: ['update-status', branch],
-    queryFn: () => api.get(`/api/v1/admin/update/status?branch=${branch}`).then(r => r.data),
-    staleTime: 30_000,
+  // Fast status — reads local state only (no network fetch).
+  const { data: status, isLoading, refetch: refetchStatus } = useQuery<UpdateStatus>({
+    queryKey: ['update-status'],
+    queryFn: () => api.get('/api/v1/admin/update/status').then(r => r.data),
+    staleTime: 5_000,
+    refetchInterval: (query) => {
+      // Poll every 2s while an update is running, otherwise stop.
+      const state = query.state.data as UpdateStatus | undefined;
+      return state?.update_state?.status === 'running' ? 2_000 : false;
+    },
   });
 
   const { data: logData, refetch: refetchLog } = useQuery<{ lines: string[]; note?: string }>({
     queryKey: ['update-log'],
-    queryFn: () => api.get('/api/v1/admin/update/log').then(r => r.data),
-    enabled: showLog || updating,
+    queryFn: () => api.get('/api/v1/admin/update/log?lines=300').then(r => r.data),
+    enabled: showLog,
     staleTime: 0,
   });
 
-  // On mount, detect if an update is currently in progress (e.g. after a page
-  // refresh) by checking the log for a recent session with PROGRESS markers
-  // that hasn't completed or errored.  If found, resume polling automatically.
-  const resumeChecked = useRef(false);
+  // Derive state from the status response.
+  const updateState = status?.update_state;
+  const isUpdating = updateState?.status === 'running';
+  const updateFailed = updateState?.status === 'failed';
+  const updateComplete = updateState?.status === 'complete';
+  const progress = updateState?.progress ?? 0;
+  const phase = updateState?.phase ?? '';
+
+  // Auto-show log when update is running.
   useEffect(() => {
-    if (resumeChecked.current) return;
-    resumeChecked.current = true;
-    api.get('/api/v1/admin/update/log?lines=200').then(r => {
-      const lines: string[] = r.data?.lines ?? [];
-      if (lines.length === 0) return;
+    if (isUpdating) setShowLog(true);
+  }, [isUpdating]);
 
-      // Find the last session header to scope our search.
-      let sessionStart = 0;
-      for (let i = lines.length - 1; i >= 0; i--) {
-        if (/^=== \d{4}-\d{2}-\d{2}/.test(lines[i])) { sessionStart = i; break; }
-      }
-      const session = lines.slice(sessionStart);
-
-      // Check if this session completed or errored.
-      const completed = session.some(l => l.includes('=== Update complete ===') || /^PROGRESS:100$/.test(l));
-      const errored = session.some(l => /^(ERROR:|fatal:|Permission denied)/i.test(l.trim()));
-      if (completed || errored) return;
-
-      // Find the highest progress marker in this session.
-      let maxProgress = 0;
-      for (const l of session) {
-        const m = l.match(/^PROGRESS:(\d+)$/);
-        if (m) maxProgress = Math.max(maxProgress, parseInt(m[1], 10));
-      }
-      if (maxProgress <= 0) return;
-
-      // Check the session timestamp is recent (within 10 minutes).
-      const headerMatch = session[0]?.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
-      if (headerMatch) {
-        const age = Date.now() - new Date(headerMatch[1]).getTime();
-        if (age > 10 * 60 * 1000) return; // session too old — ignore
-      }
-
-      // Resume: update is still running.
-      setUpdating(true);
-      setProgress(maxProgress);
-      setShowLog(true);
-      staleRef.current = 0;
-      lastProgressRef.current = maxProgress;
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-      pollRef.current = setInterval(() => refetchLog(), 2_000);
-    }).catch(() => {}); // ignore — log endpoint may be unavailable
-  }, []);
-
-  // Parse PROGRESS:N markers from the LATEST session in the log.
-  // Only looks at lines after the last "=== timestamp ===" header so that
-  // a completed previous session doesn't immediately mark a new update as done.
+  // Auto-reload the page ~35s after progress hits 100 (daemon is restarting).
   useEffect(() => {
-    if (!updating) return;
-    const allLines = logData?.lines ?? [];
-
-    // Scope to the latest session — find the last header line.
-    let sessionStart = 0;
-    for (let i = allLines.length - 1; i >= 0; i--) {
-      if (/^=== \d{4}-\d{2}-\d{2}/.test(allLines[i])) { sessionStart = i; break; }
-    }
-    const lines = allLines.slice(sessionStart);
-
-    let latest = progress;
-    for (const line of lines) {
-      const m = line.match(/^PROGRESS:(\d+)$/);
-      if (m) latest = Math.max(latest, parseInt(m[1], 10));
-    }
-    if (latest !== progress) {
-      setProgress(latest);
-      staleRef.current = 0;
-      lastProgressRef.current = latest;
-    } else {
-      staleRef.current++;
-    }
-
-    // Success — script completed
-    if (latest >= 100 || lines.some(l => l.includes('=== Update complete ==='))) {
-      setUpdating(false);
-      setProgress(100);
-      setUpdateFailed(false);
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-      return;
-    }
-
-    // Check for explicit error markers in log output
-    const errorPatterns = /^(ERROR:|fatal:|Permission denied|exec:.*not found|unexpected EOF|command not found)/i;
-    const lastLines = lines.slice(-15);
-    const errorLine = lastLines.find(l => errorPatterns.test(l.trim()));
-
-    // Failure: error detected in log, or 10 stale polls (~20 s no progress)
-    if (errorLine || (staleRef.current >= 10 && latest > 0 && latest < 95)) {
-      setUpdating(false);
-      setUpdateFailed(true);
-      setShowLog(true);
-      setFailReason(errorLine
-        ? `Update failed: ${errorLine.trim().slice(0, 120)}`
-        : `Update stalled at ${latest}% — the script may have crashed.`);
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    }
-  }, [logData]);
-
-  // Auto-reload the page ~35 s after restart signal (progress ≥ 95)
-  useEffect(() => {
-    if (progress >= 95 && progress < 100 && !updateFailed) {
+    if (progress >= 95 && isUpdating) {
       const t = setTimeout(() => window.location.reload(), 35_000);
       return () => clearTimeout(t);
     }
-  }, [progress >= 95, updateFailed]);
+  }, [progress >= 95, isUpdating]);
 
-  // Clean up polling interval on unmount
-  useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, []);
+  // Check for updates — calls POST /update/check (does git fetch).
+  const checkMutation = useMutation({
+    mutationFn: () => api.post('/api/v1/admin/update/check', { branch }).then(r => r.data),
+    onSuccess: (data: CheckResult) => {
+      setCheckResult(data);
+      if (data.error) {
+        toast.error(data.error);
+      } else if (data.update_available) {
+        toast.success(`${data.commits_behind} update${data.commits_behind !== 1 ? 's' : ''} available`);
+      } else {
+        toast.success('Already up to date');
+      }
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error ?? 'Check failed'),
+  });
 
-  const stopPolling = () => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-  };
-
-  const startUpdatePolling = () => {
-    setUpdating(true);
-    setProgress(0);
-    setUpdateFailed(false);
-    setFailReason('');
-    setApplyMsg('');
-    setShowLog(true);
-    staleRef.current = 0;
-    lastProgressRef.current = 0;
-    stopPolling();
-    pollRef.current = setInterval(() => refetchLog(), 2_000);
-  };
-
+  // Apply update.
   const apply = useMutation({
     mutationFn: () => api.post('/api/v1/admin/update/apply', { branch }).then(r => r.data),
     onSuccess: (data: any) => {
       setApplyMsg(data?.msg ?? 'Update started.');
+      setCheckResult(null);
       toast.success('Update launched — monitoring progress…');
+      // Start polling the status endpoint for state file updates.
       qc.invalidateQueries({ queryKey: ['update-status'] });
-      startUpdatePolling();
     },
     onError: (e: any) => toast.error(e.response?.data?.error ?? 'Update failed'),
   });
 
-  // Sync branch picker to current repo branch on first load
+  // Sync branch picker to current repo branch on first load.
   useEffect(() => {
     if (status?.current_branch === 'dev') setBranch('dev');
   }, [status?.current_branch]);
+
+  // Clean up on unmount.
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
 
   return (
     <div className="space-y-5">
@@ -2005,43 +1940,47 @@ function UpdatesSection() {
             <div className="h-4 w-48 rounded" style={{ background: 'var(--bg-elevated)' }} />
             <div className="h-4 w-32 rounded" style={{ background: 'var(--bg-elevated)' }} />
           </div>
-        ) : status?.error ? (
-          <div className="flex items-start gap-2 text-yellow-400 text-sm">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>{status.error}</span>
-          </div>
         ) : (
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
+              <span style={{ color: 'var(--text-secondary)' }}>Version</span>
+              <code className="font-mono text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+                {status?.version ?? '—'}
+              </code>
+            </div>
+            <div className="flex justify-between">
               <span style={{ color: 'var(--text-secondary)' }}>Branch</span>
               <code className="font-mono text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
-                {status?.current_branch}
+                {status?.current_branch ?? '—'}
               </code>
             </div>
             <div className="flex justify-between">
               <span style={{ color: 'var(--text-secondary)' }}>Commit</span>
               <code className="font-mono text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
-                {status?.current_commit}
+                {status?.current_commit ?? '—'}
               </code>
             </div>
-            <div className="flex justify-between items-center">
-              <span style={{ color: 'var(--text-secondary)' }}>Status</span>
-              {status?.update_available ? (
-                <span className="text-yellow-400 flex items-center gap-1">
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  {status.commits_behind} commit{status.commits_behind !== 1 ? 's' : ''} behind
-                </span>
-              ) : (
-                <span className="text-green-400 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Up to date
-                </span>
-              )}
-            </div>
-            {status?.update_available && status?.latest_message && (
+            {/* Show check result if available */}
+            {checkResult && (
+              <div className="flex justify-between items-center">
+                <span style={{ color: 'var(--text-secondary)' }}>Status</span>
+                {checkResult.update_available ? (
+                  <span className="text-yellow-400 flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    {checkResult.commits_behind} commit{checkResult.commits_behind !== 1 ? 's' : ''} behind
+                  </span>
+                ) : (
+                  <span className="text-green-400 flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Up to date
+                  </span>
+                )}
+              </div>
+            )}
+            {checkResult?.update_available && checkResult.latest_message && (
               <div className="pt-1 flex justify-between">
                 <span style={{ color: 'var(--text-secondary)' }}>Latest</span>
                 <span className="text-xs max-w-[60%] text-right" style={{ color: 'var(--text-primary)' }}>
-                  {status.latest_message}
+                  {checkResult.latest_message}
                 </span>
               </div>
             )}
@@ -2049,12 +1988,12 @@ function UpdatesSection() {
         )}
 
         <button
-          onClick={() => refetch()}
-          disabled={isFetching}
+          onClick={() => checkMutation.mutate()}
+          disabled={checkMutation.isPending}
           className="btn-secondary flex items-center gap-2 text-sm"
         >
-          <RefreshCw className={cn('w-3.5 h-3.5', isFetching && 'animate-spin')} />
-          Check for Updates
+          <RefreshCw className={cn('w-3.5 h-3.5', checkMutation.isPending && 'animate-spin')} />
+          {checkMutation.isPending ? 'Checking…' : 'Check for Updates'}
         </button>
       </div>
 
@@ -2072,7 +2011,7 @@ function UpdatesSection() {
                   name="branch"
                   value={b}
                   checked={branch === b}
-                  onChange={() => setBranch(b)}
+                  onChange={() => { setBranch(b); setCheckResult(null); }}
                   className="accent-orange-500"
                 />
                 <span className="text-sm font-mono" style={{ color: 'var(--text-primary)' }}>{b}</span>
@@ -2087,7 +2026,7 @@ function UpdatesSection() {
           </div>
         </div>
 
-        {applyMsg ? (
+        {applyMsg && !isUpdating ? (
           <div className="flex items-start gap-2 text-green-400 text-sm">
             <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
             <span>{applyMsg}</span>
@@ -2104,7 +2043,7 @@ function UpdatesSection() {
 
         <button
           onClick={() => apply.mutate()}
-          disabled={apply.isPending || updating || (!!applyMsg && !updateFailed)}
+          disabled={apply.isPending || isUpdating}
           className="btn-primary flex items-center gap-2"
         >
           {apply.isPending
@@ -2114,20 +2053,18 @@ function UpdatesSection() {
         </button>
       </div>
 
-      {/* Progress bar — shown while update script is running */}
-      {(updating || (progress > 0 && progress < 100)) && (
+      {/* Progress bar — shown while update is running */}
+      {isUpdating && (
         <div className="card p-5 space-y-3">
           <h3 className="label flex items-center gap-2">
             <Loader2 className="w-3.5 h-3.5 animate-spin" /> Update in Progress
           </h3>
           <div>
             <div className="flex justify-between text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>
-              <span>{progressStage(progress)}</span>
+              <span>{progressStage(progress, phase)}</span>
               <span className="tabular-nums font-mono" style={{ color: 'var(--text-muted)' }}>{progress}%</span>
             </div>
-            {/* Track */}
             <div className="h-2.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-elevated)' }}>
-              {/* Fill */}
               <div
                 className="h-full rounded-full transition-all duration-700 ease-out"
                 style={{
@@ -2138,9 +2075,8 @@ function UpdatesSection() {
                 }}
               />
             </div>
-            {/* Stage dots */}
             <div className="flex justify-between mt-1.5 px-0.5">
-              {[10, 30, 60, 70, 90, 95].map(tick => (
+              {[10, 30, 60, 70, 90, 100].map(tick => (
                 <div
                   key={tick}
                   className="w-1.5 h-1.5 rounded-full transition-colors duration-300"
@@ -2157,6 +2093,7 @@ function UpdatesSection() {
           )}
         </div>
       )}
+
       {/* Failure banner */}
       {updateFailed && (
         <div className="card p-5 space-y-3" style={{ border: '1px solid rgba(239,68,68,0.3)' }}>
@@ -2164,15 +2101,9 @@ function UpdatesSection() {
             <AlertCircle className="w-4 h-4" /> Update Failed
           </h3>
           <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-            {failReason || 'The update script exited before completing. Check the log below for details.'}
+            {updateState?.error || 'The update script exited before completing. Check the log below for details.'}
           </p>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => { setUpdateFailed(false); setApplyMsg(''); }}
-              className="btn-ghost text-sm"
-            >
-              Dismiss
-            </button>
             <button
               onClick={() => apply.mutate()}
               disabled={apply.isPending}
@@ -2183,7 +2114,9 @@ function UpdatesSection() {
           </div>
         </div>
       )}
-      {progress === 100 && !updating && !updateFailed && (
+
+      {/* Success banner */}
+      {updateComplete && !isUpdating && (
         <div className="card p-4 flex items-center gap-2 text-green-400 text-sm">
           <CheckCircle2 className="w-4 h-4" /> Update complete! Dashboard has restarted.
         </div>
