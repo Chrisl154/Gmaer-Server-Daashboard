@@ -220,7 +220,7 @@ func (r *Registry) runSingleCheck(ctx context.Context, spec HealthCheckSpec, hos
 
 	switch spec.Type {
 	case "tcp":
-		addr := fmt.Sprintf("%s:%d", checkHost, spec.Port)
+		addr := net.JoinHostPort(checkHost, fmt.Sprintf("%d", spec.Port))
 		conn, err := net.DialTimeout("tcp", addr, timeout)
 		if err != nil {
 			return HealthResult{
@@ -234,7 +234,7 @@ func (r *Registry) runSingleCheck(ctx context.Context, spec HealthCheckSpec, hos
 		return HealthResult{Healthy: true, Message: "TCP ok", Latency: time.Since(start), CheckedAt: time.Now()}
 
 	case "udp":
-		addr := fmt.Sprintf("%s:%d", checkHost, spec.Port)
+		addr := net.JoinHostPort(checkHost, fmt.Sprintf("%d", spec.Port))
 		conn, err := net.DialTimeout("udp", addr, timeout)
 		if err != nil {
 			return HealthResult{

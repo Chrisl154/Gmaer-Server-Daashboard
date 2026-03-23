@@ -1,0 +1,33 @@
+# Compiled binaries
+daemon/daemon
+daemon/daemon.bak
+cli/gdash
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Go
+*.exe
+*.test
+*.out
+
+# Node
+ui/node_modules/
+ui/dist/
+
+# Runtime data
+*.log
+servers.json
+daemon/internal/broker/servers.json
+
+# Secrets / TLS
+*.pem
+*.key
+*.crt
+.env
+.env.*
