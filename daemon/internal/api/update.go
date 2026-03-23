@@ -67,8 +67,9 @@ func (s *Server) getUpdateStatus(c *gin.Context) {
 		targetBranch = currentBranch
 	}
 
-	// Fetch so behind-count is accurate (best-effort; ignore errors — no internet, etc.)
-	_ = exec.Command("git", "-C", repoDir, "fetch", "origin", "--quiet").Run() //nolint:gosec
+	// Fetch the target branch so behind-count is accurate and the ref exists even
+	// in shallow clones where only the originally-cloned branch has a remote ref.
+	_ = exec.Command("git", "-C", repoDir, "fetch", "origin", targetBranch, "--quiet").Run() //nolint:gosec
 
 	// Compare HEAD against origin/<targetBranch> so switching to dev shows dev's commits.
 	behindOut, _ := exec.Command("git", "-C", repoDir, "rev-list", //nolint:gosec
@@ -143,8 +144,8 @@ func (s *Server) applyUpdate(c *gin.Context) {
 	// has explicitly opted out via updates.require_signed_commits: false.
 	requireSigned := s.cfg.DaemonCfg == nil || s.cfg.DaemonCfg.Updates.RequireSignedCommits
 	if requireSigned {
-		// Fetch so we have the latest remote refs.
-		_ = exec.Command("git", "-C", resolveRepoDirPath(), "fetch", "origin", "--quiet").Run() //nolint:gosec
+		// Fetch the target branch so the ref exists even in shallow clones.
+		_ = exec.Command("git", "-C", resolveRepoDirPath(), "fetch", "origin", req.Branch, "--quiet").Run() //nolint:gosec
 
 		// Resolve the tip commit of origin/<branch>.
 		tipOut, err := exec.Command("git", "-C", resolveRepoDirPath(), "rev-parse", "origin/"+req.Branch).Output() //nolint:gosec

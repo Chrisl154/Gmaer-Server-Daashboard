@@ -1128,8 +1128,9 @@ echo "PROGRESS:10"
 # ── Pull latest code ─────────────────────────────────────────────────────────
 echo "Updating repository (branch: $BRANCH)..."
 echo "PROGRESS:15"
-git -C "$REPO_DIR" fetch --prune origin
-git -C "$REPO_DIR" checkout "$BRANCH"
+# Unshallow if needed (--depth=1 clones lack refs for other branches).
+git -C "$REPO_DIR" fetch --prune origin "$BRANCH"
+git -C "$REPO_DIR" checkout "$BRANCH" 2>/dev/null || git -C "$REPO_DIR" checkout -b "$BRANCH" "origin/$BRANCH"
 git -C "$REPO_DIR" reset --hard "origin/$BRANCH"
 echo "Repository updated to: $(git -C "$REPO_DIR" rev-parse --short HEAD)"
 echo "PROGRESS:30"

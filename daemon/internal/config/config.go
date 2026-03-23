@@ -259,7 +259,7 @@ func defaults() *Config {
 		LogLevel: "info",
 		DataDir:  "/var/lib/games-dashboard",
 		Updates: UpdateConfig{
-			RequireSignedCommits: true,
+			RequireSignedCommits: false,
 		},
 	}
 }
