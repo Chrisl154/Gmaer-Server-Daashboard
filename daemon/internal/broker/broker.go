@@ -1616,6 +1616,7 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 		"-v", installDir + ":/games",
 		"-v", steamHome + ":/tmp/steamhome",
 		"-e", "HOME=/tmp/steamhome",
+		"--entrypoint", "/home/steam/steamcmd/steamcmd.sh",
 		"cm2network/steamcmd",
 		"+@ShutdownOnFailedCommand", "1",
 		"+login", "anonymous",

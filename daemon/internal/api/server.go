@@ -1175,15 +1175,19 @@ type settingsCluster struct {
 
 // settingsPatchRequest contains the mutable fields the UI can update.
 type settingsPatchRequest struct {
-	LogLevel  *string                `json:"log_level,omitempty"`
-	Backup    *settingsBackup        `json:"backup,omitempty"`
-	Metrics   *settingsMetrics       `json:"metrics,omitempty"`
-	Cluster   *settingsClusterPatch  `json:"cluster,omitempty"`
-	Tailscale *settingsTailscalePatch `json:"tailscale,omitempty"`
-	TLS       *settingsTLSPatch      `json:"tls,omitempty"`
+	LogLevel         *string                `json:"log_level,omitempty"`
+	BindAddr         *string                `json:"bind_addr,omitempty"`
+	ShutdownTimeoutS *int                   `json:"shutdown_timeout_s,omitempty"`
+	Backup           *settingsBackup        `json:"backup,omitempty"`
+	Metrics          *settingsMetrics       `json:"metrics,omitempty"`
+	Cluster          *settingsClusterPatch  `json:"cluster,omitempty"`
+	Tailscale        *settingsTailscalePatch `json:"tailscale,omitempty"`
+	TLS              *settingsTLSPatch      `json:"tls,omitempty"`
 }
 
 type settingsTLSPatch struct {
+	CertFile    *string `json:"cert_file,omitempty"`
+	KeyFile     *string `json:"key_file,omitempty"`
 	AutoTLS     *bool   `json:"auto_tls,omitempty"`
 	ACMEDomain  *string `json:"acme_domain,omitempty"`
 	ACMEEmail   *string `json:"acme_email,omitempty"`
@@ -1290,6 +1294,12 @@ func (s *Server) patchSettings(c *gin.Context) {
 	if req.LogLevel != nil {
 		cfg.LogLevel = *req.LogLevel
 	}
+	if req.BindAddr != nil && *req.BindAddr != "" {
+		cfg.BindAddr = *req.BindAddr
+	}
+	if req.ShutdownTimeoutS != nil && *req.ShutdownTimeoutS > 0 {
+		cfg.ShutdownTimeout = time.Duration(*req.ShutdownTimeoutS) * time.Second
+	}
 	if req.Backup != nil {
 		if req.Backup.DefaultSchedule != "" {
 			cfg.Backup.DefaultSchedule = req.Backup.DefaultSchedule
@@ -1330,6 +1340,12 @@ func (s *Server) patchSettings(c *gin.Context) {
 		}
 	}
 	if req.TLS != nil {
+		if req.TLS.CertFile != nil && *req.TLS.CertFile != "" {
+			cfg.TLS.CertFile = *req.TLS.CertFile
+		}
+		if req.TLS.KeyFile != nil && *req.TLS.KeyFile != "" {
+			cfg.TLS.KeyFile = *req.TLS.KeyFile
+		}
 		if req.TLS.AutoTLS != nil {
 			cfg.TLS.AutoTLS = *req.TLS.AutoTLS
 		}
