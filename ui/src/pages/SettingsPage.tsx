@@ -1889,11 +1889,20 @@ function UpdatesSection() {
     }).catch(() => {}); // ignore — log endpoint may be unavailable
   }, []);
 
-  // Parse PROGRESS:N markers from the log while update is running.
-  // Also detect failures: error lines in the log or no progress for ~20 s.
+  // Parse PROGRESS:N markers from the LATEST session in the log.
+  // Only looks at lines after the last "=== timestamp ===" header so that
+  // a completed previous session doesn't immediately mark a new update as done.
   useEffect(() => {
     if (!updating) return;
-    const lines = logData?.lines ?? [];
+    const allLines = logData?.lines ?? [];
+
+    // Scope to the latest session — find the last header line.
+    let sessionStart = 0;
+    for (let i = allLines.length - 1; i >= 0; i--) {
+      if (/^=== \d{4}-\d{2}-\d{2}/.test(allLines[i])) { sessionStart = i; break; }
+    }
+    const lines = allLines.slice(sessionStart);
+
     let latest = progress;
     for (const line of lines) {
       const m = line.match(/^PROGRESS:(\d+)$/);
