@@ -13,6 +13,12 @@ set -euo pipefail
 # removed the cwd, causing getcwd() failures in every child process.
 cd /tmp
 
+# Auto-escalate to root if not already — the update needs write access to
+# /opt/gdash and permission to restart the systemd service.
+if [[ $EUID -ne 0 ]]; then
+  exec sudo bash "$0" "$@"
+fi
+
 BRANCH="${1:-main}"
 if [[ "$BRANCH" != "main" && "$BRANCH" != "dev" ]]; then
   echo "ERROR: branch must be 'main' or 'dev'" >&2
@@ -112,6 +118,6 @@ echo "PROGRESS:90"
 echo "Restarting gdash-daemon..."
 echo "PROGRESS:95"
 sleep 2
-sudo systemctl restart gdash-daemon
+systemctl restart gdash-daemon
 echo "=== Update complete ==="
 echo "PROGRESS:100"

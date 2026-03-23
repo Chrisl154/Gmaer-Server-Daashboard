@@ -1725,7 +1725,11 @@ function UpdatesSection() {
   const [showLog, setShowLog] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [updateFailed, setUpdateFailed] = useState(false);
+  const [failReason, setFailReason] = useState('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const staleRef = useRef(0);      // consecutive polls with no progress change
+  const lastProgressRef = useRef(0);
 
   // Pass selected branch so the status check compares HEAD vs origin/<branch>
   const { data: status, isLoading, isFetching, refetch } = useQuery<UpdateStatus>({
@@ -1741,7 +1745,8 @@ function UpdatesSection() {
     staleTime: 0,
   });
 
-  // Parse PROGRESS:N markers from the log while update is running
+  // Parse PROGRESS:N markers from the log while update is running.
+  // Also detect failures: error lines in the log or no progress for ~20 s.
   useEffect(() => {
     if (!updating) return;
     const lines = logData?.lines ?? [];
@@ -1750,33 +1755,67 @@ function UpdatesSection() {
       const m = line.match(/^PROGRESS:(\d+)$/);
       if (m) latest = Math.max(latest, parseInt(m[1], 10));
     }
-    if (latest !== progress) setProgress(latest);
-    // Stop polling when script signals completion
+    if (latest !== progress) {
+      setProgress(latest);
+      staleRef.current = 0;
+      lastProgressRef.current = latest;
+    } else {
+      staleRef.current++;
+    }
+
+    // Success — script completed
     if (latest >= 100 || lines.some(l => l.includes('=== Update complete ==='))) {
       setUpdating(false);
       setProgress(100);
+      setUpdateFailed(false);
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      return;
+    }
+
+    // Check for explicit error markers in log output
+    const errorPatterns = /^(ERROR:|fatal:|Permission denied|exec:.*not found|unexpected EOF|command not found)/i;
+    const lastLines = lines.slice(-15);
+    const errorLine = lastLines.find(l => errorPatterns.test(l.trim()));
+
+    // Failure: error detected in log, or 10 stale polls (~20 s no progress)
+    if (errorLine || (staleRef.current >= 10 && latest > 0 && latest < 95)) {
+      setUpdating(false);
+      setUpdateFailed(true);
+      setShowLog(true);
+      setFailReason(errorLine
+        ? `Update failed: ${errorLine.trim().slice(0, 120)}`
+        : `Update stalled at ${latest}% — the script may have crashed.`);
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     }
   }, [logData]);
 
   // Auto-reload the page ~35 s after restart signal (progress ≥ 95)
   useEffect(() => {
-    if (progress >= 95 && progress < 100) {
+    if (progress >= 95 && progress < 100 && !updateFailed) {
       const t = setTimeout(() => window.location.reload(), 35_000);
       return () => clearTimeout(t);
     }
-  }, [progress >= 95]);
+  }, [progress >= 95, updateFailed]);
 
   // Clean up polling interval on unmount
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  };
+
   const startUpdatePolling = () => {
     setUpdating(true);
     setProgress(0);
+    setUpdateFailed(false);
+    setFailReason('');
+    setApplyMsg('');
     setShowLog(true);
-    if (pollRef.current) clearInterval(pollRef.current);
+    staleRef.current = 0;
+    lastProgressRef.current = 0;
+    stopPolling();
     pollRef.current = setInterval(() => refetchLog(), 2_000);
   };
 
@@ -1784,7 +1823,7 @@ function UpdatesSection() {
     mutationFn: () => api.post('/api/v1/admin/update/apply', { branch }).then(r => r.data),
     onSuccess: (data: any) => {
       setApplyMsg(data?.msg ?? 'Update started.');
-      toast.success('Update launched — dashboard restarting in ~60 s…');
+      toast.success('Update launched — monitoring progress…');
       qc.invalidateQueries({ queryKey: ['update-status'] });
       startUpdatePolling();
     },
@@ -1912,7 +1951,7 @@ function UpdatesSection() {
 
         <button
           onClick={() => apply.mutate()}
-          disabled={apply.isPending || updating || !!applyMsg}
+          disabled={apply.isPending || updating || (!!applyMsg && !updateFailed)}
           className="btn-primary flex items-center gap-2"
         >
           {apply.isPending
@@ -1965,7 +2004,33 @@ function UpdatesSection() {
           )}
         </div>
       )}
-      {progress === 100 && !updating && (
+      {/* Failure banner */}
+      {updateFailed && (
+        <div className="card p-5 space-y-3" style={{ border: '1px solid rgba(239,68,68,0.3)' }}>
+          <h3 className="label flex items-center gap-2 text-red-400">
+            <AlertCircle className="w-4 h-4" /> Update Failed
+          </h3>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            {failReason || 'The update script exited before completing. Check the log below for details.'}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { setUpdateFailed(false); setApplyMsg(''); }}
+              className="btn-ghost text-sm"
+            >
+              Dismiss
+            </button>
+            <button
+              onClick={() => apply.mutate()}
+              disabled={apply.isPending}
+              className="btn-primary text-sm flex items-center gap-1.5"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Retry Update
+            </button>
+          </div>
+        </div>
+      )}
+      {progress === 100 && !updating && !updateFailed && (
         <div className="card p-4 flex items-center gap-2 text-green-400 text-sm">
           <CheckCircle2 className="w-4 h-4" /> Update complete! Dashboard has restarted.
         </div>

@@ -942,6 +942,19 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 SERVICE
 
+# Grant the daemon user passwordless sudo for update operations so the UI
+# "Update" and "Restart Daemon" buttons work without manual SSH intervention.
+$SUDO tee /etc/sudoers.d/gdash-daemon > /dev/null <<SUDOERS
+# Games Dashboard — allow the daemon user to self-update and restart
+${USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart gdash-daemon
+${USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop gdash-daemon
+${USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start gdash-daemon
+${USER} ALL=(ALL) NOPASSWD: /usr/bin/git *
+${USER} ALL=(ALL) NOPASSWD: /usr/bin/bash ${BIN_DIR}/gdash-update.sh *
+SUDOERS
+$SUDO chmod 0440 /etc/sudoers.d/gdash-daemon
+ok "Sudoers configured for update operations"
+
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable gdash-daemon 2>/dev/null
 $SUDO systemctl restart gdash-daemon
