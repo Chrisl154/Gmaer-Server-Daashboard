@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Shield, Key, Users, Lock, RefreshCw, Plus, CheckCircle, Eye, EyeOff, Copy, X } from 'lucide-react';
+import { Shield, Key, Users, Lock, RefreshCw, Plus, CheckCircle, Eye, EyeOff, Copy, X, Download, AlertTriangle } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../utils/api';
@@ -242,6 +242,63 @@ function OIDCCard() {
   );
 }
 
+/* ──────────────────────────────────────────────── RecoveryCodesModal ── */
+
+function RecoveryCodesModal({ codes, onClose }: { codes: string[]; onClose: () => void }) {
+  const handleDownload = () => {
+    const text = [
+      'Games Dashboard — TOTP Recovery Codes',
+      'Generated: ' + new Date().toLocaleString(),
+      'Each code can only be used once. Store these somewhere safe.',
+      '',
+      ...codes,
+    ].join('\n');
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'games-dashboard-recovery-codes.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
+      <div className="card w-full max-w-md p-6 space-y-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>Recovery Codes</h2>
+          <button onClick={onClose} className="btn-ghost p-1.5"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="rounded-lg px-4 py-3 flex items-start gap-2 text-sm text-yellow-400"
+          style={{ background: 'rgba(234,179,8,0.1)', border: '1px solid rgba(234,179,8,0.25)' }}>
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>Save these now — they won't be shown again. Each code works once as a backup if you lose your authenticator app.</span>
+        </div>
+
+        <div className="rounded-xl p-4 space-y-2" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
+          {codes.map((code) => (
+            <div key={code} className="font-mono text-sm tracking-wider text-center py-1.5 rounded"
+              style={{ color: 'var(--text-primary)', background: 'var(--bg-input)' }}>
+              {code}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex gap-3">
+          <button onClick={handleDownload} className="btn-ghost flex-1 justify-center">
+            <Download className="w-4 h-4" /> Download .txt
+          </button>
+          <button onClick={onClose} className="btn-primary flex-1 justify-center">
+            I've saved these
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ──────────────────────────────────────────────────────── MFASection ── */
 
 function MFASection() {
@@ -249,19 +306,52 @@ function MFASection() {
   const [setupData, setSetupData] = useState<{ secret: string; qr_code_url: string } | null>(null);
   const [verifyCode, setVerifyCode] = useState('');
   const [loading, setLoading] = useState(false);
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [regenCode, setRegenCode] = useState('');
+  const [showRegen, setShowRegen] = useState(false);
+  const [showReenrollConfirm, setShowReenrollConfirm] = useState(false);
+  const [reenrollCode, setReenrollCode] = useState('');
 
-  const handleSetup = async () => {
+  const { data: rcData } = useQuery({
+    queryKey: ['totp-recovery-count'],
+    queryFn: () => api.get('/api/v1/auth/totp/recovery-codes').then(r => r.data),
+    enabled: !!user?.totp_enabled,
+  });
+
+  const regenMutation = useMutation({
+    mutationFn: (totpCode: string) => api.post('/api/v1/auth/totp/recovery-codes/regenerate', { totp_code: totpCode }).then(r => r.data),
+    onSuccess: (data) => {
+      setRecoveryCodes(data.recovery_codes);
+      setShowRegen(false);
+      setRegenCode('');
+    },
+    onError: () => toast.error('Invalid TOTP code'),
+  });
+
+  const handleSetup = async (currentCode?: string) => {
     setLoading(true);
-    try { const data = await setupTOTP(); setSetupData(data); }
-    catch { toast.error('Failed to setup TOTP'); }
+    try {
+      const data = await setupTOTP(currentCode);
+      setSetupData(data);
+      setShowReenrollConfirm(false);
+      setReenrollCode('');
+    } catch { toast.error(currentCode ? 'Invalid TOTP code' : 'Failed to setup TOTP'); }
     finally { setLoading(false); }
+  };
+
+  const handleReenrollClick = () => {
+    if (user?.totp_enabled) {
+      setShowReenrollConfirm(true);
+    } else {
+      handleSetup();
+    }
   };
 
   const handleVerify = async () => {
     setLoading(true);
     try {
-      await verifyTOTP(verifyCode);
-      toast.success('TOTP enabled successfully!');
+      const result = await verifyTOTP(verifyCode);
+      setRecoveryCodes(result.recovery_codes);
       setSetupData(null);
       setVerifyCode('');
     } catch { toast.error('Invalid code'); }
@@ -269,82 +359,170 @@ function MFASection() {
   };
 
   return (
-    <div className="card p-5 space-y-5">
-      {/* Section title */}
-      <div className="flex items-center gap-2 mb-1">
-        <div className="w-7 h-7 rounded-lg flex items-center justify-center"
-          style={{ background: 'var(--primary-subtle)' }}>
-          <Shield className="w-3.5 h-3.5" style={{ color: 'var(--primary)' }} />
-        </div>
-        <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>MFA / Two-Factor Auth</h2>
-      </div>
+    <>
+      {recoveryCodes && (
+        <RecoveryCodesModal codes={recoveryCodes} onClose={() => setRecoveryCodes(null)} />
+      )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* TOTP Card */}
-        <div className="rounded-xl p-5 space-y-4" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Authenticator App (TOTP)</h3>
-              <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Google Authenticator, Authy, or 1Password</p>
+      <div className="card p-5 space-y-5">
+        {/* Section title */}
+        <div className="flex items-center gap-2 mb-1">
+          <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+            style={{ background: 'var(--primary-subtle)' }}>
+            <Shield className="w-3.5 h-3.5" style={{ color: 'var(--primary)' }} />
+          </div>
+          <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>MFA / Two-Factor Auth</h2>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* TOTP Card */}
+          <div className="rounded-xl p-5 space-y-4" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Authenticator App (TOTP)</h3>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Google Authenticator, Authy, or 1Password</p>
+              </div>
+              <span className={cn(
+                'badge',
+                user?.totp_enabled
+                  ? 'bg-green-500/15 text-green-400'
+                  : 'text-gray-500'
+              )} style={!user?.totp_enabled ? { background: 'rgba(128,128,168,0.15)' } : {}}>
+                {user?.totp_enabled ? 'Enabled' : 'Disabled'}
+              </span>
             </div>
-            <span className={cn(
-              'badge',
-              user?.totp_enabled
-                ? 'bg-green-500/15 text-green-400'
-                : 'text-gray-500'
-            )} style={!user?.totp_enabled ? { background: 'rgba(128,128,168,0.15)' } : {}}>
-              {user?.totp_enabled ? 'Enabled' : 'Disabled'}
-            </span>
+
+            {!setupData ? (
+              <div className="space-y-3">
+                {showReenrollConfirm ? (
+                  <div className="space-y-2">
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Enter your current TOTP code to re-enroll:
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={reenrollCode}
+                        onChange={e => setReenrollCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="000000"
+                        maxLength={6}
+                        className="input font-mono tracking-widest text-center text-sm"
+                      />
+                      <button
+                        onClick={() => handleSetup(reenrollCode)}
+                        disabled={reenrollCode.length !== 6 || loading}
+                        className="btn-primary text-xs px-3"
+                      >
+                        {loading ? '…' : 'Continue'}
+                      </button>
+                      <button onClick={() => { setShowReenrollConfirm(false); setReenrollCode(''); }} className="btn-ghost text-xs px-3">
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                <button
+                  onClick={handleReenrollClick}
+                  disabled={loading}
+                  className="btn-ghost w-full justify-center"
+                >
+                  <Shield className="w-4 h-4" />
+                  {user?.totp_enabled ? 'Regenerate TOTP' : 'Enable TOTP'}
+                </button>
+                )}
+
+                {/* Recovery codes info — only when TOTP is enabled */}
+                {user?.totp_enabled && (
+                  <div className="rounded-lg px-3 py-2.5 space-y-2" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        Recovery codes remaining:
+                        <span className="ml-1 font-semibold" style={{ color: rcData?.remaining === 0 ? '#f87171' : 'var(--text-primary)' }}>
+                          {rcData?.remaining ?? '…'}
+                        </span>
+                      </span>
+                      {rcData?.remaining === 0 && (
+                        <span className="text-xs text-red-400 flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3" /> None left
+                        </span>
+                      )}
+                    </div>
+
+                    {!showRegen ? (
+                      <button
+                        onClick={() => setShowRegen(true)}
+                        className="btn-ghost w-full justify-center text-xs py-1.5"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" /> Regenerate codes
+                      </button>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Enter your current TOTP code to regenerate:</p>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={regenCode}
+                            onChange={e => setRegenCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                            placeholder="000000"
+                            maxLength={6}
+                            className="input font-mono tracking-widest text-center text-sm"
+                          />
+                          <button
+                            onClick={() => regenMutation.mutate(regenCode)}
+                            disabled={regenCode.length !== 6 || regenMutation.isPending}
+                            className="btn-primary text-xs px-3"
+                          >
+                            {regenMutation.isPending ? '…' : 'Go'}
+                          </button>
+                          <button onClick={() => { setShowRegen(false); setRegenCode(''); }} className="btn-ghost text-xs px-3">
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex justify-center">
+                  <div className="p-3 bg-white rounded-xl shadow-lg">
+                    <QRCodeSVG value={setupData.qr_code_url} size={160} />
+                  </div>
+                </div>
+                <div className="rounded-lg p-3 space-y-1" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Manual entry key:</p>
+                  <p className="font-mono text-sm break-all" style={{ color: 'var(--text-primary)' }}>{setupData.secret}</p>
+                </div>
+                <div>
+                  <label className="label">Verify code from app</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={verifyCode}
+                      onChange={e => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="000000"
+                      maxLength={6}
+                      className="input font-mono tracking-widest text-center"
+                    />
+                    <button
+                      onClick={handleVerify}
+                      disabled={verifyCode.length !== 6 || loading}
+                      className="btn-primary"
+                    >
+                      Verify
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          {!setupData ? (
-            <button
-              onClick={handleSetup}
-              disabled={loading}
-              className="btn-ghost w-full justify-center"
-            >
-              <Shield className="w-4 h-4" />
-              {user?.totp_enabled ? 'Regenerate TOTP' : 'Enable TOTP'}
-            </button>
-          ) : (
-            <div className="space-y-4">
-              <div className="flex justify-center">
-                <div className="p-3 bg-white rounded-xl shadow-lg">
-                  <QRCodeSVG value={setupData.qr_code_url} size={160} />
-                </div>
-              </div>
-              <div className="rounded-lg p-3 space-y-1" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Manual entry key:</p>
-                <p className="font-mono text-sm break-all" style={{ color: 'var(--text-primary)' }}>{setupData.secret}</p>
-              </div>
-              <div>
-                <label className="label">Verify code from app</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={verifyCode}
-                    onChange={e => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                    placeholder="000000"
-                    maxLength={6}
-                    className="input font-mono tracking-widest text-center"
-                  />
-                  <button
-                    onClick={handleVerify}
-                    disabled={verifyCode.length !== 6 || loading}
-                    className="btn-primary"
-                  >
-                    Verify
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          {/* OIDC Card */}
+          <OIDCCard />
         </div>
-
-        {/* OIDC Card */}
-        <OIDCCard />
       </div>
-    </div>
+    </>
   );
 }
 

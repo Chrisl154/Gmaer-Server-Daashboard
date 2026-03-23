@@ -2,9 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/tls"
+	"encoding/hex"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/games-dashboard/daemon/internal/api"
@@ -14,9 +21,13 @@ import (
 	"github.com/games-dashboard/daemon/internal/firewall"
 	"github.com/games-dashboard/daemon/internal/health"
 	"github.com/games-dashboard/daemon/internal/metrics"
+	"github.com/games-dashboard/daemon/internal/notifications"
 	"github.com/games-dashboard/daemon/internal/secrets"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
+	"tailscale.com/tsnet"
 )
 
 var (
@@ -25,6 +36,7 @@ var (
 	tlsCert  string
 	tlsKey   string
 	bindAddr string
+	noTLS    bool
 )
 
 func main() {
@@ -41,6 +53,7 @@ mods, networking, and exposes a secure REST/WebSocket API.`,
 	rootCmd.PersistentFlags().StringVar(&tlsCert, "tls-cert", "", "path to TLS certificate PEM")
 	rootCmd.PersistentFlags().StringVar(&tlsKey, "tls-key", "", "path to TLS private key PEM")
 	rootCmd.PersistentFlags().StringVar(&bindAddr, "bind", ":8443", "daemon bind address")
+	rootCmd.PersistentFlags().BoolVar(&noTLS, "no-tls", false, "run plain HTTP (testing only — do not use in production)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -71,6 +84,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if tlsKey != "" {
 		cfg.TLS.KeyFile = tlsKey
 	}
+	if noTLS {
+		host, _, _ := net.SplitHostPort(bindAddr)
+		if host != "localhost" && host != "127.0.0.1" && host != "::1" && host != "" {
+			logger.Warn("⚠ --no-tls is active on a non-localhost address — plain HTTP in production exposes credentials",
+				zap.String("bind", bindAddr))
+		}
+	}
 
 	// Initialize secrets manager
 	secretsMgr, err := secrets.NewManager(secrets.Config{
@@ -84,6 +104,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to init secrets manager: %w", err)
 	}
 
+	// Resolve JWT secret — loads the encrypted secret from disk or generates a
+	// new 64-byte (128 hex char) secret, encrypts it via the secrets manager,
+	// and persists the ciphertext. Must run after secretsMgr is ready.
+	jwtSecret, err := resolveJWTSecret(cfg.Storage.DataDir, secretsMgr, logger)
+	if err != nil {
+		return fmt.Errorf("failed to resolve JWT secret: %w", err)
+	}
+	cfg.Auth.JWTSecret = jwtSecret
+
 	// Map config.AuthConfig → auth.Config (the two packages define parallel types)
 	authCfg := auth.Config{
 		Local: auth.LocalAuthConfig{
@@ -96,6 +125,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		JWTSecret:   cfg.Auth.JWTSecret,
 		TokenTTL:    cfg.Auth.TokenTTL,
 		MFARequired: cfg.Auth.MFARequired,
+		DataDir:     cfg.Storage.DataDir,
 	}
 	if cfg.Auth.OIDC != nil {
 		authCfg.OIDC = &auth.OIDCConfig{
@@ -103,6 +133,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			ClientID:     cfg.Auth.OIDC.ClientID,
 			ClientSecret: cfg.Auth.OIDC.ClientSecret,
 			RedirectURL:  cfg.Auth.OIDC.RedirectURL,
+		}
+	}
+	if cfg.Auth.Steam != nil {
+		authCfg.Steam = &auth.SteamConfig{
+			Enabled:     cfg.Auth.Steam.Enabled,
+			APIKey:      cfg.Auth.Steam.APIKey,
+			ReturnURL:   cfg.Auth.Steam.ReturnURL,
+			Realm:       cfg.Auth.Steam.Realm,
+			FrontendURL: cfg.Auth.Steam.FrontendURL,
 		}
 	}
 
@@ -124,22 +163,75 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to init game broker: %w", err)
 	}
 
+	notifySvc := gameBroker.NotifyService()
+
+	// Initialize Web Push (VAPID keys auto-generated on first run).
+	dataDir := cfg.DataDir
+	if dataDir == "" {
+		dataDir = cfg.Storage.DataDir
+	}
+	if dataDir != "" {
+		vapidPath := filepath.Join(dataDir, "vapid_keys.json")
+		if vapidKeys, err := notifications.LoadOrGenerateVAPIDKeys(vapidPath, logger); err != nil {
+			logger.Warn("Web Push disabled — could not init VAPID keys", zap.Error(err))
+		} else {
+			notifySvc.SetPush(*vapidKeys, authSvc.GetAllWebPushSubs, authSvc.RemovePushSubscriptionByEndpoint)
+			logger.Info("Web Push initialized", zap.String("public_key", vapidKeys.Public[:16]+"..."))
+		}
+	}
+
 	// Initialize firewall service (gracefully unavailable when ufw not installed)
 	firewallSvc := firewall.NewService(logger)
 
+	// TLS: set up autocert when AutoTLS is enabled, otherwise use static cert files.
+	var autoTLSConfig *tls.Config
+	if cfg.TLS.AutoTLS {
+		if cfg.TLS.ACMEDomain == "" {
+			return fmt.Errorf("auto_tls is enabled but acme_domain is not set in the config")
+		}
+		cacheDir := cfg.TLS.ACMECacheDir
+		if cacheDir == "" {
+			cacheDir = "/etc/games-dashboard/tls/acme"
+		}
+		if err := os.MkdirAll(cacheDir, 0700); err != nil {
+			return fmt.Errorf("failed to create ACME cache dir %s: %w", cacheDir, err)
+		}
+		m := &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(cfg.TLS.ACMEDomain),
+			Cache:      autocert.DirCache(cacheDir),
+			Email:      cfg.TLS.ACMEEmail,
+		}
+		if cfg.TLS.ACMEStaging {
+			// Override CA URL to Let's Encrypt staging for testing.
+			m.Client = &acme.Client{DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"}
+		}
+		// Start HTTP-01 challenge handler on port 80.
+		go func() {
+			logger.Info("Starting ACME HTTP-01 challenge server on :80")
+			if err := http.ListenAndServe(":80", m.HTTPHandler(nil)); err != nil { //nolint:gosec
+				logger.Warn("ACME HTTP-01 server stopped", zap.Error(err))
+			}
+		}()
+		autoTLSConfig = m.TLSConfig()
+		logger.Info("AutoTLS enabled via Let's Encrypt", zap.String("domain", cfg.TLS.ACMEDomain))
+	}
+
 	// Initialize API server
 	apiServer, err := api.NewServer(api.Config{
-		BindAddr:    bindAddr,
-		TLSCert:     cfg.TLS.CertFile,
-		TLSKey:      cfg.TLS.KeyFile,
-		Logger:      logger,
-		AuthSvc:     authSvc,
-		Broker:      gameBroker,
-		HealthSvc:   healthSvc,
-		MetricsSvc:  metricsSvc,
-		FirewallSvc: firewallSvc,
-		DaemonCfg:   cfg,
-		ConfigPath:  cfgFile,
+		BindAddr:        bindAddr,
+		TLSCert:         cfg.TLS.CertFile,
+		TLSKey:          cfg.TLS.KeyFile,
+		AutoTLSConfig:   autoTLSConfig,
+		Logger:          logger,
+		AuthSvc:         authSvc,
+		Broker:          gameBroker,
+		HealthSvc:       healthSvc,
+		MetricsSvc:      metricsSvc,
+		FirewallSvc:     firewallSvc,
+		NotificationSvc: notifySvc,
+		DaemonCfg:       cfg,
+		ConfigPath:      cfgFile,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to init API server: %w", err)
@@ -157,14 +249,67 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		logger.Info("Cluster manager started")
 	}
 
-	// Start API server
-	errCh := make(chan error, 1)
-	go func() {
-		logger.Info("API server listening", zap.String("addr", bindAddr))
-		if err := apiServer.ListenAndServeTLS(); err != nil {
-			errCh <- err
+	// Start API server — Tailscale and/or standard listener.
+	errCh := make(chan error, 2)
+	startStdListener := true
+
+	tsCfg := cfg.Tailscale
+	if tsCfg.Enabled {
+		authKey := tsCfg.AuthKey
+		if authKey == "" {
+			authKey = os.Getenv("TAILSCALE_AUTH_KEY")
 		}
-	}()
+		stateDir := tsCfg.StateDir
+		if stateDir == "" {
+			stateDir = filepath.Join(dataDir, "tailscale")
+		}
+		hostname := tsCfg.Hostname
+		if hostname == "" {
+			hostname = "gmaer-dashboard"
+		}
+		if err := os.MkdirAll(stateDir, 0700); err != nil {
+			return fmt.Errorf("failed to create tailscale state dir: %w", err)
+		}
+		ts := &tsnet.Server{
+			Dir:      stateDir,
+			Hostname: hostname,
+			AuthKey:  authKey,
+			Logf: func(format string, args ...any) {
+				logger.Sugar().Debugf("[tsnet] "+format, args...)
+			},
+		}
+		defer ts.Close()
+
+		tsLn, err := ts.ListenTLS("tcp", ":443")
+		if err != nil {
+			return fmt.Errorf("tailscale listen failed: %w", err)
+		}
+		logger.Info("Tailscale listener active",
+			zap.String("hostname", hostname),
+			zap.String("addr", tsLn.Addr().String()),
+		)
+		go func() {
+			if err := apiServer.Serve(tsLn); err != nil && err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("tailscale serve: %w", err)
+			}
+		}()
+		startStdListener = tsCfg.Dual
+	}
+
+	if startStdListener {
+		go func() {
+			logger.Info("Standard listener active", zap.String("addr", bindAddr), zap.Bool("tls", !noTLS))
+			var serveErr error
+			if noTLS {
+				serveErr = apiServer.ListenAndServe()
+			} else {
+				serveErr = apiServer.ListenAndServeTLS()
+			}
+			if serveErr != nil && serveErr != http.ErrServerClosed {
+				errCh <- serveErr
+			}
+		}()
+	}
 
 	// Wait for signals
 	sigCh := make(chan os.Signal, 1)
@@ -208,4 +353,52 @@ func initLogger(level string) (*zap.Logger, error) {
 
 func version() string {
 	return "1.0.0"
+}
+
+// resolveJWTSecret loads the JWT secret from {dataDir}/jwt_secret.enc.
+// The file contains the secret encrypted by the secrets manager (AES-GCM via
+// the master key). On first boot the file does not exist: a fresh 64-byte
+// (128 hex char) secret is generated via crypto/rand, encrypted, and persisted.
+// The ciphertext file is created with mode 0600. Even if the file is exfiltrated,
+// the plaintext secret is unrecoverable without the master key.
+func resolveJWTSecret(dataDir string, mgr *secrets.Manager, logger *zap.Logger) (string, error) {
+	secretFile := filepath.Join(dataDir, "jwt_secret.enc")
+
+	// Try to load and decrypt an existing secret.
+	if ciphertext, err := os.ReadFile(secretFile); err == nil {
+		plaintext := strings.TrimSpace(string(ciphertext))
+		if plaintext != "" {
+			secret, decErr := mgr.Decrypt(plaintext)
+			if decErr == nil && secret != "" {
+				return secret, nil
+			}
+			// Decryption failed (e.g. master key rotated) — regenerate below.
+			logger.Warn("JWT secret decryption failed, regenerating", zap.Error(decErr))
+		}
+	}
+
+	// Generate a new 64-byte (128 hex char) random secret.
+	raw := make([]byte, 64)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("crypto/rand failed: %w", err)
+	}
+	secret := hex.EncodeToString(raw) // 128 hex characters
+
+	// Encrypt and persist (0600 — owner read/write only).
+	ciphertext, err := mgr.Encrypt(secret)
+	if err != nil {
+		return "", fmt.Errorf("could not encrypt JWT secret: %w", err)
+	}
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		return "", fmt.Errorf("could not create data dir: %w", err)
+	}
+	if err := os.WriteFile(secretFile, []byte(ciphertext+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("could not write jwt_secret.enc: %w", err)
+	}
+
+	logger.Warn("JWT secret auto-generated and saved (encrypted)",
+		zap.String("path", secretFile),
+		zap.String("note", "set auth.jwt_secret in daemon.yaml to use a fixed secret instead"),
+	)
+	return secret, nil
 }

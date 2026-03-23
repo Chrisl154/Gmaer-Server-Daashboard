@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -98,7 +99,7 @@ func NewService(cfg Config, logger *zap.Logger) *Service {
 		cfg.DataDir = "/var/lib/games-dashboard/backups"
 	}
 
-	return &Service{
+	svc := &Service{
 		cfg:       cfg,
 		logger:    logger,
 		cron:      cron.New(cron.WithSeconds()),
@@ -106,6 +107,37 @@ func NewService(cfg Config, logger *zap.Logger) *Service {
 		jobs:      make(map[string]*Job),
 		schedules: make(map[string]cron.EntryID),
 	}
+	svc.loadRecords()
+	return svc
+}
+
+func (s *Service) recordsPath() string {
+	return filepath.Join(s.cfg.DataDir, "backup-records.json")
+}
+
+func (s *Service) loadRecords() {
+	data, err := os.ReadFile(s.recordsPath())
+	if err != nil {
+		return // file doesn't exist yet — that's fine
+	}
+	var records map[string][]*Record
+	if err := json.Unmarshal(data, &records); err != nil {
+		s.logger.Warn("Failed to parse backup records file — starting fresh", zap.Error(err))
+		return
+	}
+	s.records = records
+}
+
+func (s *Service) persistRecords() {
+	data, err := json.Marshal(s.records)
+	if err != nil {
+		s.logger.Warn("Failed to marshal backup records", zap.Error(err))
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(s.recordsPath()), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(s.recordsPath(), data, 0o600)
 }
 
 // Start begins the cron scheduler
@@ -260,6 +292,7 @@ func (s *Service) executeBackup(ctx context.Context, serverID string, paths []st
 
 	s.mu.Lock()
 	s.updateRecordStatus(serverID, record.ID, "complete")
+	s.persistRecords()
 	s.mu.Unlock()
 
 	s.updateJob(job.ID, "success", 100, fmt.Sprintf("Backup complete (%s)", humanizeBytes(totalSize)))
@@ -277,6 +310,19 @@ func (s *Service) executeRestore(ctx context.Context, serverID string, record *R
 	s.logger.Info("Starting restore",
 		zap.String("server", serverID),
 		zap.String("backup_id", record.ID))
+
+	// Verify archive integrity before touching any server files.
+	if record.Checksum != "" {
+		s.updateJob(job.ID, "running", 20, "Verifying backup integrity...")
+		if err := s.verifyChecksum(record); err != nil {
+			s.updateJob(job.ID, "failed", 0, "Integrity check failed: "+err.Error())
+			s.logger.Error("Restore aborted — checksum mismatch",
+				zap.String("server", serverID),
+				zap.String("backup_id", record.ID),
+				zap.Error(err))
+			return
+		}
+	}
 
 	s.updateJob(job.ID, "running", 50, "Restoring files...")
 
@@ -298,6 +344,30 @@ func (s *Service) executeRestore(ctx context.Context, serverID string, record *R
 
 	s.updateJob(job.ID, "success", 100, "Restore complete")
 	s.logger.Info("Restore complete", zap.String("server", serverID), zap.String("backup_id", record.ID))
+}
+
+// verifyChecksum recomputes the SHA-256 over all archive files in the backup
+// and compares it against the stored checksum in the record.
+func (s *Service) verifyChecksum(record *Record) error {
+	h := sha256.New()
+	for _, path := range record.Paths {
+		archiveFile := filepath.Join(s.localArchiveDir(record.Target, record.ID), filepath.Base(path)+".tar.zst")
+		f, err := os.Open(archiveFile)
+		if err != nil {
+			return fmt.Errorf("cannot open archive for %q: %w", path, err)
+		}
+		if _, err := io.Copy(h, f); err != nil {
+			f.Close()
+			return fmt.Errorf("cannot read archive for %q: %w", path, err)
+		}
+		f.Close()
+		io.WriteString(h, s.localArchiveDir(record.Target, record.ID)+"\n")
+	}
+	computed := fmt.Sprintf("sha256:%x", h.Sum(nil))
+	if computed != record.Checksum {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", record.Checksum, computed)
+	}
+	return nil
 }
 
 // localArchiveDir returns the directory where backup archives are stored.
@@ -459,12 +529,21 @@ func (s *Service) pruneOldBackups(serverID string) {
 		if r.CreatedAt.After(cutoff) {
 			kept = append(kept, r)
 		} else {
+			archiveDir := s.localArchiveDir(r.Target, r.ID)
+			if err := os.RemoveAll(archiveDir); err != nil {
+				s.logger.Warn("Failed to delete pruned backup archive",
+					zap.String("server", serverID),
+					zap.String("backup_id", r.ID),
+					zap.String("path", archiveDir),
+					zap.Error(err))
+			}
 			pruned++
 		}
 	}
 
 	s.records[serverID] = kept
 	if pruned > 0 {
+		s.persistRecords()
 		s.logger.Info("Pruned old backups",
 			zap.String("server", serverID),
 			zap.Int("pruned", pruned))

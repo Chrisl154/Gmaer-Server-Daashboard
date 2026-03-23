@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -20,7 +21,27 @@ type ServerMetricSample struct {
 	Timestamp   int64   `json:"ts"`
 	CPUPercent  float64 `json:"cpu_pct"`
 	RAMPercent  float64 `json:"ram_pct"`
+	DiskPercent float64 `json:"disk_pct"`
 	PlayerCount int     `json:"player_count"`
+	NetInKbps   float64 `json:"net_in_kbps,omitempty"`
+	NetOutKbps  float64 `json:"net_out_kbps,omitempty"`
+}
+
+// diskUsagePct returns the percentage of the filesystem partition that is used
+// by the given path. Returns 0 on any error or on non-Linux platforms.
+func diskUsagePct(path string) float64 {
+	if path == "" || runtime.GOOS != "linux" {
+		return 0
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0
+	}
+	if stat.Blocks == 0 {
+		return 0
+	}
+	used := stat.Blocks - stat.Bfree
+	return float64(used) / float64(stat.Blocks) * 100.0
 }
 
 // metricsRing is a thread-safe fixed-capacity ring buffer of ServerMetricSamples.
@@ -143,37 +164,47 @@ func sampleProcess(pid int) (cpuPct, ramPct float64) {
 	return
 }
 
-// sampleDocker runs `docker stats --no-stream` to get CPU/RAM for a container.
-// Returns (0, 0) silently on any error.
-func sampleDocker(containerID string) (cpuPct, ramPct float64) {
+// dockerSample holds the result of a single docker stats poll.
+type dockerSample struct {
+	CPUPct  float64
+	RAMPct  float64
+	NetInB  uint64 // cumulative bytes received since container start
+	NetOutB uint64 // cumulative bytes sent since container start
+}
+
+// sampleDocker runs `docker stats --no-stream` to get CPU/RAM/network for a container.
+// Returns a zero dockerSample silently on any error.
+func sampleDocker(containerID string) dockerSample {
 	if containerID == "" {
-		return
+		return dockerSample{}
 	}
 	dockerPath, err := exec.LookPath("docker")
 	if err != nil {
-		return
+		return dockerSample{}
 	}
 
 	out, err := exec.Command(dockerPath, //nolint:gosec
 		"stats", "--no-stream",
-		"--format", `{"cpu":"{{.CPUPerc}}","mem":"{{.MemPerc}}"}`,
+		"--format", `{"cpu":"{{.CPUPerc}}","mem":"{{.MemPerc}}","net_in":"{{.NetInput}}","net_out":"{{.NetOutput}}"}`,
 		containerID,
 	).Output()
 	if err != nil {
-		return
+		return dockerSample{}
 	}
 
 	line := strings.TrimSpace(string(out))
 	if line == "" {
-		return
+		return dockerSample{}
 	}
 
 	var parsed struct {
-		CPU string `json:"cpu"`
-		Mem string `json:"mem"`
+		CPU    string `json:"cpu"`
+		Mem    string `json:"mem"`
+		NetIn  string `json:"net_in"`
+		NetOut string `json:"net_out"`
 	}
 	if err := json.Unmarshal([]byte(line), &parsed); err != nil {
-		return
+		return dockerSample{}
 	}
 
 	parsePct := func(s string) float64 {
@@ -182,7 +213,36 @@ func sampleDocker(containerID string) (cpuPct, ramPct float64) {
 		return v
 	}
 
-	cpuPct = parsePct(parsed.CPU)
-	ramPct = parsePct(parsed.Mem)
-	return
+	return dockerSample{
+		CPUPct:  parsePct(parsed.CPU),
+		RAMPct:  parsePct(parsed.Mem),
+		NetInB:  parseDockerBytes(parsed.NetIn),
+		NetOutB: parseDockerBytes(parsed.NetOut),
+	}
+}
+
+// parseDockerBytes parses a Docker-formatted byte string like "1.2kB", "3.4MB", "500B", "1.2GB"
+// and returns the value in bytes. Returns 0 on parse error.
+func parseDockerBytes(s string) uint64 {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0B" {
+		return 0
+	}
+	units := []struct {
+		suffix string
+		mult   float64
+	}{
+		{"GB", 1 << 30}, {"MB", 1 << 20}, {"kB", 1 << 10}, {"B", 1},
+	}
+	for _, u := range units {
+		if strings.HasSuffix(s, u.suffix) {
+			num := strings.TrimSuffix(s, u.suffix)
+			v, err := strconv.ParseFloat(strings.TrimSpace(num), 64)
+			if err != nil {
+				return 0
+			}
+			return uint64(v * u.mult)
+		}
+	}
+	return 0
 }

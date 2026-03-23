@@ -7,9 +7,375 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [Unreleased]
+## [1.0.0] - 2026-03-22
+
+### Fixed
+- **Self-update stale remote ref** (`install.sh`): `git fetch origin` replaced with
+  `git fetch --prune origin` so stale `refs/remotes/origin/*` entries (left behind
+  after a PR merge re-targets the tip commit) are pruned before the checkout step.
+  `git pull --ff-only` replaced with `git reset --hard origin/<branch>` so the
+  working tree always matches the remote tip even when fast-forward is not possible.
+
+### Security — Audit Round 2 (all findings remediated)
+
+#### MEDIUM fixes
+- **M3 — Firewall From/Comment injection** (`firewall/service.go`): `From` field
+  validated against a CIDR/IP regex; `Comment` restricted to safe printable ASCII
+  (128 chars max) before being passed to UFW.
+- **M4 — `--no-tls` on public addresses** (`cmd/daemon/main.go`): logs a WARN
+  when `--no-tls` is active with a non-localhost bind address.
+- **M5 — bcrypt cost too low for passwords** (`auth/service.go`): cost raised from
+  `DefaultCost` (10) to 12 for all user password hashes (OWASP recommendation).
+- **M6 — recovery codes hashed at `MinCost` (4)** (`auth/service.go`): cost raised
+  to 12, matching user passwords.
+- **M7 — VAPID keys non-atomic write** (`notifications/push.go`): write now uses
+  temp file + rename, consistent with `saveUsers()` and `saveServersLocked()`.
+- **M8 — no request body size limit** (`api/server.go`): global gin middleware
+  applies `http.MaxBytesReader` (1 MB) to all requests before routing.
+
+#### LOW fixes
+- **L1 — Tailscale state dir permissions** (`cmd/daemon/main.go`): `os.MkdirAll`
+  with mode 0700 now called before `tsnet.Server` is created.
+- **L2 — SBOM/CVE report world-readable** (`sbom/service.go`): both `writeSBOM`
+  and `writeReport` now use mode 0600 instead of 0644.
+- **L3 — audit log scanner 64 KB limit** (`auth/persist.go`): `scanner.Buffer`
+  raised to 256 KB so oversized lines don't silently truncate audit log loading.
+- **L4 — `patchSettings` re-writes secrets** (`api/server.go`): config snapshot
+  zeroes `JWTSecret`, `VaultToken`, `S3.SecretKey`, and `Tailscale.AuthKey`
+  before marshaling to disk — secrets provided via env/encrypted files are not
+  re-persisted in plaintext.
+- **L6 — no rate limit on bootstrap** (`api/server.go`): `POST /system/bootstrap`
+  now rate-limited at 1 req/min burst 3 (matching login endpoint precedent).
+- **L5 — JWT in WebSocket URL** (`api/server.go`): documented as accepted risk;
+  WebSocket clients cannot set Authorization headers; ensure access logs strip
+  query strings in production.
+
+### Security — Audit Round 2 HIGH findings
+
+- **H1 — RCON ban reason injection** (`broker/banlist.go`): `reason` parameter in
+  `BanPlayer` is now sanitized with `rconDangerousChars.Replace()` before being
+  interpolated into the RCON command, stripping `\n`, `\r`, `\x00`, and `;`.
+- **H2 — Race condition on `s.users` map** (`auth/service.go`, `auth/persist.go`):
+  Added `usersMu sync.RWMutex` to `Service` and applied it at every `s.users`
+  access site (14 call sites across Login, CreateUser, UpdateUser, DeleteUser,
+  OIDCCallback, SteamCallback, push subscriptions, API key methods, and
+  `saveUsers()`). Removed the narrower `subsMu` and `apiKeysMu` fields — all user
+  data is now protected by a single consistent mutex, eliminating lock-ordering
+  risk. `saveUsers()` now snapshots under `RLock` before marshaling.
+- **H3 — Tailscale `AuthKey` JSON tag** (`config/config.go`): Changed
+  `json:"auth_key"` → `json:"-"` so the Tailscale auth key cannot leak into
+  any JSON API response.
+- **H4 — Non-atomic `servers.json` write** (`broker/broker.go`): `saveServersLocked()`
+  now writes to `servers.json.tmp` and renames atomically, matching the same
+  pattern used by `saveUsers()`. A daemon crash mid-write no longer truncates
+  server state.
 
 ### Added
+- **Tailscale integration** (`tailscale.com/tsnet`) — daemon joins your Tailnet
+  as an embedded node; TLS is automatic via `*.ts.net` certs (no cert files
+  needed). Configure via `tailscale:` block in `daemon.yaml` or set
+  `TAILSCALE_AUTH_KEY` in the environment. Tailscale is the default network
+  transport when enabled; set `dual: true` to also expose the standard
+  bind-addr listener simultaneously for LAN/WAN access.
+- **`--no-tls` CLI flag** — run the daemon over plain HTTP for local testing
+  (not for production use).
+- **`test/smoke.sh`** — self-contained curl-based smoke test suite (18 checks):
+  health, login, wrong-password rejection, RBAC, user lifecycle, API key
+  create/use/revoke, persistence, and version endpoint. Configurable via
+  `BASE_URL`, `ADMIN_USER`, `ADMIN_PASS`, `GDASH_DATA_DIR` env vars.
+
+### Security — Full audit remediation (63 findings, 2 CRITICAL / 13 HIGH / 33 MEDIUM / 13 LOW)
+
+#### Critical & High fixes
+- **JWT default secret** — daemon refuses to start if `JWTSecret` is the default placeholder; random secret auto-generated when none is configured (S01)
+- **Default admin password** — Docker Compose no longer has a `changeme` fallback; startup fails with a clear error if `ADMIN_PASSWORD_HASH` is unset (S26)
+- **Logout token invalidation** — `ValidateToken` now checks the in-memory blocklist so `Logout` has immediate effect; hourly background sweep evicts expired entries (S01)
+- **TOTP re-enrollment account takeover** — `SetupTOTP` requires the existing TOTP code before overwriting the secret; UI shows inline confirmation prompt (S02)
+- **Server ID path traversal** — `serverACLMiddleware` validates all `:id` params against `^[a-zA-Z0-9_-]{1,64}$` before any handler runs (S04)
+- **Start/stop state machine** — all transitional states guarded; double-start and concurrent-stop races return 409 (S05)
+- **Restore without stopping** — `executeRestore` stops the server and waits before touching files (S10)
+- **Mod manifest not persisted** — mods written to `servers.json` via `saveServersLocked`; remote mod source verified against allowlist (S11)
+- **RCON command injection** — player names sanitized/quoted before RCON interpolation (S12)
+- **`doStart` goroutine leak** — server delete cancels the running goroutine via `serverCancels` map (S13)
+- **SMTP password leak** — `EmailConfig.Password` tagged `json:"-"`; SMTP errors sanitized with `sanitizeSMTPErr` (S14)
+- **Node registration privilege** — `POST /nodes`, `POST /nodes/join-token`, `DELETE /nodes/:nodeId` moved to admin-only group (S17)
+- **User management not audited** — create/update/delete user calls emit audit events on success and failure (S20)
+- **Unsigned self-update** — `applyUpdate` runs `git verify-commit` on the tip commit; configurable via `updates.require_signed_commits` (S22)
+- **CSP `unsafe-inline`** — removed from `script-src`; added `frame-ancestors 'none'`, `base-uri`, `form-action`, `Permissions-Policy`, HSTS (S26)
+
+#### Medium fixes (P17–P35)
+- Per-IP token-bucket rate limiter on login and TOTP verify endpoints (P17)
+- MFA enforcement gate in `Login()` when `mfa_required: true` (P18)
+- 409 Conflict for duplicate server ID and running-server delete (P19)
+- Old backup archives deleted from disk on prune, not just from records (P20)
+- Backup records persisted to JSON and reloaded at startup (P21)
+- Cron expressions validated with `cron.ParseStandard` before storing (P22)
+- Console fan-out broadcaster — each WebSocket client gets its own channel (P23)
+- Symlink escape prevention in `configFilePath` via `filepath.EvalSymlinks` (P24)
+- Upload body limited to 100 MB with `http.MaxBytesReader` (P25)
+- Config file backup (`.bak`) before every write (P26)
+- `RestartServer` returns a `*Job` immediately; polling goroutine runs in background (P27)
+- Notification throttle — 5-minute cooldown per server+event to prevent spam loops (P28)
+- `GetAuditLog` paginated with offset+limit, newest-first, mutex-protected (P29)
+- Backup restore verifies SHA-256 checksum before overwriting server files (P30)
+- Nginx CSP tightened: `img-src`, `font-src` restricted; HSTS added (P31)
+- Dockerfile creates data directories and sets ownership before switching to nonroot (P32)
+- CI integration test step no longer gated by `|| true` (P34)
+- CVE scan wrapped in 5-minute context timeout (P35)
+- GPG commit verification in self-update flow (P36/S22 overlap)
+- OpenAPI spec updated with all missing routes, schemas, and tags (P33)
+
+#### Low fixes (P37–P55)
+- Recovery codes hashed with bcrypt at rest; comparison uses bcrypt (timing-safe) (P37/P38)
+- Hourly background goroutine evicts expired blocklist entries (P39)
+- `CloneServer` deep-copies config via JSON round-trip to handle nested values (P40)
+- File browser delete now supports directories via `os.RemoveAll` (P43)
+- Config file writes are atomic: temp file + `os.Rename` (P44)
+- Log lines capped at 10,000 to prevent memory exhaustion (P45)
+- Mod install blocked while server is running or starting (P46)
+- File-backed ban list for games without RCON support; persisted to `{data_dir}/banlists/` (P47)
+- Crash notifications suppressed during the 90-second startup grace window (P48)
+- Webhook URL redacted from error log messages (P49)
+- Dead push subscriptions auto-removed on 410 Gone response (P50)
+- `GET /sbom` returns 404 instead of empty placeholder before first scan (P51)
+- Current daemon binary backed up to `.bak` before self-update runs (P52)
+- Setup wizard skip buttons disabled while async operations are in-flight (P53)
+- Dashboard disk warning uses explicit `!= null` check on `disk_pct` (P54)
+- `diagnoseServer` properly cancels timeout contexts — no goroutine leak (P55)
+
+### Added
+
+#### Auth persistence — users, API keys, TOTP, push subscriptions, audit log (`daemon/internal/auth/persist.go`, `auth/service.go`, `cmd/daemon/main.go`)
+- All user state now survives daemon restarts. Nothing is lost on reboot.
+- New `auth/persist.go` introduces a `storedUser` struct (with explicit json tags for fields marked `json:"-"` on the API-facing `User` struct) so `PasswordHash`, `TOTPSecret`, `RecoveryCodes`, and `APIKey.Hash` are written to disk without ever appearing in API responses.
+- `saveUsers()` atomically writes all users to `{data_dir}/users.json` (temp file + `os.Rename`). Called asynchronously after every mutation: login, create/update/delete user, TOTP enroll/regenerate, API key create/revoke/use, push subscription add/remove, OIDC/Steam first-login user creation.
+- `loadUsers()` reads `users.json` at startup, populating the in-memory map before any requests are served.
+- `mergeAdminFromConfig()` ensures the admin from `daemon.yaml` is always present with the latest password hash — `daemon.yaml` remains authoritative for the admin account.
+- Audit log entries appended to `{data_dir}/audit.log` as newline-delimited JSON after each event (non-blocking goroutine). Up to 10,000 entries loaded into memory on startup; on-disk file retains full history.
+- `auth.Config.DataDir` wired from `cfg.Storage.DataDir` in `cmd/daemon/main.go`.
+
+
+
+#### Server scheduling (`daemon/internal/broker/schedule.go`, `broker.go`, `ui/src/pages/ServerDetailPage.tsx`)
+- `StartSchedule` and `StopSchedule` cron fields added to the `Server` struct and
+  `UpdateServerRequest`; persisted in servers.json and survives daemon restarts.
+- New `broker/schedule.go` mirrors the existing auto-update cron pattern — dedicated
+  `schedCron` instance with `schedEntries map[string][2]cron.EntryID` and `schedMu` mutex to
+  avoid lock-ordering issues with `b.mu`.
+- `initScheduler` re-registers all existing server schedules at startup.
+- `scheduleStartStop` / `unscheduleStartStop` called from `UpdateServer` and `DeleteServer`.
+- New **Schedule** tab in Server Detail page:
+  - Separate Auto-start and Auto-stop cards, each with a monospace cron input, live
+    human-readable preview (e.g. "Every weekday at 18:00"), and quick-pick preset buttons.
+  - Save wires to `PUT /servers/:id` with the two schedule fields.
+
+#### API keys / personal access tokens (`daemon/internal/auth/service.go`, `daemon/internal/api/server.go`, `ui/src/pages/SettingsPage.tsx`)
+- New `APIKey` struct stored per-user on `auth.User`; each key carries a name, 12-char display
+  prefix, SHA-256 hash (raw token never stored), scoped roles, created-at, optional expiry,
+  and a last-used timestamp updated on every authenticated request.
+- Token format: `gdash_<24-byte base64url>` (32 chars after prefix) — clearly identifiable as a
+  Games Dashboard token and safe to search for in logs.
+- `ValidateToken` now branches on the `gdash_` prefix — API keys are validated via SHA-256 hash
+  lookup across all users; JWTs follow the existing path unchanged.
+- New service methods: `CreateAPIKey`, `ListAPIKeys`, `RevokeAPIKey`; role scoping prevents
+  privilege escalation (key roles are capped to the creator's roles).
+- New API routes (any authenticated user, own keys only):
+  - `GET    /api/v1/auth/api-keys`          — list my keys (hash omitted)
+  - `POST   /api/v1/auth/api-keys`          — create key (raw token returned once)
+  - `DELETE /api/v1/auth/api-keys/:keyId`   — revoke key
+- Settings → Users & Auth → **API Keys** card: table of existing keys (name, prefix, roles,
+  created/last-used/expires), "New key" button opens a modal (name + optional expiry date),
+  and the raw token is shown in a green one-time reveal banner with copy button.
+
+#### 2FA enrollment QR-code flow (`ui/src/pages/SettingsPage.tsx`)
+- TOTP setup step now renders an actual scannable QR code (`QRCodeSVG` from `qrcode.react`)
+  instead of the raw `otpauth://` URI string.
+- Manual-entry secret displayed below the QR code with 4-character groups and a one-click
+  copy button for users who cannot scan.
+- After `verifyTOTP` succeeds, a **Recovery Codes Modal** is shown with the 10 one-time codes:
+  - 2-column code grid in monospace with highlighted styling.
+  - "Copy all" button writes a formatted block (header + date + codes) to the clipboard.
+  - "Download .txt" saves `games-dashboard-recovery-codes.txt` — numbered list with instructions.
+  - "I've saved my recovery codes" button dismisses and refreshes the remaining-codes count.
+- Two-Factor Authentication card shows **remaining recovery code count** (red when ≤ 2).
+- **Regenerate recovery codes** flow: confirm with current TOTP code → inline form → generates
+  new codes → shows the same Recovery Codes Modal with fresh codes.
+
+#### Web Push notifications (`daemon/internal/notifications/push.go`, `daemon/internal/auth/service.go`, `daemon/internal/api/server.go`, `ui/src/sw.ts`, `ui/src/pages/SettingsPage.tsx`)
+- VAPID key pair generated automatically on first run and persisted to `{data_dir}/vapid_keys.json`.
+- `notifications.Service.SetPush(vapidKeys, getSubscriptions)` wires push sending into the existing
+  `Send(event, serverName, message)` flow — every `server.crash`, `server.restart`, and `disk.warning`
+  event fans out to all registered device subscriptions alongside webhook and email.
+- Per-user `PushSubscriptions []PushSubscription` stored on `auth.User`; subscriptions survive
+  daemon restarts as part of the user state.
+- New API routes:
+  - `GET  /api/v1/push/vapid-key`       — returns the VAPID public key (base64url) for browser subscribe calls
+  - `POST /api/v1/push/subscribe`       — registers a push subscription for the authenticated user
+  - `DELETE /api/v1/push/subscribe`     — unregisters a subscription by endpoint
+- Service worker (`ui/src/sw.ts`) switched to `injectManifest` strategy with a custom TypeScript
+  service worker that handles `push` events (shows a notification) and `notificationclick` events
+  (focuses an existing tab or opens a new window at the notification URL).
+- Settings → Notifications → **Push Notifications** card: shows permission state; "Enable" button
+  requests browser permission, fetches the VAPID key, subscribes via `PushManager`, and saves the
+  subscription to the daemon; "Disable" button unsubscribes and removes the server-side record.
+- Added `github.com/SherClockHolmes/webpush-go v1.3.0` dependency.
+
+### Changed
+- **`daemon/Dockerfile`** — switched runtime base from `gcr.io/distroless/static-debian12:nonroot`
+  to `debian:bookworm-slim` and added a `docker:27-cli` build stage so the daemon can shell out
+  to the `docker` binary for container lifecycle management. The `nonroot` user is added to the
+  `docker` group (GID 999) and the entrypoint uses `USER nonroot` (not `USER nonroot:nonroot`) so
+  supplemental group membership is inherited by the process.
+
+### Fixed
+- **Health check killed servers during slow startup** — game servers such as Minecraft JVM can take
+  60–90 s to bind their ports. `checkServerHealth` now skips TCP/UDP probes for the first 90 seconds
+  after `LastStarted` is set, preventing false-positive `error` transitions on slow-starting servers.
+  (`daemon/internal/broker/broker.go`)
+- **`POST /servers/:id/deploy` with no body returned `{"error":"EOF"}`** — `deployServer` now
+  treats an absent request body as "use the server's configured `deploy_method`", so a bare
+  `POST /deploy` works without a JSON body. (`daemon/internal/api/server.go`,
+  `daemon/internal/broker/broker.go`)
+- **`POST /servers/:id/stop` returned HTTP 500 for a non-running server** — "server not running" is a
+  client-side state conflict; the handler now returns HTTP 409 Conflict in that case instead of 500.
+  (`daemon/internal/api/server.go`)
+- **CLI: `gdash node token` returned 404** — `cli/cmd/main.go` was calling `POST /api/v1/nodes/token`
+  but the API registers the route as `POST /api/v1/nodes/join-token`. The `gdash node token` command
+  now calls the correct path.
+- **MFA login: no way to use a recovery code** — the login page only showed a TOTP code input when
+  MFA was required. Added a "Use a recovery code instead" toggle in `LoginPage.tsx` that switches to
+  a free-text recovery code input and sends `recovery_code` to the backend. `authStore.ts` updated
+  to forward the field.
+- **Auth: unused `mfaRequired` variable** — `auth/service.go` computed
+  `mfaRequired := user.TOTPEnabled && s.cfg.MFARequired` and then discarded it with
+  `_ = mfaRequired`. Both the declaration and the dead-code line have been removed.
+- **Broker: `GetServer` data race** — `GetServer` returned a pointer directly into the live server
+  map, allowing callers to mutate broker state without holding the lock. It now returns a shallow
+  copy so external code cannot alias the live record.
+
+#### PWA — installable web app (`ui/vite.config.ts`, `ui/index.html`, `ui/public/icons/`)
+- Integrated `vite-plugin-pwa` with `workbox` service-worker generation.
+- Web App Manifest declares `name`, `short_name`, `theme_color`, `display: standalone`, and 192×512 icon set.
+- Service worker uses `NetworkFirst` for all `/api/` requests (10 s timeout, 5 min cache) and precaches all static assets for offline shell.
+- `index.html` updated with `theme-color`, Apple Web App meta tags, and touch icon link for iOS Add-to-Home-Screen support.
+- App icons added at `ui/public/icons/icon-192.png` and `icon-512.png`.
+
+#### CI/CD pipeline (`.github/workflows/ci.yml` — full rewrite)
+- Fixed branch triggers: `develop` → `dev`; added `dev` to pull-request triggers.
+- Fixed `npm run test -- --run` for non-interactive CI execution.
+- Upgraded `golangci-lint-action` v4 → v6.
+- Upgraded `azure/setup-helm` v3 → v4.
+- Removed broken Docker-in-Docker service block from `integration-tests`; GitHub Actions runners include Docker natively.
+- Added separate `docker/metadata-action` step for the UI image (was missing; only the daemon had one).
+- Added macOS arm64 CLI build (`gdash-darwin-arm64`).
+- Added QEMU setup for multi-arch Docker builds (linux/amd64 + linux/arm64).
+- Replaced CycloneDX CLI with `cyclonedx-gomod` for Go-native SBOM generation.
+- Fixed `cache-dependency-path` to point at `go.sum` files instead of `go.mod`.
+- Updated GitHub Release artifact list to include `daemon-linux-arm64` and `gdash-darwin-arm64`.
+
+### Added
+
+#### Email notifications (`daemon/internal/notifications/service.go`, `config/config.go`, `ui/src/pages/SettingsPage.tsx`)
+- `EmailConfig` in config: SMTP host/port, username, password, from address, to list, implicit-TLS flag.
+- `notifications.Send()` fires email in a separate goroutine alongside webhooks; `Test()` checks both.
+- Two SMTP paths: STARTTLS (`smtp.SendMail`, port 587) and implicit TLS (`tls.DialWithDialer` +
+  `smtp.NewClient`, port 465).
+- Settings page: full SMTP card with show/hide password and comma-separated recipient list; test
+  button enabled when either webhook URL or email is configured.
+
+#### Network I/O monitoring (`daemon/internal/broker/metrics.go`, `broker.go`, `ui/src/pages/DashboardPage.tsx`, `ServerDetailPage.tsx`, `ui/src/types/index.ts`)
+- `NetInKbps` / `NetOutKbps float64` on `Server` and `ServerMetricSample`.
+- Docker stats format extended with `{{.NetInput}}`/`{{.NetOutput}}`; `parseDockerBytes` handles `B`,
+  `kB`, `MB`, `GB` suffixes.
+- Cumulative byte totals tracked in `prevNetBytes` / `prevNetTime`; kbps rate computed each 15 s cycle.
+- Dashboard resource table: "Network" column with auto-scaled ↓/↑ Kbps/Mbps display.
+- Server detail metrics tab: second `LineChart` for net in/out in Mbps (hidden until data arrives).
+
+#### Server cloning (`daemon/internal/broker/broker.go`, `daemon/internal/api/server.go`, `ui/src/pages/ServerDetailPage.tsx`)
+- `POST /api/v1/servers/:id/clone` body `{"name":"…"}` — deep-copies config, ports, and resources
+  into a new server with a `crypto/rand` 6-byte hex ID; clone starts in `stopped` state.
+- UI: "Clone" button in server header; `CloneModal` navigates to the new server on success.
+
+#### In-app guided diagnostics (`daemon/internal/api/server.go`, `ui/src/pages/ServerDetailPage.tsx`)
+- `GET /api/v1/servers/:id/diagnose` — 7 heuristic checks: Docker reachable, last error present,
+  crash-loop detection, disk ≥ 90 %, port conflicts, RAM headroom, running-state verification.
+  Returns `[]DiagnosticFinding{Severity, Title, Detail, Fix}`.
+- UI: "Diagnose" button in Overview tab; `DiagnosticsModal` with severity-coloured finding cards and
+  a re-run button. Red error banner when state = `error` includes a "Diagnose" CTA.
+
+#### TOTP recovery codes (`daemon/internal/auth/service.go`, `daemon/internal/api/server.go`, `ui/src/pages/SecurityPage.tsx`, `ui/src/store/authStore.ts`)
+- 10 single-use codes generated at enrollment; `consumeRecoveryCode` burns a code atomically.
+- `Login` accepts `recovery_code` as an alternative to `totp_code`.
+- `RegenerateRecoveryCodes` requires TOTP re-auth before issuing a fresh set.
+- API: `GET /auth/totp/recovery-codes` (returns count), `POST /auth/totp/recovery-codes/regenerate`.
+- UI: `RecoveryCodesModal` with downloadable `.txt`; TOTP card shows remaining count + regenerate flow.
+
+#### System resource pre-flight check (`daemon/internal/api/server.go`, `ui/src/components/CreateServerWizard.tsx`)
+- `GET /api/v1/system/resources` — reads `/proc/meminfo` (RAM) and `syscall.Statfs` (disk); returns
+  `cpu_cores`, `total_ram_gb`, `free_ram_gb`, `total_disk_gb`, `free_disk_gb`.
+- `ResourceWarning` amber banner in the Create Server wizard when free RAM/disk/CPU falls below the
+  selected game's minimum requirements (non-blocking advisory only).
+
+#### Per-user ACLs (`daemon/internal/broker/broker.go`, `daemon/internal/api/server.go`, `ui/src/pages/SettingsPage.tsx`)
+- `AllowedServers []string` per user; empty = unrestricted (admin behaviour).
+- Role-based route enforcement: non-admin requests to server routes are filtered by `AllowedServers`.
+- ACL management UI in Settings → Users.
+
+#### Steam account authentication (`daemon/internal/auth/steam.go`, `service.go`, `daemon/internal/api/server.go`, `ui/src/pages/LoginPage.tsx`, `ui/src/store/authStore.ts`)
+- OpenID 2.0 `check_authentication` verify; replay nonce map (`steamStates sync.Map`).
+- API: `GET /auth/steam/login` → redirect; `GET /auth/steam/callback` → JWT + redirect to frontend.
+- Login page: "Sign in with Steam" button; `loginWithToken` authStore action for token-in-URL flow.
+- 18 unit tests; all pass without network access.
+
+#### Node-install mode (`install.sh`, `cli/cmd/main.go`)
+- `install.sh --mode=node`: worker-only install — Docker + SteamCMD + daemon; no Node.js, UI, nginx,
+  or admin wizard. Daemon binds `0.0.0.0:<port>` for master reachability.
+- `gdash node token`: calls `POST /api/v1/nodes/join-token`, prints token + usage hint.
+- `gdash node add --token <tok>`: sends `join_token` in body for cluster validation.
+
+#### Automatic Crash Recovery
+- **`auto_restart` per-server flag** — When enabled, the broker automatically restarts a game server process if it exits unexpectedly. Configurable: `auto_restart` (bool), `max_restarts` (default 3), `restart_delay_secs` (default 10).
+- **Exponential back-off loop** — `doStart` now runs as a restart loop. After each unexpected exit it increments `restart_count`, waits `restart_delay_secs`, and re-launches. After `max_restarts` attempts it marks the server `error`.
+- **Crash counter reset** — If the server runs cleanly for more than 60 seconds the restart counter resets, so isolated crashes don't accumulate toward the limit over time.
+- **`restart_count` and `last_crash_at`** — Both fields are visible on the server object (API + UI) so users can see how many times a server has restarted.
+- **API fields** — `CreateServerRequest` and `UpdateServerRequest` both expose the auto-restart fields.
+
+#### Plain-English Error Messages
+- **`last_error` field on `Server`** — Set whenever a server transitions to `StateError`; cleared automatically when it returns to `StateRunning`.
+- **`setServerError()` helper** — All 9 error-transition sites in `broker.go` now call this helper with a human-readable explanation (e.g. "SteamCMD could not find the game files — your disk may be full…").
+- **Error banner on `ServerCard`** — A red inline banner appears below the status badge when `state === 'error'` and `last_error` is set, showing the first two lines of the message.
+- **"What does this mean?" modal** — A `HelpCircle` button next to the error banner opens `ErrorHelpModal` with the full error text plus generic next-steps. Dismissible via button or backdrop click.
+
+#### Disk Space Warning Banners
+- **`diskUsagePct(path)`** — New function in `metrics.go` using `syscall.Statfs` to compute disk usage for any path on Linux.
+- **`disk_pct` on `Server`** — Sampled every 15 seconds for all servers (running or stopped) and included in both the server list API response and `ServerMetricSample`.
+- **Daemon console warnings** — `checkDiskWarning()` emits a console warning event at 80% and again at 95% full; throttled to once per hour per server via `diskWarnedAt` map.
+- **Color-coded disk bar on `ServerCard`** — Green below 70%, yellow 70–84%, orange 85–94%, red ≥ 95%.
+- **Dashboard-level sticky banner** — `DashboardPage` shows a warning/critical banner listing every server at ≥ 85% full with their current percentage. Banner is orange at warning level and red when any server hits ≥ 95%.
+
+#### In-UI File Browser
+- **`GET /api/v1/servers/:id/files`** — lists directory entries (name, is_dir, size, modified, path) at an arbitrary path inside the server's install dir. Path-traversal-safe via the existing `configFilePath` helper.
+- **`GET /api/v1/servers/:id/files/download`** — serves a file as a raw download attachment. Uses the existing `ReadConfigFile` broker method.
+- **`POST /api/v1/servers/:id/files/upload`** — accepts a `multipart/form-data` upload of one or more files (`field name: file`) and writes them to the destination directory (`?dir=` query param).
+- **`DELETE /api/v1/servers/:id/files`** — deletes a single file (directories blocked). Path-traversal-safe.
+- **Broker methods** — `ListFiles`, `UploadFile`, `DeleteFile` added to `broker.go`, all using path-traversal protection consistent with the config file editor.
+- **FilesTab component** — new 8th tab on the Server Detail page. Shows a breadcrumb navigator, sortable file table (dirs first, then files alphabetically), size formatting (`formatBytes`), upload button, per-file download and delete buttons, and a delete-confirmation modal.
+
+#### Getting Started Checklist (Onboarding)
+- **`GettingStartedChecklist` component** — A dismissible panel on the Dashboard with four steps: Add your first server, Take a backup, Set up crash notifications, Invite a user.
+- **Auto-progress** — The "Add server" step is automatically marked done when `serverCount > 0` (server list updates every 15 s).
+- **Per-step toggle** — Each step has a checkbox button; clicking marks it done / undone. State persisted to `localStorage` (`gdash_checklist_steps`).
+- **Collapsible header** — Clicking the "Getting Started" header collapses/expands the step list. A `n/4` progress badge is always visible.
+- **Dismiss** — The × button permanently hides the checklist (persisted via `localStorage` key `gdash_checklist_dismissed`).
+- **Action links** — Each step has a "Go to …" button linking to the relevant page.
+
+#### Live Resource Overview Table (Dashboard)
+- **`cpu_pct` / `ram_pct` mirrored onto `Server`** — The metrics collector now copies the latest CPU and RAM percentages from the ring buffer directly onto the `Server` struct each cycle, so the servers-list endpoint carries live metrics without extra API calls.
+- **`ResourceTable` component** — Replaces the old server card grid on the dashboard. Each server is a row with columns: Server (icon + name + game) | Status | CPU bar | RAM bar | Disk bar | Allocated (cores / RAM / disk).
+- **`MiniBar` component** — Inline mini progress bar (thin colored fill + numeric label) used in the resource table cells.
+- **Stopped-server handling** — CPU and RAM show `—` for non-running servers; Disk is always shown.
+- **Live badge + 15 s refresh** — Table header shows "Updates every 15 s" and a "Live" badge; driven by the existing 15-second `react-query` refetch interval.
+- **Click-to-navigate** — Clicking any row navigates to the server detail page.
 
 #### Installer — Interactive TUI Wizard
 - **Full whiptail TUI** — The installer now launches a 5-screen interactive wizard when run in a terminal (including via `curl | bash`). Screens: Network & Paths → Admin Account → Storage & Backup → Container Runtimes → Review & Confirm. Falls back to plain readline prompts if `whiptail`/`dialog` is unavailable.

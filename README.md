@@ -9,11 +9,17 @@
 
 | Category | Capabilities |
 |---|---|
-| **Servers** | 24 supported games — visual poster-card grid with per-game color themes; hover for start/stop/restart/delete |
-| **Add Server** | 2-step wizard: visual game picker filtered by deploy method → config form |
+| **Servers** | 24 supported games — visual poster-card grid; start/stop/restart/delete; auto-restart on crash with configurable retries & back-off |
+| **Add Server** | 2-step wizard: visual game picker filtered by deploy method → config form; first-login onboarding checklist |
 | **Deploy** | SteamCMD, manual archive, Docker (19 games), Kubernetes operator |
+| **Live Metrics** | Dashboard resource table: per-server CPU %, RAM %, Disk % bars updated every 15 s; live player count for 13 supported games |
+| **Player Count** | Live current/max player count via RCON/WebRCON/Telnet — shown on dashboard table and server detail page; supports Minecraft, Palworld, CS2, TF2, GMod, L4D2, Dota2, Factorio, Squad, ARK, Conan Exiles, Rust, 7 Days to Die |
+| **Console** | Live WebSocket console streaming + RCON/Telnet command input per server; plain-English error banners with help modal |
+| **Config Editor** | In-UI config file editor — edit `server.properties`, launch scripts, etc. without SSH |
+| **File Browser** | In-UI file browser — browse, upload, download, and delete files in the install directory |
+| **Share** | "Share with Friends" panel — public IP + port + game join string in one click |
+| **Notifications** | Discord, Slack, and custom webhook alerts for server crash, restart, disk warnings, and backup events |
 | **Logs** | 4-tab Logs page: live server console tail, lifecycle Events, Security/auth events, full Audit Trail |
-| **Console** | Live WebSocket console streaming per server |
 | **Backups** | Scheduled/manual, NFS + S3, incremental, integrity-verified restore |
 | **Mods** | Steam Workshop, CurseForge, Thunderstore, Git, local; sandboxed test harness; RBAC |
 | **Security** | TLS everywhere, AES-256 secrets at rest, TOTP 2FA, OIDC/SAML/OAuth2 |
@@ -369,9 +375,8 @@ GDASH_BIN=/tmp/gdash \
 | Suite | Tests | Status |
 |---|---|---|
 | Go daemon unit tests | 5 packages | ✅ PASS |
-| UI Vitest | 27 tests | ✅ PASS |
-| UI TypeScript check | — | ✅ Clean |
-| UI production build | — | ✅ 813 KB bundle |
+| UI Vitest | 158 tests, 20 files | ✅ PASS |
+| UI production build | — | ✅ Clean |
 | CLI smoke tests | all commands | ✅ PASS |
 | Live API tests | 54 endpoints | ✅ 50 PASS, 4 behavior-correct |
 | Integration suite | 68 checks | ✅ 65 PASS, 3 SKIP (env-expected) |
@@ -428,35 +433,52 @@ What's coming next — loosely ordered by impact. See [ROADMAP.md](docs/ROADMAP.
 | Feature | Description |
 |---|---|
 | **SteamCMD via Docker** | All SteamCMD installs now run in an isolated Docker container — no host SteamCMD required |
-| **Persistent server state** | JSON-backed state that survives daemon restarts; transient states (starting/running/stopping) reset to stopped on reload |
-| **Per-server logs tab** | Logs tab on each server detail page streams lifecycle output before and after the server process starts |
-| **Subsystem log filtering** | Global Logs page Events tab filters by subsystem prefix (server, backup, mod, auth, etc.) |
-| **Self-update** | Settings → Updates tab + `gdash update`; git pull, rebuild daemon + UI, restart — choose `main` or `dev` branch; branch-aware status check + in-UI update log viewer |
-| **Plain-English errors** | All daemon/API/cluster error messages rewritten to be human-readable and actionable (no raw Go traces) |
-| **Node-install mode** | `--mode=node` installer flag deploys daemon-only on a worker machine and outputs the `gdash node add` registration command |
-| **UFW firewall management** | Installer auto-configures UFW (deny-by-default, SSH restricted to local subnets); full rule CRUD in the Ports page GUI |
+| **Persistent server state** | JSON-backed state that survives daemon restarts; transient states reset to stopped on reload |
+| **Per-server logs tab** | Logs tab on each server detail page streams lifecycle output |
+| **Subsystem log filtering** | Global Logs page Events tab filters by subsystem prefix |
+| **Self-update** | Settings → Updates tab + `gdash update`; choose `main` or `dev` branch; in-UI update log viewer with progress bar |
+| **Plain-English errors** | Human-readable error messages everywhere; red error banner on server cards with help modal |
+| **Automatic crash recovery** | Auto-restart on unexpected exit; configurable retries, back-off delay, and max attempts |
+| **Node-install mode** | `--mode=node` deploys daemon-only on a worker machine |
+| **UFW firewall management** | Installer auto-configures UFW; full rule CRUD in the Ports page — no SSH needed |
 | **GUI firewall rule editor** | Ports page → Firewall Rules panel: view rules, add (port/proto/CIDR/comment), delete, enable/disable UFW — no SSH needed |
-| **Cluster join tokens** | Single-use 24 h tokens required to register worker nodes; persisted across daemon restarts; `gdash node token` to generate |
+| **Cluster join tokens** | Single-use 24 h tokens for worker node registration; `gdash node token` to generate |
 | **Valheim binary fix** | Post-deploy `exec_bins` chmod step + pre-start binary verification — fixes "not found" on SteamCMD-installed game binaries |
+| **Disk space warnings** | Color-coded disk bars on server cards; sticky dashboard banner at ≥85%; throttled console warnings at 80% and 95% |
+| **Live resource table** | Dashboard overview table with CPU/RAM/Disk bars, refreshed every 15 s |
 | **In-UI config file editor** | Edit `server.properties`, `cfg/*.cfg`, launch scripts, etc. from the Config tab — no SSH needed; path-traversal safe, 1 MiB cap, audit-logged |
+| **In-UI file browser** | Browse, upload, download, and delete files in the install directory |
+| **Share with Friends** | Public IP + port + game join string in one click |
+| **Discord/Slack/webhook alerts** | Crash, restart, backup, disk-full notifications |
+| **Onboarding wizard** | Getting Started checklist guides new users from first login to running server |
+| **Live player count** | Current/max players via RCON/WebRCON/Telnet for 13 games; shown on dashboard table and server detail |
+| **Allowlist/banlist UI** | Manage server allowlists and banlists from the dashboard |
+| **Game server auto-update** | Daily SteamCMD / Docker pull update with automatic pre-update backup |
+| **Log rotation** | Configurable size/age-based rotation for server logs |
+| **TLS auto-renewal** | Automatic Let's Encrypt cert renewal (when FQDN is configured) |
+| **Per-user ACLs** | Grant specific users access to specific servers only |
+| **Sign in with Steam** | OpenID 2.0 Steam authentication for player-facing server management |
+| **Email notifications** | SMTP alerts (STARTTLS + implicit TLS) alongside existing Discord/webhook support |
+| **Network I/O monitoring** | Per-server TX/RX kbps on the metrics tab and dashboard resource table |
+| **Server cloning** | One-click deep-copy of a server config with a new name |
+| **TOTP recovery codes** | 10 one-use recovery codes generated at 2FA enrollment; regenerate from Security settings |
+| **In-app guided diagnostics** | 7-check "Diagnose" modal per server — finds port conflicts, missing deploys, disk issues, and more |
+| **System pre-flight check** | Before deploying a game, warns if free RAM/disk/CPU is below requirements |
+| **PWA — installable web app** | Installable progressive web app with offline shell and API caching via service worker |
+| **CI/CD pipeline** | GitHub Actions: unit tests, lint, multi-arch binaries, Docker images to GHCR, Trivy CVE scan, CycloneDX SBOM, Helm packaging, cosign signing, GitHub Release |
 
-### Near-term
+### Up Next
 | Feature | Description |
 |---|---|
-| **Automatic crash recovery** | Auto-restart on unexpected exit, configurable retries + back-off |
-
-### Medium-term
-| Feature | Description |
-|---|---|
-| In-UI file browser | Browse, upload, download, and delete files in the install directory |
-| "Share with Friends" panel | Public IP + port + game join string in one click |
-| Player count & player list | Live query via Source/Minecraft protocol every 60 s |
-| Discord / webhook alerts | Crash, restart, backup, disk-full notifications |
-| Game server auto-update | Daily SteamCMD / Docker pull update with automatic pre-update backup |
-| Onboarding wizard | First-login 3-step modal: pick game → name server → deploy |
+| **Web Push notifications** | Device push alerts for crash/restart events (complement to PWA install) |
+| **2FA enrollment QR-code flow** | Full in-UI TOTP enrollment with QR code scan and downloadable recovery PDF |
+| **API keys / personal access tokens** | Long-lived tokens for external automation, CI pipelines, and monitoring integrations |
+| **Server scheduling** | Cron-based automatic start/stop per server — e.g. start at 6 PM, stop at midnight |
+| **Integrated DDNS** | Auto-update DuckDNS or Cloudflare when the host's public IP changes |
+| **Community adapter marketplace** | Pull additional game manifests from a curated registry; one-click install from the UI |
 
 ### Long-term / Stretch
-Mobile PWA · Community adapter marketplace · Multi-region WireGuard cluster · Integrated DDNS · In-app guided diagnostics · 2FA enrollment UI
+Multi-region WireGuard cluster · Helm chart for master stack · Server templates · Backup cross-server migration · Kubernetes operator status UI · Audit log export (CSV/JSON)
 
 ---
 

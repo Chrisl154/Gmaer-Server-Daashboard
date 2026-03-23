@@ -36,6 +36,12 @@ export interface Server {
   last_started?: string;
   last_stopped?: string;
   created_at: string;
+  // Live metrics — updated every 15 s by the broker
+  cpu_pct?: number;
+  ram_pct?: number;
+  disk_pct?: number;
+  player_count?: number; // -1 = not available for this game
+  max_players?: number;  // 0 = unknown
 }
 
 export interface CreateServerRequest {
@@ -334,6 +340,18 @@ export interface SettingsPatch {
   };
 }
 
+export interface NotificationSettings {
+  webhook_url: string;
+  webhook_format: 'discord' | 'slack' | 'generic';
+  events: string[];
+}
+
+export interface NotificationSettingsPatch {
+  webhook_url?: string;
+  webhook_format?: string;
+  events?: string[];
+}
+
 // ── API helpers ───────────────────────────────────────────────────────────────
 
 export interface APIError {
@@ -353,5 +371,8 @@ export interface ServerMetricSample {
   ts: number;          // Unix seconds
   cpu_pct: number;
   ram_pct: number;
-  player_count: number;
+  disk_pct: number;
+  player_count: number; // -1 = not available
+  net_in_kbps?: number;
+  net_out_kbps?: number;
 }

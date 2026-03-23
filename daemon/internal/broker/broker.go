@@ -5,7 +5,9 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,16 +28,22 @@ import (
 	"github.com/games-dashboard/daemon/internal/metrics"
 	"github.com/games-dashboard/daemon/internal/modmanager"
 	"github.com/games-dashboard/daemon/internal/networking"
+	"github.com/games-dashboard/daemon/internal/notifications"
 	rconpkg "github.com/games-dashboard/daemon/internal/rcon"
 	"github.com/games-dashboard/daemon/internal/sbom"
 	"github.com/games-dashboard/daemon/internal/secrets"
 	telnetsvc "github.com/games-dashboard/daemon/internal/telnet"
 	webrconpkg "github.com/games-dashboard/daemon/internal/webrcon"
+	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
 )
 
 // ServerState represents the lifecycle state of a game server
 type ServerState string
+
+// validServerID matches safe server IDs: 1-64 chars, alphanumeric plus hyphens and underscores.
+// This prevents path traversal when the ID is used as a directory component.
+var validServerID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 const (
 	StateIdle      ServerState = "idle"
@@ -66,6 +75,33 @@ type Server struct {
 	LastStopped  *time.Time        `json:"last_stopped,omitempty"`
 	PID          int               `json:"pid,omitempty"`
 	ContainerID  string            `json:"container_id,omitempty"`
+	// Auto-restart fields
+	AutoRestart      bool       `json:"auto_restart,omitempty"`
+	MaxRestarts      int        `json:"max_restarts,omitempty"`  // 0 = default (3)
+	RestartDelaySecs int        `json:"restart_delay_secs,omitempty"` // 0 = default (10)
+	RestartCount     int        `json:"restart_count,omitempty"`
+	LastCrashAt      *time.Time `json:"last_crash_at,omitempty"`
+	// Last human-readable error message (set on every StateError transition)
+	LastError string `json:"last_error,omitempty"`
+	// Live resource utilisation — updated every metrics collection cycle (15 s).
+	// 0 = unknown / server not running.
+	CPUPct     float64 `json:"cpu_pct,omitempty"`
+	RAMPct     float64 `json:"ram_pct,omitempty"`
+	DiskPct    float64 `json:"disk_pct,omitempty"`
+	NetInKbps  float64 `json:"net_in_kbps,omitempty"`
+	NetOutKbps float64 `json:"net_out_kbps,omitempty"`
+	// Player counts — updated alongside CPU/RAM/Disk every 15 s.
+	// PlayerCount == -1 means the adapter does not support player count queries
+	// or the RCON password is not set.  PlayerCount >= 0 is the live count.
+	PlayerCount int `json:"player_count"`
+	MaxPlayers  int `json:"max_players,omitempty"`
+	// Auto-update — when enabled the server is re-deployed on AutoUpdateSchedule.
+	AutoUpdate         bool       `json:"auto_update,omitempty"`
+	AutoUpdateSchedule string     `json:"auto_update_schedule,omitempty"` // cron expr; default "0 4 * * *"
+	LastUpdateCheck    *time.Time `json:"last_update_check,omitempty"`
+	// Scheduled start/stop — cron expressions; empty = disabled.
+	StartSchedule string `json:"start_schedule,omitempty"`
+	StopSchedule  string `json:"stop_schedule,omitempty"`
 }
 
 // PortMapping represents a port forwarding rule
@@ -137,23 +173,33 @@ type Job struct {
 
 // Request types
 type CreateServerRequest struct {
-	ID           string         `json:"id" binding:"required"`
-	Name         string         `json:"name" binding:"required"`
-	Adapter      string         `json:"adapter" binding:"required"`
-	DeployMethod string         `json:"deploy_method"`
-	InstallDir   string         `json:"install_dir"`
-	Ports        []PortMapping  `json:"ports"`
-	Config       map[string]any `json:"config"`
-	Resources    ResourceSpec   `json:"resources"`
-	BackupConfig *BackupConfig  `json:"backup_config,omitempty"`
-	NodeID       string         `json:"node_id,omitempty"` // optional; empty = auto-place or local
+	ID               string         `json:"id" binding:"required"`
+	Name             string         `json:"name" binding:"required"`
+	Adapter          string         `json:"adapter" binding:"required"`
+	DeployMethod     string         `json:"deploy_method"`
+	InstallDir       string         `json:"install_dir"`
+	Ports            []PortMapping  `json:"ports"`
+	Config           map[string]any `json:"config"`
+	Resources        ResourceSpec   `json:"resources"`
+	BackupConfig     *BackupConfig  `json:"backup_config,omitempty"`
+	NodeID           string         `json:"node_id,omitempty"` // optional; empty = auto-place or local
+	AutoRestart      bool           `json:"auto_restart,omitempty"`
+	MaxRestarts      int            `json:"max_restarts,omitempty"`
+	RestartDelaySecs int            `json:"restart_delay_secs,omitempty"`
 }
 
 type UpdateServerRequest struct {
-	Name         string         `json:"name,omitempty"`
-	Config       map[string]any `json:"config,omitempty"`
-	Resources    *ResourceSpec  `json:"resources,omitempty"`
-	BackupConfig *BackupConfig  `json:"backup_config,omitempty"`
+	Name               string         `json:"name,omitempty"`
+	Config             map[string]any `json:"config,omitempty"`
+	Resources          *ResourceSpec  `json:"resources,omitempty"`
+	BackupConfig       *BackupConfig  `json:"backup_config,omitempty"`
+	AutoRestart        *bool          `json:"auto_restart,omitempty"`
+	MaxRestarts        *int           `json:"max_restarts,omitempty"`
+	RestartDelaySecs   *int           `json:"restart_delay_secs,omitempty"`
+	AutoUpdate         *bool          `json:"auto_update,omitempty"`
+	AutoUpdateSchedule *string        `json:"auto_update_schedule,omitempty"`
+	StartSchedule      *string        `json:"start_schedule,omitempty"` // cron expr or "" to disable
+	StopSchedule       *string        `json:"stop_schedule,omitempty"`  // cron expr or "" to disable
 }
 
 type DeployRequest struct {
@@ -232,13 +278,39 @@ type Broker struct {
 	clusterMgr *cluster.Manager
 	backupSvc  *backupsvc.Service
 	modMgr     *modmanager.Manager
+	notify     *notifications.Service
 	servers    map[string]*Server
 	jobs       map[string]*Job
-	consoleChs map[string]chan string
+	consoleChs map[string]*consoleBroadcaster
 	// processes tracks running game server processes by server ID
-	processes   map[string]*exec.Cmd
-	metricsData map[string]*metricsRing
-	mu          sync.RWMutex
+	processes    map[string]*exec.Cmd
+	metricsData  map[string]*metricsRing
+	diskWarnedAt    map[string]time.Time // throttle: last time a disk warning was emitted per server
+	notifyThrottled map[string]time.Time // throttle: last notification per "serverID:event" key
+	// prevNetBytes tracks the previous cumulative network byte counters per server [in, out]
+	// used to compute kbps rates between metric collection cycles.
+	prevNetBytes map[string][2]uint64
+	prevNetTime  map[string]time.Time
+	// auto-update scheduler (robfig/cron); updateMu protects updateEntries independently
+	// of the main mu to avoid lock-ordering issues.
+	updateCron    *cron.Cron
+	updateEntries map[string]cron.EntryID
+	updateMu      sync.Mutex
+	// start/stop scheduler — separate cron instance, same lock-ordering discipline.
+	schedCron    *cron.Cron
+	schedEntries map[string][2]cron.EntryID // [startEntryID, stopEntryID]; zero value = not scheduled
+	schedMu      sync.Mutex
+	// P47: file-backed ban list for games that do not support RCON ban commands.
+	fileBanLists map[string][]string // serverID -> banned player names
+	banMu        sync.Mutex
+
+	// per-server rotating log writers
+	logWriters map[string]*rotatingWriter
+	logWriteMu sync.Mutex // protects logWriters map
+	// serverCancels holds a cancel func per server to stop its doStart goroutine.
+	// Protected by mu.
+	serverCancels map[string]context.CancelFunc
+	mu            sync.RWMutex
 }
 
 // NewBroker creates a new Broker
@@ -288,38 +360,95 @@ func NewBroker(cfg *config.Config, secretsMgr *secrets.Manager, logger *zap.Logg
 	}
 	modMgr := modmanager.NewManager(modDir, logger)
 
+	notifyCfg := notifications.Config{}
+	if cfg != nil {
+		notifyCfg = notifications.Config{
+			WebhookURL:    cfg.Notifications.WebhookURL,
+			WebhookFormat: cfg.Notifications.WebhookFormat,
+			Events:        cfg.Notifications.Events,
+		}
+		if e := cfg.Notifications.Email; e != nil {
+			notifyCfg.Email = &notifications.EmailConfig{
+				Enabled:  e.Enabled,
+				SMTPHost: e.SMTPHost,
+				SMTPPort: e.SMTPPort,
+				Username: e.Username,
+				Password: e.Password,
+				From:     e.From,
+				To:       e.To,
+				UseTLS:   e.UseTLS,
+			}
+		}
+	}
+	notifySvc := notifications.New(notifyCfg, logger)
+
 	persistedServers := loadServersState(cfg, logger)
 
 	// Pre-populate consoleChs and metricsData for loaded servers.
-	consoleChs := make(map[string]chan string)
+	consoleChs := make(map[string]*consoleBroadcaster)
 	metricsData := make(map[string]*metricsRing)
 	for id := range persistedServers {
-		consoleChs[id] = make(chan string, 1000)
+		consoleChs[id] = newConsoleBroadcaster()
 		metricsData[id] = &metricsRing{}
 	}
 
 	return &Broker{
-		cfg:         cfg,
-		secrets:     secretsMgr,
-		logger:      logger,
-		metrics:     metricsSvc,
-		adapters:    registry,
-		sbomSvc:     sbomSvc,
-		networkSvc:  networkSvc,
-		clusterMgr:  clusterMgr,
-		backupSvc:   bkpSvc,
-		modMgr:      modMgr,
-		servers:     persistedServers,
-		jobs:        make(map[string]*Job),
-		consoleChs:  consoleChs,
-		processes:   make(map[string]*exec.Cmd),
-		metricsData: metricsData,
+		cfg:          cfg,
+		secrets:      secretsMgr,
+		logger:       logger,
+		metrics:      metricsSvc,
+		adapters:     registry,
+		sbomSvc:      sbomSvc,
+		networkSvc:   networkSvc,
+		clusterMgr:   clusterMgr,
+		backupSvc:    bkpSvc,
+		modMgr:       modMgr,
+		notify:       notifySvc,
+		servers:      persistedServers,
+		jobs:         make(map[string]*Job),
+		consoleChs:   consoleChs,
+		processes:    make(map[string]*exec.Cmd),
+		metricsData:  metricsData,
+		diskWarnedAt:    make(map[string]time.Time),
+		notifyThrottled: make(map[string]time.Time),
+		prevNetBytes:  make(map[string][2]uint64),
+		prevNetTime:   make(map[string]time.Time),
+		logWriters:    make(map[string]*rotatingWriter),
+		serverCancels: make(map[string]context.CancelFunc),
+		fileBanLists:  make(map[string][]string),
 	}, nil
+}
+
+// NotifyService returns the notifications service instance.
+func (b *Broker) NotifyService() *notifications.Service {
+	return b.notify
+}
+
+// throttledNotify sends a notification at most once per 5 minutes per
+// server+event combination to prevent spam during crash loops.
+func (b *Broker) throttledNotify(serverID, event, serverName, message string) {
+	key := serverID + ":" + event
+	b.mu.Lock()
+	last := b.notifyThrottled[key]
+	if time.Since(last) < 5*time.Minute {
+		b.mu.Unlock()
+		return
+	}
+	b.notifyThrottled[key] = time.Now()
+	b.mu.Unlock()
+	b.notify.Send(event, serverName, message)
 }
 
 // ClusterManager returns the cluster manager (may be nil if cluster disabled)
 func (b *Broker) ClusterManager() *cluster.Manager {
 	return b.clusterMgr
+}
+
+// generateServerID returns a short random hex ID suitable for use as a server ID.
+func generateServerID() string {
+	b := make([]byte, 6)
+	rand.Read(b) //nolint:errcheck
+	return hex.EncodeToString(b)
 }
 
 // saveServersLocked persists the servers map to disk. Must be called with b.mu held (read or write).
@@ -337,8 +466,14 @@ func (b *Broker) saveServersLocked() {
 		b.logger.Warn("Failed to marshal server state", zap.Error(err))
 		return
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		b.logger.Warn("Failed to write server state", zap.Error(err))
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		b.logger.Warn("Failed to write server state temp file", zap.Error(err))
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		b.logger.Warn("Failed to rename server state file", zap.Error(err))
+		_ = os.Remove(tmp)
 	}
 }
 
@@ -380,6 +515,11 @@ func (b *Broker) BackupService() *backupsvc.Service {
 func (b *Broker) Start(ctx context.Context) {
 	b.logger.Info("Broker starting")
 
+	// Auto-update cron scheduler.
+	b.initAutoUpdateScheduler(ctx)
+	// Start/stop cron scheduler.
+	b.initScheduler(ctx)
+
 	// Metrics sampling goroutine — collects per-server CPU/RAM every 15 s.
 	go func() {
 		metricsTicker := time.NewTicker(15 * time.Second)
@@ -408,29 +548,102 @@ func (b *Broker) Start(ctx context.Context) {
 	}
 }
 
-// collectMetrics samples CPU/RAM for all currently running servers.
+// collectMetrics samples CPU/RAM for running servers and disk usage for all servers.
+// It also queries player counts via RCON for games that support it.
 func (b *Broker) collectMetrics() {
 	b.mu.RLock()
 	type snap struct {
-		pid         int
-		containerID string
-		deployMethod string
+		pid            int
+		containerID    string
+		deployMethod   string
+		installDir     string
+		state          ServerState
+		adapter        string
+		rconEnabled    bool
+		consoleType    string
+		rconPort       int
+		rconPassword   string
+		telnetPassword string
 	}
 	servers := make(map[string]snap, len(b.servers))
 	for id, s := range b.servers {
-		if s.State == StateRunning {
-			servers[id] = snap{pid: s.PID, containerID: s.ContainerID, deployMethod: s.DeployMethod}
+		var rconEnabled bool
+		var consoleType string
+		var rconPort int
+		if m, ok := b.adapters.Get(s.Adapter); ok && m.Console.RCONEnabled {
+			rconEnabled = true
+			consoleType = m.Console.Type
+			rconPort = m.Console.RCONPort
+		}
+		rconPassword, _ := s.Config["rcon_password"].(string)
+		telnetPassword, _ := s.Config["telnet_password"].(string)
+		servers[id] = snap{
+			pid:            s.PID,
+			containerID:    s.ContainerID,
+			deployMethod:   s.DeployMethod,
+			installDir:     s.InstallDir,
+			state:          s.State,
+			adapter:        s.Adapter,
+			rconEnabled:    rconEnabled,
+			consoleType:    consoleType,
+			rconPort:       rconPort,
+			rconPassword:   rconPassword,
+			telnetPassword: telnetPassword,
 		}
 	}
 	b.mu.RUnlock()
 
+	// Concurrently query player counts for running RCON-enabled servers.
+	// Each query has a 2 s timeout; running them in parallel keeps total overhead ≤ 2 s.
+	type pcEntry struct{ current, max int }
+	pcMap := make(map[string]pcEntry, len(servers))
+	var pcMu sync.Mutex
+	var pcWg sync.WaitGroup
+	for id, s := range servers {
+		if s.state == StateRunning && s.rconEnabled && s.rconPort > 0 {
+			pcWg.Add(1)
+			go func(id string, s snap) {
+				defer pcWg.Done()
+				pc := queryPlayerCount(s.adapter, s.consoleType, s.rconPort, s.rconPassword, s.telnetPassword)
+				pcMu.Lock()
+				pcMap[id] = pcEntry{pc.current, pc.max}
+				pcMu.Unlock()
+			}(id, s)
+		} else {
+			pcMap[id] = pcEntry{-1, 0}
+		}
+	}
+	pcWg.Wait()
+
+	now := time.Now()
 	for id, s := range servers {
 		var cpu, ram float64
+		var netInKbps, netOutKbps float64
 		if s.deployMethod == "docker" && s.containerID != "" {
-			cpu, ram = sampleDocker(s.containerID)
+			ds := sampleDocker(s.containerID)
+			cpu, ram = ds.CPUPct, ds.RAMPct
+			// Compute kbps from cumulative byte delta
+			b.mu.Lock()
+			prev := b.prevNetBytes[id]
+			prevT := b.prevNetTime[id]
+			b.prevNetBytes[id] = [2]uint64{ds.NetInB, ds.NetOutB}
+			b.prevNetTime[id] = now
+			b.mu.Unlock()
+			if !prevT.IsZero() && ds.NetInB >= prev[0] && ds.NetOutB >= prev[1] {
+				elapsed := now.Sub(prevT).Seconds()
+				if elapsed > 0 {
+					netInKbps = float64(ds.NetInB-prev[0]) / elapsed / 1024 * 8
+					netOutKbps = float64(ds.NetOutB-prev[1]) / elapsed / 1024 * 8
+				}
+			}
 		} else if s.pid > 0 {
 			cpu, ram = sampleProcess(s.pid)
 		}
+
+		// Disk usage applies to all servers regardless of running state.
+		disk := diskUsagePct(s.installDir)
+
+		pc := pcMap[id]
 
 		b.mu.RLock()
 		ring, ok := b.metricsData[id]
@@ -439,11 +652,63 @@ func (b *Broker) collectMetrics() {
 			continue
 		}
 		ring.push(ServerMetricSample{
-			Timestamp:  time.Now().Unix(),
-			CPUPercent: cpu,
-			RAMPercent: ram,
+			Timestamp:   now.Unix(),
+			CPUPercent:  cpu,
+			RAMPercent:  ram,
+			DiskPercent: disk,
+			PlayerCount: pc.current,
+			NetInKbps:   netInKbps,
+			NetOutKbps:  netOutKbps,
 		})
+
+		// Mirror latest values onto the Server object for direct API access
+		// (no extra /metrics API call needed by the UI).
+		b.mu.Lock()
+		if sv, ok2 := b.servers[id]; ok2 {
+			sv.CPUPct = cpu
+			sv.RAMPct = ram
+			sv.DiskPct = disk
+			sv.NetInKbps = netInKbps
+			sv.NetOutKbps = netOutKbps
+			sv.PlayerCount = pc.current
+			if pc.max > 0 {
+				sv.MaxPlayers = pc.max
+			}
+		}
+		b.mu.Unlock()
+
+		// Emit throttled console warnings at 80% and 95% thresholds.
+		if disk >= 80 && s.installDir != "" {
+			b.checkDiskWarning(id, disk)
+		}
 	}
+}
+
+// checkDiskWarning emits a console warning message when disk usage crosses a
+// threshold. Warnings are throttled to at most once per hour per server.
+func (b *Broker) checkDiskWarning(id string, pct float64) {
+	b.mu.Lock()
+	last := b.diskWarnedAt[id]
+	if time.Since(last) < time.Hour {
+		b.mu.Unlock()
+		return
+	}
+	b.diskWarnedAt[id] = time.Now()
+	var serverName string
+	if sv, ok := b.servers[id]; ok {
+		serverName = sv.Name
+	}
+	b.mu.Unlock()
+
+	var msg string
+	if pct >= 95 {
+		msg = fmt.Sprintf("CRITICAL: Disk is %.0f%% full — the server will crash when it runs out of space. Free up disk space immediately.", pct)
+	} else {
+		msg = fmt.Sprintf("WARNING: Disk is %.0f%% full. Consider freeing up space to avoid the server running out of disk.", pct)
+	}
+	b.logger.Warn("Disk usage threshold exceeded", zap.String("id", id), zap.Float64("disk_pct", pct))
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":%s,"ts":%d}`, jsonStr(msg), time.Now().Unix()))
+	b.notify.Send("disk.warning", serverName, msg)
 }
 
 // GetServerMetrics returns the last n metric samples for a server.
@@ -480,11 +745,21 @@ func (b *Broker) healthCheckAll(ctx context.Context) {
 	}
 }
 
+// startupGracePeriod is how long after a server starts before health checks can
+// mark it as failed. Many game servers (e.g. Minecraft JVM) take 30–90 s to
+// bind their ports, so we skip health checks during this window.
+const startupGracePeriod = 90 * time.Second
+
 func (b *Broker) checkServerHealth(ctx context.Context, id string) {
 	b.mu.RLock()
 	server, ok := b.servers[id]
 	b.mu.RUnlock()
 	if !ok || server.State != StateRunning {
+		return
+	}
+
+	// Skip health check while the server is still in its startup grace window.
+	if server.LastStarted != nil && time.Since(*server.LastStarted) < startupGracePeriod {
 		return
 	}
 
@@ -495,13 +770,17 @@ func (b *Broker) checkServerHealth(ctx context.Context, id string) {
 			zap.String("adapter", server.Adapter),
 			zap.String("message", result.Message))
 
-		b.mu.Lock()
-		if s, exists := b.servers[id]; exists && s.State == StateRunning {
-			s.State = StateError
+		b.mu.RLock()
+		stillRunning := false
+		if s, exists := b.servers[id]; exists {
+			stillRunning = s.State == StateRunning
 		}
-		b.mu.Unlock()
+		b.mu.RUnlock()
 
-		b.sendConsoleMessage(id, fmt.Sprintf("[health] WARN: %s", result.Message))
+		if stillRunning {
+			humanMsg := fmt.Sprintf("Health check failed: %s. The server may have crashed or become unresponsive — check the console for recent output.", result.Message)
+			b.setServerError(id, humanMsg)
+		}
 	}
 }
 
@@ -518,6 +797,10 @@ func (b *Broker) ListServers(ctx context.Context) ([]*Server, error) {
 
 // CreateServer creates a new server record
 func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Server, error) {
+	if !validServerID.MatchString(req.ID) {
+		return nil, fmt.Errorf("invalid server ID %q: must be 1-64 characters, alphanumeric, hyphens, or underscores", req.ID)
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -577,23 +860,26 @@ func (b *Broker) CreateServer(ctx context.Context, req CreateServerRequest) (*Se
 
 	now := time.Now()
 	server := &Server{
-		ID:           req.ID,
-		Name:         req.Name,
-		Adapter:      req.Adapter,
-		State:        StateIdle,
-		DeployMethod: req.DeployMethod,
-		InstallDir:   req.InstallDir,
-		Ports:        ports,
-		Config:       req.Config,
-		Resources:    resources,
-		BackupConfig: req.BackupConfig,
-		NodeID:       nodeID,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:               req.ID,
+		Name:             req.Name,
+		Adapter:          req.Adapter,
+		State:            StateIdle,
+		DeployMethod:     req.DeployMethod,
+		InstallDir:       req.InstallDir,
+		Ports:            ports,
+		Config:           req.Config,
+		Resources:        resources,
+		BackupConfig:     req.BackupConfig,
+		NodeID:           nodeID,
+		AutoRestart:      req.AutoRestart,
+		MaxRestarts:      req.MaxRestarts,
+		RestartDelaySecs: req.RestartDelaySecs,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
 	b.servers[req.ID] = server
-	b.consoleChs[req.ID] = make(chan string, 1000)
+	b.consoleChs[req.ID] = newConsoleBroadcaster()
 	b.metricsData[req.ID] = &metricsRing{}
 	b.saveServersLocked()
 
@@ -612,15 +898,78 @@ func (b *Broker) GetServer(ctx context.Context, id string) (*Server, error) {
 	if !ok {
 		return nil, fmt.Errorf("server not found: %s", id)
 	}
-	return s, nil
+	copy := *s
+	return &copy, nil
+}
+
+// CloneServer creates a copy of an existing server with a new name.
+// The clone starts in the stopped state and gets a fresh ID, so the original
+// is never affected. Runtime-only fields (PID, container ID, metrics) are not copied.
+func (b *Broker) CloneServer(ctx context.Context, id, newName string) (*Server, error) {
+	b.mu.RLock()
+	src, ok := b.servers[id]
+	if !ok {
+		b.mu.RUnlock()
+		return nil, fmt.Errorf("server not found: %s", id)
+	}
+	// P40: snapshot all fields under the read lock, then deep-copy via JSON
+	// round-trip to handle nested maps/slices in Config.
+	snap := *src // shallow copy of value fields while holding the lock
+	b.mu.RUnlock()
+
+	// Deep-copy the slice/map/pointer fields that would alias otherwise.
+	raw, _ := json.Marshal(struct {
+		Config       map[string]any `json:"config"`
+		Ports        []PortMapping  `json:"ports"`
+		Resources    ResourceSpec   `json:"resources"`
+		BackupConfig *BackupConfig  `json:"backup_config,omitempty"`
+	}{snap.Config, snap.Ports, snap.Resources, snap.BackupConfig})
+	var deep struct {
+		Config       map[string]any `json:"config"`
+		Ports        []PortMapping  `json:"ports"`
+		Resources    ResourceSpec   `json:"resources"`
+		BackupConfig *BackupConfig  `json:"backup_config,omitempty"`
+	}
+	_ = json.Unmarshal(raw, &deep)
+	if deep.Config == nil {
+		deep.Config = map[string]any{}
+	}
+
+	clone := &Server{
+		ID:           generateServerID(),
+		Name:         newName,
+		Adapter:      snap.Adapter,
+		State:        StateStopped,
+		DeployMethod: snap.DeployMethod,
+		InstallDir:   "", // will need to be re-deployed; leave blank so user sets it
+		Ports:        deep.Ports,
+		Config:       deep.Config,
+		Resources:    deep.Resources,
+		BackupConfig: deep.BackupConfig,
+		NodeID:       snap.NodeID,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		AutoRestart:  snap.AutoRestart,
+		MaxRestarts:  snap.MaxRestarts,
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.servers[clone.ID] = clone
+	b.consoleChs[clone.ID] = newConsoleBroadcaster()
+	b.metricsData[clone.ID] = &metricsRing{}
+	b.saveServersLocked()
+
+	b.logger.Info("Server cloned", zap.String("source_id", id), zap.String("clone_id", clone.ID), zap.String("name", newName))
+	return clone, nil
 }
 
 // UpdateServer modifies server configuration
 func (b *Broker) UpdateServer(ctx context.Context, id string, req UpdateServerRequest) (*Server, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	s, ok := b.servers[id]
 	if !ok {
+		b.mu.Unlock()
 		return nil, fmt.Errorf("server not found: %s", id)
 	}
 	if req.Name != "" {
@@ -635,9 +984,65 @@ func (b *Broker) UpdateServer(ctx context.Context, id string, req UpdateServerRe
 	if req.BackupConfig != nil {
 		s.BackupConfig = req.BackupConfig
 	}
+	if req.AutoRestart != nil {
+		s.AutoRestart = *req.AutoRestart
+	}
+	if req.MaxRestarts != nil {
+		s.MaxRestarts = *req.MaxRestarts
+	}
+	if req.RestartDelaySecs != nil {
+		s.RestartDelaySecs = *req.RestartDelaySecs
+	}
+	if req.AutoUpdate != nil {
+		s.AutoUpdate = *req.AutoUpdate
+	}
+	if req.AutoUpdateSchedule != nil {
+		s.AutoUpdateSchedule = *req.AutoUpdateSchedule
+	}
+	if req.StartSchedule != nil {
+		if *req.StartSchedule != "" {
+			if _, err := cron.ParseStandard(*req.StartSchedule); err != nil {
+				b.mu.Unlock()
+				return nil, fmt.Errorf("invalid start_schedule cron expression %q: %w", *req.StartSchedule, err)
+			}
+		}
+		s.StartSchedule = *req.StartSchedule
+	}
+	if req.StopSchedule != nil {
+		if *req.StopSchedule != "" {
+			if _, err := cron.ParseStandard(*req.StopSchedule); err != nil {
+				b.mu.Unlock()
+				return nil, fmt.Errorf("invalid stop_schedule cron expression %q: %w", *req.StopSchedule, err)
+			}
+		}
+		s.StopSchedule = *req.StopSchedule
+	}
+	// Capture state before releasing lock.
+	autoUpdate := s.AutoUpdate
+	autoUpdateSchedule := s.AutoUpdateSchedule
+	autoUpdateChanged := req.AutoUpdate != nil || req.AutoUpdateSchedule != nil
+	startSchedule := s.StartSchedule
+	stopSchedule := s.StopSchedule
+	schedChanged := req.StartSchedule != nil || req.StopSchedule != nil
 	s.UpdatedAt = time.Now()
 	b.saveServersLocked()
-	return s, nil
+	b.mu.Unlock()
+
+	// Re-schedule cron jobs outside b.mu to avoid lock ordering issues.
+	if autoUpdateChanged {
+		if autoUpdate {
+			b.scheduleAutoUpdate(id, autoUpdateSchedule)
+		} else {
+			b.unscheduleAutoUpdate(id)
+		}
+	}
+	if schedChanged {
+		b.scheduleStartStop(id, startSchedule, stopSchedule)
+	}
+	b.mu.RLock()
+	result := b.servers[id]
+	b.mu.RUnlock()
+	return result, nil
 }
 
 // DeleteServer removes a server
@@ -648,22 +1053,28 @@ func (b *Broker) DeleteServer(ctx context.Context, id string) error {
 		b.mu.Unlock()
 		return fmt.Errorf("server not found: %s", id)
 	}
-	if s.State == StateRunning {
+	if s.State == StateRunning || s.State == StateStarting {
 		b.mu.Unlock()
-		return fmt.Errorf("cannot delete running server; stop it first")
+		return fmt.Errorf("cannot delete a running or starting server; stop it first")
 	}
 	nodeID := s.NodeID
 	resources := s.Resources
 	deployMethod := s.DeployMethod
 	containerID := s.ContainerID
+	// Cancel the doStart goroutine for this server if one is running.
+	if cancel, ok := b.serverCancels[id]; ok {
+		cancel()
+		delete(b.serverCancels, id)
+	}
 	delete(b.servers, id)
 	b.saveServersLocked()
-	if ch, ok := b.consoleChs[id]; ok {
-		close(ch)
-		delete(b.consoleChs, id)
-	}
+	delete(b.consoleChs, id)
 	delete(b.metricsData, id)
 	b.mu.Unlock()
+
+	// Remove any cron schedules for this server.
+	b.unscheduleAutoUpdate(id)
+	b.unscheduleStartStop(id)
 
 	// Best-effort: remove the Docker container on deletion.
 	if deployMethod == "docker" && containerID != "" {
@@ -695,14 +1106,30 @@ func (b *Broker) StartServer(ctx context.Context, id string) error {
 		b.mu.Unlock()
 		return fmt.Errorf("server not found: %s", id)
 	}
-	if s.State == StateRunning {
+	switch s.State {
+	case StateRunning:
 		b.mu.Unlock()
 		return fmt.Errorf("server already running")
+	case StateStarting:
+		b.mu.Unlock()
+		return fmt.Errorf("server is already starting")
+	case StateStopping:
+		b.mu.Unlock()
+		return fmt.Errorf("server is stopping; wait for it to stop before starting again")
+	case StateDeploying:
+		b.mu.Unlock()
+		return fmt.Errorf("server is deploying; wait for deployment to finish")
 	}
+	// Cancel any previous doStart goroutine for this server (e.g. from a failed start).
+	if cancel, ok := b.serverCancels[id]; ok {
+		cancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	b.serverCancels[id] = cancel
 	s.State = StateStarting
 	b.mu.Unlock()
 
-	go b.doStart(context.Background(), id)
+	go b.doStart(ctx, id)
 	return nil
 }
 
@@ -737,6 +1164,7 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 			if state == StateRunning {
 				now := time.Now()
 				sv.LastStarted = &now
+				sv.LastError = "" // clear any previous error on successful start
 			}
 		}
 		b.mu.Unlock()
@@ -759,11 +1187,10 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 	// Guard against attempting to start a server that has never been deployed:
 	// if the install directory does not exist the binary can't be there either.
 	if _, statErr := os.Stat(installDir); os.IsNotExist(statErr) {
-		msg := fmt.Sprintf("server not deployed — install directory %q does not exist; run Deploy first", installDir)
+		msg := fmt.Sprintf("Server not deployed yet — the install directory %q does not exist. Click Deploy to download and install the server files first.", installDir)
 		b.logger.Error("Failed to start server process — not deployed",
 			zap.String("id", id), zap.String("install_dir", installDir))
-		setState(StateError, 0)
-		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(msg), time.Now().Unix()))
+		b.setServerError(id, msg)
 		return
 	}
 
@@ -798,11 +1225,10 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 	if dotSlashBin != "" {
 		binPath := filepath.Join(installDir, dotSlashBin[2:])
 		if fi, statErr := os.Stat(binPath); os.IsNotExist(statErr) {
-			msg := fmt.Sprintf("binary %q not found in install directory %q — re-run Deploy to install the server files", dotSlashBin, installDir)
+			msg := fmt.Sprintf("Game binary %q was not found in %q. The server files may be incomplete — re-run Deploy to reinstall them.", dotSlashBin, installDir)
 			b.logger.Error("Pre-start check failed: binary missing",
 				zap.String("id", id), zap.String("binary", binPath))
-			setState(StateError, 0)
-			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(msg), time.Now().Unix()))
+			b.setServerError(id, msg)
 			return
 		} else if statErr == nil && fi.Mode()&0o111 == 0 {
 			b.logger.Warn("Binary missing execute bit, applying chmod +x",
@@ -811,62 +1237,142 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", startCmd) //nolint:gosec // user-configured command
-	cmd.Dir = installDir
-	cmd.Env = buildProcessEnv(s, manifest)
-
-	// Pipe stdout and stderr into the console channel.
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
-
-	if err := cmd.Start(); err != nil {
-		b.logger.Error("Failed to start server process",
-			zap.String("id", id), zap.String("cmd", startCmd), zap.Error(err))
-		setState(StateError, 0)
-		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":"Failed to start: %s","ts":%d}`, err.Error(), time.Now().Unix()))
-		return
-	}
-
-	pid := cmd.Process.Pid
-	setState(StateRunning, pid)
-
-	b.mu.Lock()
-	b.processes[id] = cmd
-	b.mu.Unlock()
-
-	b.logger.Info("Server process started", zap.String("id", id), zap.Int("pid", pid))
-	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Server %s started (pid %d)","ts":%d}`, id, pid, time.Now().Unix()))
-
-	// Stream stdout and stderr to the console channel.
-	pipe := func(r io.ReadCloser, prefix string) {
-		sc := bufio.NewScanner(r)
-		for sc.Scan() {
-			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"%s","msg":%s,"ts":%d}`,
-				prefix, jsonStr(sc.Text()), time.Now().Unix()))
+	// Run loop: start the process, wait for exit, optionally restart on crash.
+	for {
+		b.mu.RLock()
+		sv, svOk := b.servers[id]
+		if !svOk {
+			b.mu.RUnlock()
+			return
 		}
-	}
-	go pipe(stdout, "stdout")
-	go pipe(stderr, "stderr")
+		autoRestart := sv.AutoRestart
+		maxRestarts := sv.MaxRestarts
+		if maxRestarts <= 0 {
+			maxRestarts = 3
+		}
+		restartDelay := sv.RestartDelaySecs
+		if restartDelay <= 0 {
+			restartDelay = 10
+		}
+		b.mu.RUnlock()
 
-	// Wait for the process to exit, then update state.
-	if err := cmd.Wait(); err != nil {
-		b.logger.Warn("Server process exited with error",
-			zap.String("id", id), zap.Error(err))
-	} else {
-		b.logger.Info("Server process exited cleanly", zap.String("id", id))
-	}
+		cmd := exec.CommandContext(ctx, "sh", "-c", startCmd) //nolint:gosec // user-configured command
+		cmd.Dir = installDir
+		cmd.Env = buildProcessEnv(sv, manifest)
 
-	b.mu.Lock()
-	delete(b.processes, id)
-	if sv, ok2 := b.servers[id]; ok2 && sv.State != StateStopping {
-		sv.State = StateStopped
-		now := time.Now()
-		sv.LastStopped = &now
-		sv.PID = 0
-	}
-	b.mu.Unlock()
+		stdout, _ := cmd.StdoutPipe()
+		stderr, _ := cmd.StderrPipe()
 
-	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Server %s process exited","ts":%d}`, id, time.Now().Unix()))
+		if err := cmd.Start(); err != nil {
+			b.logger.Error("Failed to start server process",
+				zap.String("id", id), zap.String("cmd", startCmd), zap.Error(err))
+			b.setServerError(id, fmt.Sprintf("Failed to launch the server process: %s. Check that the game files are fully deployed and the server has permission to execute them.", err.Error()))
+			return
+		}
+
+		startedAt := time.Now()
+		pid := cmd.Process.Pid
+		setState(StateRunning, pid)
+
+		b.mu.Lock()
+		b.processes[id] = cmd
+		b.mu.Unlock()
+
+		b.logger.Info("Server process started", zap.String("id", id), zap.Int("pid", pid))
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Server %s started (pid %d)","ts":%d}`, id, pid, time.Now().Unix()))
+
+		// Stream stdout and stderr to the console channel.
+		pipe := func(r io.ReadCloser, prefix string) {
+			sc := bufio.NewScanner(r)
+			for sc.Scan() {
+				b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"%s","msg":%s,"ts":%d}`,
+					prefix, jsonStr(sc.Text()), time.Now().Unix()))
+			}
+		}
+		go pipe(stdout, "stdout")
+		go pipe(stderr, "stderr")
+
+		// Wait for the process to exit.
+		exitErr := cmd.Wait()
+		if exitErr != nil {
+			b.logger.Warn("Server process exited with error", zap.String("id", id), zap.Error(exitErr))
+		} else {
+			b.logger.Info("Server process exited cleanly", zap.String("id", id))
+		}
+
+		b.mu.Lock()
+		delete(b.processes, id)
+		wasIntentional := false
+		if sv2, ok2 := b.servers[id]; ok2 {
+			wasIntentional = sv2.State == StateStopping
+			if wasIntentional {
+				sv2.State = StateStopped
+			}
+			now := time.Now()
+			sv2.LastStopped = &now
+			sv2.PID = 0
+		}
+		b.mu.Unlock()
+
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Server %s process exited","ts":%d}`, id, time.Now().Unix()))
+
+		// Stop here if the process was intentionally stopped or context cancelled.
+		if wasIntentional || ctx.Err() != nil {
+			return
+		}
+
+		// Crash detected. If auto-restart is disabled, mark stopped and return.
+		if !autoRestart {
+			b.mu.Lock()
+			if sv2, ok2 := b.servers[id]; ok2 && sv2.State != StateStopped {
+				sv2.State = StateStopped
+			}
+			b.mu.Unlock()
+			return
+		}
+
+		// If the process ran for more than 60 s, reset the consecutive crash counter
+		// so that isolated crashes don't accumulate toward the restart limit.
+		b.mu.Lock()
+		if sv2, ok2 := b.servers[id]; ok2 {
+			if time.Since(startedAt) > 60*time.Second {
+				sv2.RestartCount = 0
+			}
+			sv2.RestartCount++
+			now := time.Now()
+			sv2.LastCrashAt = &now
+			if sv2.RestartCount > maxRestarts {
+				b.mu.Unlock()
+				b.logger.Error("Server reached max auto-restart attempts",
+					zap.String("id", id), zap.Int("max_restarts", maxRestarts))
+				b.setServerError(id, fmt.Sprintf(
+					"The server crashed %d times in a row and will not be restarted automatically. Check the console for crash details, fix the underlying issue, then start it manually.",
+					maxRestarts))
+				return
+			}
+			attempt := sv2.RestartCount
+			restartServerName := sv2.Name
+			sv2.State = StateStarting
+			b.mu.Unlock()
+
+			b.logger.Warn("Server crashed; scheduling auto-restart",
+				zap.String("id", id), zap.Int("attempt", attempt), zap.Int("max", maxRestarts), zap.Int("delay_secs", restartDelay))
+			b.sendConsoleMessage(id, fmt.Sprintf(
+				`{"type":"system","msg":"Server %s crashed — restarting in %ds (attempt %d/%d)","ts":%d}`,
+				id, restartDelay, attempt, maxRestarts, time.Now().Unix()))
+			b.throttledNotify(id, "server.restart", restartServerName, fmt.Sprintf("Server crashed and is restarting (attempt %d/%d, delay %ds).", attempt, maxRestarts, restartDelay))
+		} else {
+			b.mu.Unlock()
+			return
+		}
+
+		select {
+		case <-time.After(time.Duration(restartDelay) * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		// Loop back to start the process again.
+	}
 }
 
 // StopServer stops a game server
@@ -927,6 +1433,10 @@ func (b *Broker) doStop(ctx context.Context, id string) {
 
 	b.mu.Lock()
 	delete(b.processes, id)
+	if cancel, ok := b.serverCancels[id]; ok {
+		cancel()
+		delete(b.serverCancels, id)
+	}
 	if s, ok := b.servers[id]; ok {
 		s.State = StateStopped
 		now := time.Now()
@@ -939,21 +1449,38 @@ func (b *Broker) doStop(ctx context.Context, id string) {
 }
 
 // RestartServer restarts a game server
-func (b *Broker) RestartServer(ctx context.Context, id string) error {
+func (b *Broker) RestartServer(ctx context.Context, id string) (*Job, error) {
+	b.mu.RLock()
+	_, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("server not found: %s", id)
+	}
 	if err := b.StopServer(ctx, id); err != nil {
-		return err
+		return nil, err
 	}
-	// doStop runs asynchronously; poll until the server is no longer stopping.
-	for i := 0; i < 30; i++ {
-		time.Sleep(500 * time.Millisecond)
-		b.mu.RLock()
-		state := b.servers[id].State
-		b.mu.RUnlock()
-		if state == StateStopped || state == StateError {
-			break
+	job := b.newJob("restart", id)
+	go func() {
+		b.updateJob(job.ID, "running", 10, "Waiting for server to stop...")
+		// Poll until stopped or timeout (15 s).
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(500 * time.Millisecond)
+			b.mu.RLock()
+			state := b.servers[id].State
+			b.mu.RUnlock()
+			if state == StateStopped || state == StateIdle || state == StateError {
+				break
+			}
 		}
-	}
-	return b.StartServer(ctx, id)
+		b.updateJob(job.ID, "running", 50, "Starting server...")
+		if err := b.StartServer(ctx, id); err != nil {
+			b.updateJob(job.ID, "failed", 0, "Failed to start: "+err.Error())
+			return
+		}
+		b.updateJob(job.ID, "success", 100, "Server restarted")
+	}()
+	return job, nil
 }
 
 // DeployServer deploys a game server
@@ -974,8 +1501,19 @@ func (b *Broker) doDeploy(ctx context.Context, id string, req DeployRequest, job
 
 	b.updateJob(job.ID, "running", 10, "Starting deployment...")
 
+	// If no method was specified in the request, fall back to the server's
+	// configured deploy_method so a bare POST /deploy with no body "just works".
+	method := req.Method
+	if method == "" {
+		b.mu.RLock()
+		if sv, ok := b.servers[id]; ok {
+			method = sv.DeployMethod
+		}
+		b.mu.RUnlock()
+	}
+
 	var deployErr error
-	switch req.Method {
+	switch method {
 	case "steamcmd":
 		deployErr = b.deploySteamCMD(ctx, id, req, job)
 	case "manual":
@@ -983,15 +1521,17 @@ func (b *Broker) doDeploy(ctx context.Context, id string, req DeployRequest, job
 	case "docker":
 		deployErr = b.deployDocker(ctx, id, req, job)
 	default:
-		deployErr = fmt.Errorf("deploy method %q is not supported — valid options are: steamcmd, manual, docker", req.Method)
+		deployErr = fmt.Errorf("deploy method %q is not supported — valid options are: steamcmd, manual, docker", method)
 	}
 
 	b.mu.Lock()
 	if s, ok := b.servers[id]; ok {
 		if deployErr != nil {
 			s.State = StateError
+			s.LastError = deployErr.Error()
 		} else {
 			s.State = StateStopped
+			s.LastError = ""
 		}
 	}
 	b.mu.Unlock()
@@ -999,6 +1539,7 @@ func (b *Broker) doDeploy(ctx context.Context, id string, req DeployRequest, job
 	if deployErr != nil {
 		b.updateJob(job.ID, "failed", 0, deployErr.Error())
 		b.logger.Error("Deployment failed", zap.String("id", id), zap.Error(deployErr))
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(deployErr.Error()), time.Now().Unix()))
 	}
 }
 
@@ -1294,23 +1835,14 @@ func (b *Broker) startDockerContainer(ctx context.Context, id string, s *Server)
 	image, err := b.resolveDockerImage(s)
 	if err != nil {
 		b.logger.Error("Cannot start docker container: no image", zap.String("id", id), zap.Error(err))
-		b.mu.Lock()
-		if sv, ok := b.servers[id]; ok {
-			sv.State = StateError
-		}
-		b.mu.Unlock()
-		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(err.Error()), time.Now().Unix()))
+		b.setServerError(id, fmt.Sprintf("No Docker image configured: %s. Set the docker_image field in Server Settings → Config.", err.Error()))
 		return
 	}
 
 	dockerPath, err := exec.LookPath("docker")
 	if err != nil {
 		b.logger.Error("docker not in PATH", zap.String("id", id), zap.Error(err))
-		b.mu.Lock()
-		if sv, ok := b.servers[id]; ok {
-			sv.State = StateError
-		}
-		b.mu.Unlock()
+		b.setServerError(id, "Docker is not installed or not found in PATH. Install Docker on this host to run containerised servers (https://docs.docker.com/engine/install/).")
 		return
 	}
 
@@ -1383,12 +1915,7 @@ func (b *Broker) startDockerContainer(ctx context.Context, id string, s *Server)
 		out, runErr := runCmd.Output()
 		if runErr != nil {
 			b.logger.Error("docker run failed", zap.String("id", id), zap.Error(runErr))
-			b.mu.Lock()
-			if sv, ok := b.servers[id]; ok {
-				sv.State = StateError
-			}
-			b.mu.Unlock()
-			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(runErr.Error()), time.Now().Unix()))
+			b.setServerError(id, fmt.Sprintf("Docker failed to start the container: %s. Check that the image is correct and Docker has enough permissions.", runErr.Error()))
 			return
 		}
 		containerID = strings.TrimSpace(string(out))
@@ -1400,6 +1927,7 @@ func (b *Broker) startDockerContainer(ctx context.Context, id string, s *Server)
 		sv.ContainerID = containerID
 		sv.State = StateRunning
 		sv.LastStarted = &now
+		sv.LastError = ""
 	}
 	b.mu.Unlock()
 
@@ -1555,6 +2083,10 @@ func (b *Broker) GetServerLogs(ctx context.Context, id, lines string) ([]string,
 	if n, err := strconv.Atoi(lines); err == nil && n > 0 {
 		maxLines = n
 	}
+	// P45: hard cap to prevent unbounded memory usage.
+	if maxLines > 10000 {
+		maxLines = 10000
+	}
 
 	// Candidate log file locations in preference order.
 	candidates := []string{}
@@ -1664,15 +2196,53 @@ func tailFile(path string, n int) ([]string, error) {
 	return out, nil
 }
 
-// GetConsoleStream returns a channel for live console output
-func (b *Broker) GetConsoleStream(ctx context.Context, id string) (<-chan string, error) {
+// consoleBroadcaster fans out console messages to all active WebSocket viewers.
+type consoleBroadcaster struct {
+	mu   sync.Mutex
+	subs map[chan string]struct{}
+}
+
+func newConsoleBroadcaster() *consoleBroadcaster {
+	return &consoleBroadcaster{subs: make(map[chan string]struct{})}
+}
+
+func (cb *consoleBroadcaster) subscribe() chan string {
+	ch := make(chan string, 256)
+	cb.mu.Lock()
+	cb.subs[ch] = struct{}{}
+	cb.mu.Unlock()
+	return ch
+}
+
+func (cb *consoleBroadcaster) unsubscribe(ch chan string) {
+	cb.mu.Lock()
+	delete(cb.subs, ch)
+	cb.mu.Unlock()
+}
+
+func (cb *consoleBroadcaster) broadcast(msg string) {
+	cb.mu.Lock()
+	for ch := range cb.subs {
+		select {
+		case ch <- msg:
+		default: // slow subscriber — drop rather than block
+		}
+	}
+	cb.mu.Unlock()
+}
+
+// GetConsoleStream subscribes to live console output for the given server.
+// The caller must call the returned unsubscribe func when done to avoid leaking
+// the subscriber channel (typically deferred in the WebSocket handler).
+func (b *Broker) GetConsoleStream(ctx context.Context, id string) (<-chan string, func(), error) {
 	b.mu.RLock()
-	ch, ok := b.consoleChs[id]
+	bc, ok := b.consoleChs[id]
 	b.mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("no console stream for %s", id)
+		return nil, nil, fmt.Errorf("no console stream for %s", id)
 	}
-	return ch, nil
+	sub := bc.subscribe()
+	return sub, func() { bc.unsubscribe(sub) }, nil
 }
 
 // SendConsoleCommand sends a command to a running server's console.
@@ -1748,35 +2318,73 @@ func (b *Broker) SendConsoleCommand(ctx context.Context, id, command string) (st
 	return response, nil
 }
 
-func (b *Broker) sendConsoleMessage(id, msg string) {
-	// Deliver to any active WebSocket stream.
-	b.mu.RLock()
-	ch, ok := b.consoleChs[id]
-	b.mu.RUnlock()
-	if ok {
-		select {
-		case ch <- msg:
-		default:
+// setServerError transitions a server to StateError and records a human-readable
+// explanation in LastError so the UI can display it on the server card.
+// It also emits the message to the console stream.
+func (b *Broker) setServerError(id, humanMsg string) {
+	var serverName string
+	var inGrace bool
+	b.mu.Lock()
+	if sv, ok := b.servers[id]; ok {
+		serverName = sv.Name
+		sv.State = StateError
+		sv.PID = 0
+		sv.LastError = humanMsg
+		// P48: suppress crash notifications during the startup grace window to
+		// avoid false alarms when the process exits before it finishes binding.
+		if sv.LastStarted != nil && time.Since(*sv.LastStarted) < startupGracePeriod {
+			inGrace = true
 		}
 	}
+	b.mu.Unlock()
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(humanMsg), time.Now().Unix()))
+	if !inGrace {
+		b.throttledNotify(id, "server.crash", serverName, humanMsg)
+	}
+}
 
-	// Persist all console output to a per-server log file so the Logs page can
-	// show it. stdout/stderr from Docker containers and native processes are
-	// written here; system/error/deploy events are always included.
+func (b *Broker) sendConsoleMessage(id, msg string) {
+	// Deliver to all active WebSocket viewers via fan-out broadcaster.
+	b.mu.RLock()
+	bc, ok := b.consoleChs[id]
+	b.mu.RUnlock()
+	if ok {
+		bc.broadcast(msg)
+	}
+
+	// Persist all console output via a rotating log writer.
 	if b.cfg != nil {
 		dataDir := b.cfg.Storage.DataDir
 		if dataDir == "" {
 			dataDir = "/opt/gdash/data"
 		}
-		logDir := filepath.Join(dataDir, "servers", id, "logs")
-		if mkErr := os.MkdirAll(logDir, 0o750); mkErr == nil {
-			logFile := filepath.Join(logDir, "gdash-events.log")
-			if f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640); err == nil {
-				fmt.Fprintln(f, msg)
-				f.Close()
-			}
-		}
+		logFile := filepath.Join(dataDir, "servers", id, "logs", "gdash-events.log")
+		b.getLogWriter(id, logFile).writeLine(msg)
 	}
+}
+
+// getLogWriter lazily creates and returns the rotating log writer for a server.
+func (b *Broker) getLogWriter(id, path string) *rotatingWriter {
+	b.logWriteMu.Lock()
+	defer b.logWriteMu.Unlock()
+	w, ok := b.logWriters[id]
+	if !ok {
+		maxMB := 100
+		maxBack := 5
+		compress := true
+		if b.cfg != nil && b.cfg.LogRotation.MaxSizeMB > 0 {
+			maxMB = b.cfg.LogRotation.MaxSizeMB
+		}
+		if b.cfg != nil && b.cfg.LogRotation.MaxBackups > 0 {
+			maxBack = b.cfg.LogRotation.MaxBackups
+		}
+		if b.cfg != nil {
+			compress = b.cfg.LogRotation.Compress
+		}
+		w = newRotatingWriter(path, maxMB, maxBack, compress)
+		b.logWriters[id] = w
+	}
+	return w
 }
 
 // Backup operations
@@ -1819,6 +2427,30 @@ func (b *Broker) TriggerBackup(ctx context.Context, serverID string, req BackupR
 }
 
 func (b *Broker) RestoreBackup(ctx context.Context, serverID, backupID string) (*Job, error) {
+	// Stop the server before restoring to avoid file corruption.
+	b.mu.RLock()
+	s, ok := b.servers[serverID]
+	b.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("server not found: %s", serverID)
+	}
+
+	if s.State == StateRunning || s.State == StateStarting {
+		if err := b.StopServer(ctx, serverID); err != nil {
+			return nil, fmt.Errorf("failed to stop server before restore: %w", err)
+		}
+		// Poll until stopped (mirrors RestartServer logic; max 15 s grace + 5 s buffer).
+		for i := 0; i < 40; i++ {
+			time.Sleep(500 * time.Millisecond)
+			b.mu.RLock()
+			state := b.servers[serverID].State
+			b.mu.RUnlock()
+			if state == StateStopped || state == StateError {
+				break
+			}
+		}
+	}
+
 	svcJob, err := b.backupSvc.Restore(ctx, serverID, backupID)
 	if err != nil {
 		return nil, err
@@ -1928,7 +2560,30 @@ func (b *Broker) ListMods(ctx context.Context, serverID string) ([]Mod, error) {
 	return s.ModManifest.Mods, nil
 }
 
+// allowedModSources is the set of accepted mod source identifiers.
+var allowedModSources = map[string]bool{
+	"steam": true, "curseforge": true, "git": true, "local": true,
+}
+
 func (b *Broker) InstallMod(ctx context.Context, serverID string, req InstallModRequest) (*Job, error) {
+	// Validate source before starting the job.
+	if !allowedModSources[req.Source] {
+		return nil, fmt.Errorf("unknown mod source %q: must be one of steam, curseforge, git, local", req.Source)
+	}
+	if req.SourceURL != "" && !strings.HasPrefix(req.SourceURL, "https://") {
+		return nil, fmt.Errorf("mod source_url must use HTTPS")
+	}
+	// P46: refuse to install mods while the server is running to avoid file corruption.
+	b.mu.RLock()
+	sv, svOK := b.servers[serverID]
+	b.mu.RUnlock()
+	if !svOK {
+		return nil, fmt.Errorf("server %q not found", serverID)
+	}
+	if sv.State == StateRunning || sv.State == StateStarting {
+		return nil, fmt.Errorf("stop the server before installing mods")
+	}
+
 	job := b.newJob("install-mod", serverID)
 	go func() {
 		b.updateJob(job.ID, "running", 50, fmt.Sprintf("Installing mod %s...", req.ModID))
@@ -1951,6 +2606,7 @@ func (b *Broker) InstallMod(ctx context.Context, serverID string, req InstallMod
 				s.ModManifest = &ModManifest{}
 			}
 			s.ModManifest.Mods = append(s.ModManifest.Mods, mod)
+			b.saveServersLocked()
 		}
 		b.mu.Unlock()
 
@@ -1973,6 +2629,7 @@ func (b *Broker) UninstallMod(ctx context.Context, serverID, modID string) error
 		}
 	}
 	s.ModManifest.Mods = mods
+	b.saveServersLocked()
 	return nil
 }
 
@@ -2026,7 +2683,9 @@ func (b *Broker) TriggerCVEScan(ctx context.Context) (*Job, error) {
 	job := b.newJob("cve-scan", "system")
 	go func() {
 		b.updateJob(job.ID, "running", 10, "Running CVE scan...")
-		if _, err := b.sbomSvc.TriggerScan(context.Background()); err != nil {
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer scanCancel()
+		if _, err := b.sbomSvc.TriggerScan(scanCtx); err != nil {
 			b.updateJob(job.ID, "failed", 0, err.Error())
 			return
 		}
@@ -2261,11 +2920,28 @@ func (b *Broker) serverInstallDir(serverID string) (string, error) {
 
 // safeConfigPath joins base and rel, rejecting paths that escape base.
 func safeConfigPath(base, rel string) (string, error) {
-	// Strip leading slash so callers can pass either "server.properties" or "/server.properties".
 	rel = strings.TrimPrefix(filepath.Clean(rel), "/")
 	abs := filepath.Join(base, rel)
 	if !strings.HasPrefix(abs, filepath.Clean(base)+string(os.PathSeparator)) {
 		return "", fmt.Errorf("invalid path: %q escapes the server directory", rel)
+	}
+	return abs, nil
+}
+
+// configFilePath resolves a manifest-relative path to an absolute filesystem
+// path under the server's install directory (used by file browser methods).
+func (b *Broker) configFilePath(installDir, relPath string) (string, error) {
+	if installDir == "" {
+		installDir = "/opt/gdash/data/servers"
+	}
+	rel := strings.TrimPrefix(relPath, "/")
+	abs := filepath.Clean(filepath.Join(installDir, rel))
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	prefix := filepath.Clean(installDir) + string(os.PathSeparator)
+	if abs != filepath.Clean(installDir) && !strings.HasPrefix(abs, prefix) {
+		return "", fmt.Errorf("path %q is outside the server install directory", relPath)
 	}
 	return abs, nil
 }
@@ -2278,4 +2954,119 @@ func configTemplatePath(p string) string {
 		return p[len("/data/"):]
 	}
 	return strings.TrimPrefix(p, "/")
+}
+
+// ResolveFilePath validates relPath against the server's install directory and
+// returns its absolute path.
+func (b *Broker) ResolveFilePath(ctx context.Context, id, relPath string) (string, error) {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("server %q not found", id)
+	}
+	abs, err := b.configFilePath(s.InstallDir, relPath)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("file not found: %w", err)
+	}
+	return abs, nil
+}
+
+// ── File browser ──────────────────────────────────────────────────────────────
+
+// FileEntry describes a single file or directory inside a server's install dir.
+type FileEntry struct {
+	Name     string    `json:"name"`
+	IsDir    bool      `json:"is_dir"`
+	Size     int64     `json:"size"`
+	Modified time.Time `json:"modified"`
+	Path     string    `json:"path"`
+}
+
+// ListFiles returns the directory entries at dirPath inside the server's
+// install directory.
+func (b *Broker) ListFiles(ctx context.Context, id, dirPath string) ([]FileEntry, error) {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("server %q not found", id)
+	}
+	abs, err := b.configFilePath(s.InstallDir, dirPath)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []FileEntry{}, nil
+		}
+		return nil, fmt.Errorf("cannot list directory: %w", err)
+	}
+	installDir := filepath.Clean(s.InstallDir)
+	result := make([]FileEntry, 0, len(entries))
+	for _, e := range entries {
+		info, iErr := e.Info()
+		if iErr != nil {
+			continue
+		}
+		full := filepath.Join(abs, e.Name())
+		rel, _ := filepath.Rel(installDir, full)
+		result = append(result, FileEntry{
+			Name:     e.Name(),
+			IsDir:    e.IsDir(),
+			Size:     info.Size(),
+			Modified: info.ModTime().UTC(),
+			Path:     "/" + rel,
+		})
+	}
+	return result, nil
+}
+
+// DeleteFile deletes a file or directory at relPath inside the server's install directory.
+func (b *Broker) DeleteFile(ctx context.Context, id, relPath string) error {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("server %q not found", id)
+	}
+	abs, err := b.configFilePath(s.InstallDir, relPath)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return fmt.Errorf("file not found: %w", err)
+	}
+	return os.RemoveAll(abs)
+}
+
+// UploadFile writes the contents of an uploaded file to destDir/filename inside
+// the server's install directory, creating destDir if needed.
+func (b *Broker) UploadFile(ctx context.Context, id, destDir, filename string, data []byte) error {
+	b.mu.RLock()
+	s, ok := b.servers[id]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("server %q not found", id)
+	}
+	dirAbs, err := b.configFilePath(s.InstallDir, destDir)
+	if err != nil {
+		return err
+	}
+	if strings.ContainsAny(filename, "/\\") {
+		return fmt.Errorf("filename must not contain path separators")
+	}
+	if err := os.MkdirAll(dirAbs, 0o755); err != nil {
+		return fmt.Errorf("cannot create destination directory: %w", err)
+	}
+	dest := filepath.Join(dirAbs, filename)
+	prefix := filepath.Clean(s.InstallDir) + string(os.PathSeparator)
+	if !strings.HasPrefix(filepath.Clean(dest), prefix) {
+		return fmt.Errorf("destination path is outside the server install directory")
+	}
+	return os.WriteFile(dest, data, 0o644)
 }

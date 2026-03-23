@@ -1,6 +1,6 @@
 import { Server, Swords, Factory, PawPrint, Leaf, Sprout, Sword, Zap, Users, Crosshair, Shield, Globe, Skull, Flame, Wrench, Bird, TreePine, Cpu, Brain, Boxes, Rocket, Map, Axe } from 'lucide-react';
 
-export const ADAPTER_ICONS: Record<string, React.FC<{ className?: string }>> = {
+export const ADAPTER_ICONS: Record<string, React.FC<{ className?: string; style?: React.CSSProperties }>> = {
   valheim:               Sword,
   minecraft:             Swords,
   satisfactory:          Factory,
