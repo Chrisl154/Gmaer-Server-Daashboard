@@ -15,14 +15,8 @@ cd /tmp
 
 # Auto-escalate to root if not already — the update needs write access to
 # /opt/gdash and permission to restart the systemd service.
-# ORIG_HOME preserves the invoking user's home so we can find Go/Node.
 if [[ $EUID -ne 0 ]]; then
-  exec sudo ORIG_HOME="$HOME" bash "$0" "$@"
-fi
-# At this point ORIG_HOME is either passed from the sudo line above,
-# or empty if we were already root. Fall back to the systemd service user.
-if [[ -z "${ORIG_HOME:-}" ]]; then
-  ORIG_HOME="$(getent passwd "$(stat -c '%U' /opt/gdash 2>/dev/null || echo root)" | cut -d: -f6)"
+  exec sudo bash "$0" "$@"
 fi
 
 BRANCH="${1:-main}"
@@ -38,6 +32,16 @@ UI_SRC="$REPO_DIR/ui"
 UI_DST="$INSTALL_DIR/ui"
 LOG="$INSTALL_DIR/logs/gdash-update.log"
 
+# Detect the install user from the owner of /opt/gdash (the systemd service
+# runs as this user). We need their home directory to find Go and Node/NVM
+# since those are installed per-user, not system-wide.
+INSTALL_USER="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || echo "")"
+if [[ -n "$INSTALL_USER" && "$INSTALL_USER" != "root" ]]; then
+  INSTALL_HOME="$(getent passwd "$INSTALL_USER" | cut -d: -f6)"
+else
+  INSTALL_HOME=""
+fi
+
 mkdir -p "$INSTALL_DIR/logs"
 exec >> "$LOG" 2>&1
 echo ""
@@ -48,28 +52,34 @@ echo "PROGRESS:2"
 GO_BIN=""
 for candidate in \
     "/usr/local/go/bin/go" \
+    "${INSTALL_HOME:+$INSTALL_HOME/.local/go/bin/go}" \
     "$HOME/.local/go/bin/go" \
-    "${ORIG_HOME:+$ORIG_HOME/.local/go/bin/go}" \
-    "/home/"*"/.local/go/bin/go" \
+    /home/*/.local/go/bin/go \
     "$(command -v go 2>/dev/null || true)"; do
   [[ -n "$candidate" && -x "$candidate" ]] && GO_BIN="$candidate" && break
 done
 if [[ -z "$GO_BIN" ]]; then
   echo "ERROR: go binary not found. Install Go 1.22+ and retry." >&2
+  echo "Searched: /usr/local/go/bin/go, ${INSTALL_HOME:-?}/.local/go/bin/go, /home/*/.local/go/bin/go" >&2
   exit 1
 fi
 echo "Using Go: $GO_BIN ($($GO_BIN version))"
 
 # ── Find Node / npm ──────────────────────────────────────────────────────────
-# Check both root's and the original user's NVM install.
-export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-[[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
-if ! command -v node &>/dev/null && [[ -n "$ORIG_HOME" && -s "$ORIG_HOME/.nvm/nvm.sh" ]]; then
-  export NVM_DIR="$ORIG_HOME/.nvm"
-  source "$NVM_DIR/nvm.sh"
-fi
+# Try the install user's NVM first, then root's, then any user's.
+for nvm_candidate in \
+    "${INSTALL_HOME:+$INSTALL_HOME/.nvm/nvm.sh}" \
+    "$HOME/.nvm/nvm.sh" \
+    /home/*/.nvm/nvm.sh; do
+  if [[ -n "$nvm_candidate" && -s "$nvm_candidate" ]]; then
+    export NVM_DIR="$(dirname "$nvm_candidate")"
+    source "$nvm_candidate"
+    command -v node &>/dev/null && break
+  fi
+done
 if ! command -v node &>/dev/null; then
   echo "ERROR: node not found. Install Node 20 LTS and retry." >&2
+  echo "Searched NVM in: ${INSTALL_HOME:-?}/.nvm, $HOME/.nvm, /home/*/.nvm" >&2
   exit 1
 fi
 echo "Using Node: $(node --version)"
