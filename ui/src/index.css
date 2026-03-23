@@ -152,8 +152,9 @@ body {
 .status-starting  { background: rgba(249,115,22,0.12); color: #fb923c; }
 .status-stopping  { background: rgba(239,68,68,0.12);  color: #f87171; }
 .status-error     { background: rgba(239,68,68,0.15);  color: #f87171; }
-.status-deploying { background: rgba(59,130,246,0.12); color: #60a5fa; }
-.status-idle      { background: rgba(148,163,184,0.1); color: #94a3b8; }
+.status-deploying { background: rgba(59,130,246,0.12);  color: #60a5fa; }
+.status-updating  { background: rgba(6,182,212,0.12);   color: #22d3ee; }
+.status-idle      { background: rgba(148,163,184,0.1);  color: #94a3b8; }
 
 /* ── Page entry animation ──────────────────────────────────────────────────── */
 .animate-page { animation: pageIn 0.28s ease-out both; }

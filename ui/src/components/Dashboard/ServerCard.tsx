@@ -28,6 +28,7 @@ const STATE_CLASS: Record<string, string> = {
   starting:  'status-starting',
   stopping:  'status-stopping',
   deploying: 'status-deploying',
+  updating:  'status-updating',
   error:     'status-error',
   idle:      'status-idle',
 };
@@ -38,6 +39,7 @@ const STATE_LABELS: Record<string, string> = {
   starting:  'Starting',
   stopping:  'Stopping',
   deploying: 'Deploying',
+  updating:  'Updating',
   error:     'Error',
   idle:      'Idle',
 };
@@ -111,7 +113,7 @@ export function ServerCard({ server }: { server: Server }) {
   });
 
   const isRunning = server.state === 'running';
-  const isBusy = ['starting', 'stopping', 'deploying'].includes(server.state);
+  const isBusy = ['starting', 'stopping', 'deploying', 'updating'].includes(server.state);
   const AdapterIcon = ADAPTER_ICONS[server.adapter] ?? ADAPTER_ICONS.default;
   const adapterColor = ADAPTER_COLORS[server.adapter] ?? '#6b7280';
   const adapterName = ADAPTER_NAMES[server.adapter] ?? server.adapter;

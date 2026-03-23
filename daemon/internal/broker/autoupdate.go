@@ -69,6 +69,13 @@ func (b *Broker) doUpdate(ctx context.Context, id string, job *Job) {
 		b.updateJob(job.ID, "failed", 0, "failed to start deploy: "+err.Error())
 		return
 	}
+	// Override DeployServer's StateDeploying with StateUpdating so the UI
+	// can distinguish a first-time install from a game-files update.
+	b.mu.Lock()
+	if sv, ok := b.servers[id]; ok {
+		sv.State = StateUpdating
+	}
+	b.mu.Unlock()
 
 	// Poll until deploy finishes (max 10 min).
 	for i := 0; i < 600; i++ {

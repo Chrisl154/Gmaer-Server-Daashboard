@@ -1715,6 +1715,7 @@ interface CheckResult {
   commits_behind: number;
   update_available: boolean;
   latest_message: string;
+  available_version?: string;
   error?: string;
 }
 
@@ -1962,27 +1963,39 @@ function UpdatesSection() {
             </div>
             {/* Show check result if available */}
             {checkResult && (
-              <div className="flex justify-between items-center">
-                <span style={{ color: 'var(--text-secondary)' }}>Status</span>
-                {checkResult.update_available ? (
-                  <span className="text-yellow-400 flex items-center gap-1">
-                    <AlertCircle className="w-3.5 h-3.5" />
-                    {checkResult.commits_behind} commit{checkResult.commits_behind !== 1 ? 's' : ''} behind
-                  </span>
-                ) : (
-                  <span className="text-green-400 flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> Up to date
-                  </span>
+              <>
+                <div className="flex justify-between items-center">
+                  <span style={{ color: 'var(--text-secondary)' }}>Status</span>
+                  {checkResult.update_available ? (
+                    <span className="text-yellow-400 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5" />
+                      {checkResult.commits_behind} commit{checkResult.commits_behind !== 1 ? 's' : ''} behind
+                    </span>
+                  ) : (
+                    <span className="text-green-400 flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Up to date
+                    </span>
+                  )}
+                </div>
+                {checkResult.update_available && checkResult.available_version && (
+                  <div className="flex justify-between items-center">
+                    <span style={{ color: 'var(--text-secondary)' }}>Version</span>
+                    <span className="text-xs font-mono flex items-center gap-1" style={{ color: 'var(--text-primary)' }}>
+                      <span className="opacity-60">{status?.version ?? '—'}</span>
+                      <span className="opacity-40">→</span>
+                      <span className="text-yellow-300">{checkResult.available_version}</span>
+                    </span>
+                  </div>
                 )}
-              </div>
-            )}
-            {checkResult?.update_available && checkResult.latest_message && (
-              <div className="pt-1 flex justify-between">
-                <span style={{ color: 'var(--text-secondary)' }}>Latest</span>
-                <span className="text-xs max-w-[60%] text-right" style={{ color: 'var(--text-primary)' }}>
-                  {checkResult.latest_message}
-                </span>
-              </div>
+                {checkResult.update_available && checkResult.latest_message && (
+                  <div className="flex justify-between">
+                    <span style={{ color: 'var(--text-secondary)' }}>Latest</span>
+                    <span className="text-xs max-w-[60%] text-right" style={{ color: 'var(--text-primary)' }}>
+                      {checkResult.latest_message}
+                    </span>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

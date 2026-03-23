@@ -52,6 +52,7 @@ const (
 	StateStopping  ServerState = "stopping"
 	StateStopped   ServerState = "stopped"
 	StateDeploying ServerState = "deploying"
+	StateUpdating  ServerState = "updating"
 	StateError     ServerState = "error"
 )
 
@@ -1119,6 +1120,9 @@ func (b *Broker) StartServer(ctx context.Context, id string) error {
 	case StateDeploying:
 		b.mu.Unlock()
 		return fmt.Errorf("server is deploying; wait for deployment to finish")
+	case StateUpdating:
+		b.mu.Unlock()
+		return fmt.Errorf("server is updating; wait for the update to finish")
 	}
 	// Cancel any previous doStart goroutine for this server (e.g. from a failed start).
 	if cancel, ok := b.serverCancels[id]; ok {

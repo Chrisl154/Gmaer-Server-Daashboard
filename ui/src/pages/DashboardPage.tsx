@@ -471,12 +471,13 @@ const STATE_COLOR: Record<string, string> = {
   starting:  '#f59e0b',
   stopping:  '#f59e0b',
   deploying: '#3b82f6',
+  updating:  '#06b6d4',
   error:     '#ef4444',
   idle:      '#6b7280',
 };
 const STATE_LABEL: Record<string, string> = {
   running: 'Running', stopped: 'Stopped', starting: 'Starting',
-  stopping: 'Stopping', deploying: 'Deploying', error: 'Error', idle: 'Idle',
+  stopping: 'Stopping', deploying: 'Deploying', updating: 'Updating', error: 'Error', idle: 'Idle',
 };
 
 function ResourceTable({ servers, isLoading }: { servers: any[]; isLoading: boolean }) {

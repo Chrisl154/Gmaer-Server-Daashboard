@@ -160,11 +160,20 @@ func (s *Server) checkForUpdates(c *gin.Context) {
 		"origin/"+req.Branch, "-1", "--pretty=format:%s").Output()
 	latestMsg := strings.TrimSpace(string(latestOut))
 
+	// Read the VERSION from the remote branch so we can show a before/after diff.
+	remoteVersionOut, _ := exec.Command("git", "-C", repoDir, "show", //nolint:gosec
+		"origin/"+req.Branch+":VERSION").Output()
+	remoteVersion := strings.TrimSpace(string(remoteVersionOut))
+	if remoteVersion == "" {
+		remoteVersion = readVersionFile() // fallback: same as local
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"target_branch":    req.Branch,
 		"commits_behind":   commitsBehind,
 		"update_available": commitsBehind > 0,
 		"latest_message":   latestMsg,
+		"available_version": remoteVersion,
 	})
 }
 

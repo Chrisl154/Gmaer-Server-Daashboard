@@ -26,6 +26,7 @@ const STATE_CLASS: Record<string, string> = {
   stopping:  'status-stopping',
   error:     'status-error',
   deploying: 'status-deploying',
+  updating:  'status-updating',
   idle:      'status-idle',
 };
 
@@ -82,7 +83,7 @@ export function ServerDetailPage() {
   }
 
   const isRunning = server.state === 'running';
-  const isBusy = ['starting', 'stopping', 'deploying'].includes(server.state);
+  const isBusy = ['starting', 'stopping', 'deploying', 'updating'].includes(server.state);
 
   const TABS: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview'  },
@@ -158,7 +159,7 @@ export function ServerDetailPage() {
                 style={{ borderColor: 'var(--primary-border)' }}
               >
                 <Download className="w-4 h-4" />
-                {server.state === 'deploying' ? 'Deploying…' : 'Deploy'}
+                {server.state === 'deploying' ? 'Deploying…' : server.state === 'updating' ? 'Updating…' : 'Deploy'}
               </button>
               <button
                 onClick={() => startMutation.mutate()}

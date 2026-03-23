@@ -23,7 +23,8 @@ const STATUS_DOT: Record<string, string> = {
   stopped:   '#6b7280',
   starting:  '#f97316',
   stopping:  '#f97316',
-  deploying: '#f97316',
+  deploying: '#3b82f6',
+  updating:  '#06b6d4',
   error:     '#ef4444',
   idle:      '#6b7280',
 };
@@ -34,6 +35,7 @@ const STATUS_LABELS: Record<string, string> = {
   starting:  'Starting',
   stopping:  'Stopping',
   deploying: 'Deploying',
+  updating:  'Updating',
   error:     'Error',
   idle:      'Idle',
 };
@@ -134,7 +136,7 @@ function ActionOverlay({ serverId, serverName, state, onDeleteRequest, onNavigat
 
   const isRunning = state === 'running';
   const needsDeploy = state === 'idle';
-  const isBusy    = ['starting', 'stopping', 'deploying'].includes(state);
+  const isBusy    = ['starting', 'stopping', 'deploying', 'updating'].includes(state);
 
   const iconBtn =
     'flex items-center justify-center w-9 h-9 rounded-full bg-white/15 hover:bg-white/30 backdrop-blur-sm transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed text-white';

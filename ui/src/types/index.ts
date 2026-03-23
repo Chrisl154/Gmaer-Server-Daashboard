@@ -7,6 +7,7 @@ export type ServerState =
   | 'starting'
   | 'stopping'
   | 'deploying'
+  | 'updating'
   | 'error';
 
 export interface PortMapping {
