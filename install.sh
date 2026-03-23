@@ -12,6 +12,10 @@
 # Worker-node mode (no UI, no nginx, no admin account):
 #   bash install.sh --mode=node
 #
+# Install from dev branch:
+#   bash install.sh --branch=dev
+#   (auto-detected when piped from the dev raw URL)
+#
 # Non-interactive (CI/scripted):
 #   GDASH_NONINTERACTIVE=1 bash install.sh
 #
@@ -23,12 +27,25 @@ set -euo pipefail
 # ── Mode flag ─────────────────────────────────────────────────────────────────
 # --mode=node  → worker-only install (daemon + Docker + SteamCMD, no UI/nginx)
 INSTALL_MODE="full"
+INSTALL_BRANCH="main"
 for _arg in "$@"; do
   case "$_arg" in
-    --mode=node) INSTALL_MODE="node" ;;
-    --mode=full) INSTALL_MODE="full" ;;
+    --mode=node)      INSTALL_MODE="node" ;;
+    --mode=full)      INSTALL_MODE="full" ;;
+    --branch=*)       INSTALL_BRANCH="${_arg#--branch=}" ;;
   esac
 done
+# Auto-detect branch when piped from GitHub raw URL (e.g. .../dev/install.sh)
+if [[ "$INSTALL_BRANCH" == "main" ]] && [[ "${BASH_SOURCE[0]:-}" == "" || "${BASH_SOURCE[0]:-}" == "bash" ]]; then
+  # Script is being piped — check /proc/self/fd/0 or parent cmdline for "dev"
+  _parent_cmd="$(ps -o args= -p $PPID 2>/dev/null || true)"
+  if [[ "$_parent_cmd" == *"/dev/install.sh"* ]]; then
+    INSTALL_BRANCH="dev"
+  fi
+fi
+if [[ "$INSTALL_BRANCH" != "main" && "$INSTALL_BRANCH" != "dev" ]]; then
+  INSTALL_BRANCH="main"
+fi
 
 # ── Tool versions ─────────────────────────────────────────────────────────────
 GO_VERSION="1.22.4"
@@ -698,13 +715,15 @@ $SUDO chown "$USER":"$USER" "$INSTALL_DIR" "$INSTALL_DIR/logs"
 
 REPO_DIR="$INSTALL_DIR/repo"
 if [[ -d "$REPO_DIR/.git" ]]; then
-  log "Repository exists — pulling latest..."
-  git -C "$REPO_DIR" pull --ff-only 2>&1 | tail -1
+  log "Repository exists — updating (branch: $INSTALL_BRANCH)..."
+  git -C "$REPO_DIR" fetch origin --quiet
+  git -C "$REPO_DIR" checkout "$INSTALL_BRANCH" 2>/dev/null || git -C "$REPO_DIR" checkout -b "$INSTALL_BRANCH" "origin/$INSTALL_BRANCH"
+  git -C "$REPO_DIR" reset --hard "origin/$INSTALL_BRANCH"
 else
-  log "Cloning repository..."
-  git clone --depth=1 "$REPO_URL" "$REPO_DIR"
+  log "Cloning repository (branch: $INSTALL_BRANCH)..."
+  git clone --depth=1 -b "$INSTALL_BRANCH" "$REPO_URL" "$REPO_DIR"
 fi
-ok "Repository at $REPO_DIR"
+ok "Repository at $REPO_DIR (branch: $INSTALL_BRANCH)"
 
 # =============================================================================
 section "Step 2: Apply Patches"
