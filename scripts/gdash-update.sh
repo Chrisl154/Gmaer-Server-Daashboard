@@ -13,14 +13,16 @@ set -euo pipefail
 # removed the cwd, causing getcwd() failures in every child process.
 cd /tmp
 
-# Remember the invoking user's home before escalating — root won't have
-# Go/Node in its own $HOME, they live under the install user's home.
-ORIG_HOME="${HOME}"
-
 # Auto-escalate to root if not already — the update needs write access to
 # /opt/gdash and permission to restart the systemd service.
+# ORIG_HOME preserves the invoking user's home so we can find Go/Node.
 if [[ $EUID -ne 0 ]]; then
   exec sudo ORIG_HOME="$HOME" bash "$0" "$@"
+fi
+# At this point ORIG_HOME is either passed from the sudo line above,
+# or empty if we were already root. Fall back to the systemd service user.
+if [[ -z "${ORIG_HOME:-}" ]]; then
+  ORIG_HOME="$(getent passwd "$(stat -c '%U' /opt/gdash 2>/dev/null || echo root)" | cut -d: -f6)"
 fi
 
 BRANCH="${1:-main}"
