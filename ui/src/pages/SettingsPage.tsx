@@ -1718,6 +1718,101 @@ function progressStage(p: number): string {
   return 'Complete!';
 }
 
+// Split raw log lines into individual update sessions keyed by their timestamp header.
+function parseLogSessions(lines: string[]): { label: string; lines: string[] }[] {
+  const sessions: { label: string; lines: string[] }[] = [];
+  const headerRe = /^=== (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) === gdash self-update to branch: (\w+) ===$/;
+  for (const line of lines) {
+    const m = line.match(headerRe);
+    if (m) {
+      sessions.push({ label: `${m[1]}  (${m[2]})`, lines: [] });
+    } else if (sessions.length > 0) {
+      sessions[sessions.length - 1].lines.push(line);
+    }
+  }
+  return sessions;
+}
+
+function UpdateLogViewer({ showLog, setShowLog, logData, refetchLog }: {
+  showLog: boolean;
+  setShowLog: (v: boolean | ((p: boolean) => boolean)) => void;
+  logData: { lines: string[]; note?: string } | undefined;
+  refetchLog: () => void;
+}) {
+  const sessions = React.useMemo(
+    () => parseLogSessions(logData?.lines ?? []),
+    [logData?.lines],
+  );
+  const [selectedIdx, setSelectedIdx] = useState(-1);
+
+  // Auto-select the latest session whenever sessions change
+  useEffect(() => {
+    if (sessions.length > 0) setSelectedIdx(sessions.length - 1);
+  }, [sessions.length]);
+
+  const active = selectedIdx >= 0 && selectedIdx < sessions.length ? sessions[selectedIdx] : null;
+
+  return (
+    <div className="card overflow-hidden">
+      <button
+        className="w-full flex items-center justify-between px-5 py-3.5 text-sm"
+        style={{ borderBottom: showLog ? '1px solid var(--border)' : undefined }}
+        onClick={() => {
+          setShowLog((v: boolean) => !v);
+          if (!showLog) refetchLog();
+        }}
+      >
+        <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Update Log {sessions.length > 0 && <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({sessions.length} session{sessions.length !== 1 ? 's' : ''})</span>}
+        </span>
+        <span style={{ color: 'var(--text-muted)' }}>{showLog ? '▲ Hide' : '▼ Show'}</span>
+      </button>
+      {showLog && (
+        <div className="p-4 space-y-3">
+          {logData?.note ? (
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{logData.note}</p>
+          ) : sessions.length === 0 ? (
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No update sessions found in the log.</p>
+          ) : (
+            <>
+              {/* Session picker */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Session:</span>
+                <select
+                  value={selectedIdx}
+                  onChange={e => setSelectedIdx(Number(e.target.value))}
+                  className="input text-xs py-1 px-2"
+                  style={{ maxWidth: 280 }}
+                >
+                  {sessions.map((s, i) => (
+                    <option key={i} value={i}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
+              {/* Log output for selected session */}
+              {active && (
+                <pre
+                  className="text-xs font-mono whitespace-pre-wrap overflow-auto max-h-80 leading-relaxed rounded-lg p-3"
+                  style={{ color: 'var(--text-secondary)', background: 'var(--bg-elevated)' }}
+                >
+                  {active.lines.filter(l => l.trim()).join('\n') || '(empty)'}
+                </pre>
+              )}
+            </>
+          )}
+          <button
+            onClick={() => refetchLog()}
+            className="text-xs px-3 py-1.5 rounded border"
+            style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+          >
+            Refresh
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UpdatesSection() {
   const qc = useQueryClient();
   const [branch, setBranch] = useState<'main' | 'dev'>('main');
@@ -2036,41 +2131,8 @@ function UpdatesSection() {
         </div>
       )}
 
-      {/* Update log viewer */}
-      <div className="card overflow-hidden">
-        <button
-          className="w-full flex items-center justify-between px-5 py-3.5 text-sm"
-          style={{ borderBottom: showLog ? '1px solid var(--border)' : undefined }}
-          onClick={() => {
-            setShowLog(v => !v);
-            if (!showLog) refetchLog();
-          }}
-        >
-          <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>Update Log</span>
-          <span style={{ color: 'var(--text-muted)' }}>{showLog ? '▲ Hide' : '▼ Show'}</span>
-        </button>
-        {showLog && (
-          <div className="p-4">
-            {logData?.note ? (
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{logData.note}</p>
-            ) : (
-              <pre
-                className="text-xs font-mono whitespace-pre-wrap overflow-auto max-h-80 leading-relaxed"
-                style={{ color: 'var(--text-secondary)' }}
-              >
-                {(logData?.lines ?? []).join('\n') || '(empty)'}
-              </pre>
-            )}
-            <button
-              onClick={() => refetchLog()}
-              className="mt-3 text-xs px-3 py-1.5 rounded border"
-              style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}
-            >
-              Refresh
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Update log viewer — split by session */}
+      <UpdateLogViewer showLog={showLog} setShowLog={setShowLog} logData={logData} refetchLog={refetchLog} />
     </div>
   );
 }
