@@ -1,7 +1,7 @@
 // ServersPage.tsx
 import React, { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { Plus, Search, Server, X, Play, Square, RotateCcw, Trash2, ChevronLeft, ExternalLink } from 'lucide-react';
+import { useQueryClient, useMutation } from '@tanstack/react-query';
+import { Plus, Search, Server, X, Play, Square, RotateCcw, Trash2, ChevronLeft, ExternalLink, Download } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
@@ -122,11 +122,18 @@ interface ActionOverlayProps {
 }
 
 function ActionOverlay({ serverId, serverName, state, onDeleteRequest, onNavigate }: ActionOverlayProps) {
+  const qc       = useQueryClient();
   const startM   = useStartServer(serverId);
   const stopM    = useStopServer(serverId);
   const restartM = useRestartServer(serverId);
+  const deployM  = useMutation({
+    mutationFn: () => api.post(`/api/v1/servers/${serverId}/deploy`),
+    onSuccess: () => { toast.success('Deploy started — downloading game files…'); qc.invalidateQueries({ queryKey: ['servers'] }); },
+    onError: (e: any) => toast.error(e?.response?.data?.error ?? 'Deploy failed'),
+  });
 
   const isRunning = state === 'running';
+  const needsDeploy = state === 'idle';
   const isBusy    = ['starting', 'stopping', 'deploying'].includes(state);
 
   const iconBtn =
@@ -158,6 +165,16 @@ function ActionOverlay({ serverId, serverName, state, onDeleteRequest, onNavigat
 
       {/* Center action buttons */}
       <div className="flex items-center gap-2">
+        {needsDeploy && (
+          <button
+            className={iconBtn}
+            title={`Deploy ${serverName}`}
+            disabled={isBusy || deployM.isPending}
+            onClick={() => deployM.mutate()}
+          >
+            <Download className="w-4 h-4" />
+          </button>
+        )}
         {!isRunning && (
           <button
             className={iconBtn}
