@@ -304,6 +304,15 @@ export interface DaemonSettingsTailscale {
   has_auth_key: boolean;
 }
 
+export interface DaemonSettingsTLS {
+  cert_file: string;
+  key_file: string;
+  auto_tls: boolean;
+  acme_domain: string;
+  acme_email: string;
+  acme_staging: boolean;
+}
+
 export interface DaemonSettings {
   bind_addr: string;
   shutdown_timeout_s: number;
@@ -329,6 +338,7 @@ export interface DaemonSettings {
     node_timeout_s: number;
   };
   tailscale: DaemonSettingsTailscale;
+  tls: DaemonSettingsTLS;
 }
 
 export interface SettingsPatch {
@@ -351,6 +361,12 @@ export interface SettingsPatch {
     auth_key?: string;
     hostname?: string;
     dual?: boolean;
+  };
+  tls?: {
+    auto_tls?: boolean;
+    acme_domain?: string;
+    acme_email?: string;
+    acme_staging?: boolean;
   };
 }
 

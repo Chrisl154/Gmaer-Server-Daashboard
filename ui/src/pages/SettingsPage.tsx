@@ -887,18 +887,94 @@ function EditUserModal({ user, servers, onClose, onSaved }: {
 // ── TLS section ──────────────────────────────────────────────────────────────
 
 function TLSSection() {
+  const queryClient = useQueryClient();
+  const { data: settings, isLoading } = useSettings();
+
+  const [autoTLS, setAutoTLS] = useState(false);
+  const [domain, setDomain] = useState('');
+  const [email, setEmail] = useState('');
+  const [staging, setStaging] = useState(false);
+  const [initialized, setInitialized] = useState(false);
+
+  useEffect(() => {
+    if (settings?.tls && !initialized) {
+      setAutoTLS(settings.tls.auto_tls);
+      setDomain(settings.tls.acme_domain || '');
+      setEmail(settings.tls.acme_email || '');
+      setStaging(settings.tls.acme_staging);
+      setInitialized(true);
+    }
+  }, [settings, initialized]);
+
+  const tlsMutation = useMutation({
+    mutationFn: (patch: { tls: { auto_tls?: boolean; acme_domain?: string; acme_email?: string; acme_staging?: boolean } }) =>
+      api.patch('/api/v1/admin/settings', patch),
+    onSuccess: () => {
+      toast.success('TLS settings saved — restart the daemon to apply.');
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.error ?? 'Failed to save TLS settings'),
+  });
+
+  const handleSave = () => {
+    tlsMutation.mutate({
+      tls: {
+        auto_tls: autoTLS,
+        acme_domain: domain || undefined,
+        acme_email: email || undefined,
+        acme_staging: staging,
+      },
+    });
+  };
+
+  if (isLoading) return <SectionSkeleton />;
+
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>TLS Certificates</h2>
-        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Transport Layer Security configuration</p>
+        <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>TLS & Domain</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Certificate management, domain name, and Let's Encrypt</p>
       </div>
+
+      {/* External Access Info */}
       <div className="card p-5 space-y-3">
-        <h3 className="label">Certificate Paths</h3>
+        <h3 className="label">External Access</h3>
+        <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+          How users reach your dashboard from outside the local network.
+        </p>
         {[
-          { label: 'Certificate Path', value: '/etc/games-dashboard/tls/server.crt', mono: true },
-          { label: 'Key Path',         value: '/etc/games-dashboard/tls/server.key', mono: true },
-          { label: 'Auto TLS',         value: 'Disabled', mono: false },
+          {
+            label: 'Public URL',
+            value: settings?.tls?.acme_domain
+              ? `https://${settings.tls.acme_domain}`
+              : `https://<your-server-ip>`,
+            mono: true,
+            highlight: !!settings?.tls?.acme_domain,
+          },
+          ...(settings?.tailscale?.enabled ? [{
+            label: 'Tailscale URL',
+            value: `https://${settings.tailscale.hostname || 'gmaer-dashboard'}.your-tailnet.ts.net`,
+            mono: true,
+            highlight: true,
+          }] : []),
+          { label: 'Bind Address', value: settings?.bind_addr ?? '—', mono: true, highlight: false },
+        ].map(({ label, value, mono, highlight }) => (
+          <div key={label} className="flex items-center justify-between rounded-lg px-3 py-2.5"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+            <span className={cn('text-sm', mono && 'font-mono text-xs')}
+              style={{ color: highlight ? 'var(--primary)' : 'var(--text-primary)' }}>{value}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Current Certificate */}
+      <div className="card p-5 space-y-3">
+        <h3 className="label">Current Certificate</h3>
+        {[
+          { label: 'Certificate', value: settings?.tls?.cert_file ?? '—', mono: true },
+          { label: 'Private Key', value: settings?.tls?.key_file ?? '—', mono: true },
+          { label: 'Type', value: settings?.tls?.auto_tls ? "Let's Encrypt (auto-renewed)" : 'Self-signed', mono: false },
         ].map(({ label, value, mono }) => (
           <div key={label} className="flex items-center justify-between rounded-lg px-3 py-2.5"
             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
@@ -907,14 +983,111 @@ function TLSSection() {
           </div>
         ))}
       </div>
-      <div className="card p-4 flex items-start gap-3">
-        <Key className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
-        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-          To update TLS certificates, replace the cert and key files then run{' '}
-          <code className="font-mono text-xs px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
-            games-daemon --tls-cert /path/cert --tls-key /path/key
-          </code>.
-        </p>
+
+      {/* Let's Encrypt / Domain */}
+      <div className="card p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="label">Let's Encrypt (Auto-TLS)</h3>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              Automatically issue and renew a trusted TLS certificate for your domain
+            </p>
+          </div>
+          <button
+            onClick={() => setAutoTLS(!autoTLS)}
+            className={cn('relative inline-flex h-5 w-9 rounded-full transition-colors',
+              autoTLS ? 'bg-[var(--primary)]' : 'bg-[var(--border)]')}
+          >
+            <span className={cn('inline-block h-4 w-4 mt-0.5 rounded-full bg-white shadow transition-transform',
+              autoTLS ? 'translate-x-4' : 'translate-x-0.5')} />
+          </button>
+        </div>
+
+        {/* Domain field — always visible since it's useful even without auto-TLS */}
+        <div>
+          <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+            Domain Name (FQDN)
+          </label>
+          <input
+            type="text"
+            value={domain}
+            onChange={e => setDomain(e.target.value)}
+            placeholder="dashboard.example.com"
+            className="input w-full text-xs font-mono"
+          />
+          <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+            {autoTLS
+              ? "The domain your DNS A/AAAA record points to this server. Port 80 must be reachable for the ACME challenge."
+              : "Set your external domain name. Enable Auto-TLS above to get a free trusted certificate from Let's Encrypt."}
+          </p>
+        </div>
+
+        {autoTLS && (
+          <div className="space-y-3 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+            {/* Email */}
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                Contact Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="admin@example.com"
+                className="input w-full text-xs"
+              />
+              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                Let's Encrypt sends expiry warnings to this address. Required.
+              </p>
+            </div>
+
+            {/* Staging toggle */}
+            <div className="flex items-center justify-between rounded-lg px-3 py-2.5"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+              <div>
+                <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Use staging CA</span>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Test with Let's Encrypt staging (untrusted cert, no rate limits)
+                </p>
+              </div>
+              <button
+                onClick={() => setStaging(!staging)}
+                className={cn('relative inline-flex h-5 w-9 rounded-full transition-colors shrink-0',
+                  staging ? 'bg-yellow-500' : 'bg-[var(--border)]')}
+              >
+                <span className={cn('inline-block h-4 w-4 mt-0.5 rounded-full bg-white shadow transition-transform',
+                  staging ? 'translate-x-4' : 'translate-x-0.5')} />
+              </button>
+            </div>
+
+            {/* Requirements info */}
+            <div className="rounded-lg p-3 flex items-start gap-2"
+              style={{ background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.15)' }}>
+              <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+              <div className="text-xs space-y-1" style={{ color: 'var(--text-secondary)' }}>
+                <p><strong>Requirements for Let's Encrypt:</strong></p>
+                <p>1. A domain name with a DNS A record pointing to this server's public IP</p>
+                <p>2. Port 80 open and reachable from the internet (for HTTP-01 challenge)</p>
+                <p>3. Port 443 open for HTTPS traffic</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Save button */}
+        <div className="flex items-center justify-between pt-2">
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Changes require a daemon restart to take effect.
+          </p>
+          <button
+            onClick={handleSave}
+            disabled={tlsMutation.isPending}
+            className="btn-primary text-sm flex items-center gap-1.5"
+          >
+            {tlsMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            {tlsMutation.isPending ? 'Saving...' : 'Save'}
+          </button>
+        </div>
       </div>
     </div>
   );

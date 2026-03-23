@@ -1115,6 +1115,16 @@ type settingsResponse struct {
 	Metrics           settingsMetrics      `json:"metrics"`
 	Cluster           settingsCluster      `json:"cluster"`
 	Tailscale         settingsTailscale    `json:"tailscale"`
+	TLS               settingsTLS          `json:"tls"`
+}
+
+type settingsTLS struct {
+	CertFile    string `json:"cert_file"`
+	KeyFile     string `json:"key_file"`
+	AutoTLS     bool   `json:"auto_tls"`
+	ACMEDomain  string `json:"acme_domain"`
+	ACMEEmail   string `json:"acme_email"`
+	ACMEStaging bool   `json:"acme_staging"`
 }
 
 type settingsTailscale struct {
@@ -1170,6 +1180,14 @@ type settingsPatchRequest struct {
 	Metrics   *settingsMetrics       `json:"metrics,omitempty"`
 	Cluster   *settingsClusterPatch  `json:"cluster,omitempty"`
 	Tailscale *settingsTailscalePatch `json:"tailscale,omitempty"`
+	TLS       *settingsTLSPatch      `json:"tls,omitempty"`
+}
+
+type settingsTLSPatch struct {
+	AutoTLS     *bool   `json:"auto_tls,omitempty"`
+	ACMEDomain  *string `json:"acme_domain,omitempty"`
+	ACMEEmail   *string `json:"acme_email,omitempty"`
+	ACMEStaging *bool   `json:"acme_staging,omitempty"`
 }
 
 type settingsTailscalePatch struct {
@@ -1218,6 +1236,14 @@ func (s *Server) getSettings(c *gin.Context) {
 			Hostname:   cfg.Tailscale.Hostname,
 			Dual:       cfg.Tailscale.Dual,
 			HasAuthKey: cfg.Tailscale.AuthKey != "",
+		},
+		TLS: settingsTLS{
+			CertFile:    cfg.TLS.CertFile,
+			KeyFile:     cfg.TLS.KeyFile,
+			AutoTLS:     cfg.TLS.AutoTLS,
+			ACMEDomain:  cfg.TLS.ACMEDomain,
+			ACMEEmail:   cfg.TLS.ACMEEmail,
+			ACMEStaging: cfg.TLS.ACMEStaging,
 		},
 	}
 
@@ -1301,6 +1327,20 @@ func (s *Server) patchSettings(c *gin.Context) {
 		}
 		if req.Tailscale.Dual != nil {
 			cfg.Tailscale.Dual = *req.Tailscale.Dual
+		}
+	}
+	if req.TLS != nil {
+		if req.TLS.AutoTLS != nil {
+			cfg.TLS.AutoTLS = *req.TLS.AutoTLS
+		}
+		if req.TLS.ACMEDomain != nil {
+			cfg.TLS.ACMEDomain = *req.TLS.ACMEDomain
+		}
+		if req.TLS.ACMEEmail != nil {
+			cfg.TLS.ACMEEmail = *req.TLS.ACMEEmail
+		}
+		if req.TLS.ACMEStaging != nil {
+			cfg.TLS.ACMEStaging = *req.TLS.ACMEStaging
 		}
 	}
 
