@@ -40,7 +40,41 @@ func (b *Broker) doUpdate(ctx context.Context, id string, job *Job) {
 	}
 	wasRunning := s.State == StateRunning
 	deployMethod := s.DeployMethod
+	installDir := s.InstallDir
+	adapter := s.Adapter
 	b.mu.RUnlock()
+
+	// ── Steam update pre-check ───────────────────────────────────────────────
+	// For SteamCMD servers, query the Steam Web API before doing any work so
+	// we can skip the deploy entirely when the game files are already current.
+	if deployMethod == "steamcmd" {
+		// Resolve Steam App ID from the adapter manifest.
+		appID := ""
+		if m, ok2 := b.adapters.Get(adapter); ok2 {
+			appID = m.SteamCMD.AppID
+			if appID == "" {
+				appID = m.SteamAppID
+			}
+		}
+		if appID != "" {
+			b.updateJob(job.ID, "running", 5, "Checking Steam for available updates…")
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"[update] Checking Steam for app %s updates…","ts":%d}`, appID, time.Now().Unix()))
+
+			localBuildID := readACFBuildID(installDir, appID)
+			result := checkSteamUpdate(ctx, appID, localBuildID)
+
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"[update] %s","ts":%d}`, result.Note, time.Now().Unix()))
+			b.logger.Info("Steam update check", zap.String("id", id), zap.String("app_id", appID),
+				zap.String("local_build", localBuildID), zap.Bool("up_to_date", result.UpToDate),
+				zap.Bool("checked", result.Checked))
+
+			if result.Checked && result.UpToDate {
+				b.updateJob(job.ID, "success", 100, "Already up to date — no download needed")
+				b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"[update] Already up to date (build %s). No files were downloaded.","ts":%d}`, localBuildID, time.Now().Unix()))
+				return
+			}
+		}
+	}
 
 	// Step 1: stop if running.
 	if wasRunning {

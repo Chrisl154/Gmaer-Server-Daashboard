@@ -1633,7 +1633,14 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 			"+force_install_dir", "/games",
 			"+login", "anonymous",
 			"+app_info_update", "1",
-			"+app_update", appID, "validate",
+		}
+		// For first-time deploys, validate checksums all files after download
+		// to catch corruption.  For updates (Force=true), skip validate so only
+		// changed depot files are downloaded — not a full re-verification.
+		if req.Force {
+			args = append(args, "+app_update", appID)
+		} else {
+			args = append(args, "+app_update", appID, "validate")
 		}
 		if req.SteamCMD != nil && req.SteamCMD.Beta != "" {
 			args = append(args, "-beta", req.SteamCMD.Beta)
