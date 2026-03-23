@@ -70,3 +70,18 @@ func (s *Server) getAdapterTemplates(c *gin.Context) {
 	templates := s.cfg.Broker.GetAdapterConfigTemplates(adapterID)
 	c.JSON(http.StatusOK, gin.H{"adapter": adapterID, "templates": templates})
 }
+
+// stageDefaultConfigs writes adapter template defaults for any missing config files.
+// Can be called before or after deploy — creates configs so the user can edit them
+// before the first server start.
+// POST /api/v1/servers/:id/config/stage-defaults
+func (s *Server) stageDefaultConfigs(c *gin.Context) {
+	id := c.Param("id")
+	staged, err := s.cfg.Broker.StageDefaultConfigs(id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	s.recordEvent(c, "stage_default_configs", id, true, gin.H{"staged": staged})
+	c.JSON(http.StatusOK, gin.H{"staged": staged, "count": len(staged)})
+}

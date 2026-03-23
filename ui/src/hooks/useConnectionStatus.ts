@@ -14,12 +14,21 @@ export function useConnectionStatus() {
   useEffect(() => {
     const check = async () => {
       try {
-        await api.get('/api/v1/system/status', { timeout: 5_000 });
+        await api.get('/healthz', { timeout: 5_000 });
         failCount.current = 0;
         setConnected(true);
-      } catch {
-        failCount.current++;
-        if (failCount.current >= 2) setConnected(false);
+      } catch (err: unknown) {
+        // If the daemon responded with any HTTP status (even 401/404), it's
+        // reachable — only network-level failures (timeout, ECONNREFUSED)
+        // mean the daemon is actually down.
+        const axErr = err as { response?: { status: number } };
+        if (axErr?.response?.status) {
+          failCount.current = 0;
+          setConnected(true);
+        } else {
+          failCount.current++;
+          if (failCount.current >= 2) setConnected(false);
+        }
       }
     };
 

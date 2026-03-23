@@ -214,6 +214,7 @@ func (s *Server) registerRoutes() {
 	srv.POST("/restore/:backupId", s.requireOperator(), s.restoreBackup)
 	srv.PUT("/ports", s.requireOperator(), s.updatePorts)
 	srv.PUT("/config/files/*path", s.requireOperator(), s.writeConfigFile)
+	srv.POST("/config/stage-defaults", s.requireOperator(), s.stageDefaultConfigs)
 	srv.POST("/files/upload", s.requireOperator(), s.uploadFile)
 	srv.DELETE("/files", s.requireOperator(), s.deleteFile)
 	srv.POST("/banlist", s.requireOperator(), s.banPlayer)

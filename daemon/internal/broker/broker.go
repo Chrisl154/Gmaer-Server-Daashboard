@@ -1614,64 +1614,122 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 	// - steamHome  is mounted at /tmp/steamhome for SteamCMD's own cache/config
 	// - We do NOT pass --user: cm2network/steamcmd runs its ENTRYPOINT as its own
 	//   internal steam user and breaks if the UID is overridden.
-	dockerArgs := []string{
-		"run", "--rm",
-		"--name", containerName,
-		"-v", installDir + ":/games",
-		"-v", steamHome + ":/tmp/steamhome",
-		"-e", "HOME=/tmp/steamhome",
-		"--entrypoint", "/home/steam/steamcmd/steamcmd.sh",
-		"cm2network/steamcmd",
-		"+@ShutdownOnFailedCommand", "1",
-		"+force_install_dir", "/games",
-		"+login", "anonymous",
-		"+app_update", appID, "validate",
-	}
-	if req.SteamCMD != nil && req.SteamCMD.Beta != "" {
-		dockerArgs = append(dockerArgs, "-beta", req.SteamCMD.Beta)
-		if req.SteamCMD.BetaPass != "" {
-			dockerArgs = append(dockerArgs, "-betapassword", req.SteamCMD.BetaPass)
+	// - +app_info_update 1 forces SteamCMD to refresh its internal depot/app
+	//   configuration cache BEFORE the install — without this, first-time installs
+	//   frequently fail with "Missing configuration" because the cache is empty.
+	buildDockerArgs := func() []string {
+		args := []string{
+			"run", "--rm",
+			"--name", containerName,
+			"-v", installDir + ":/games",
+			"-v", steamHome + ":/tmp/steamhome",
+			"-e", "HOME=/tmp/steamhome",
+			"--entrypoint", "/home/steam/steamcmd/steamcmd.sh",
+			"cm2network/steamcmd",
+			"+force_install_dir", "/games",
+			"+login", "anonymous",
+			"+app_info_update", "1",
+			"+app_update", appID, "validate",
 		}
-	}
-	dockerArgs = append(dockerArgs, "+quit")
-
-	b.updateJob(job.ID, "running", 30, fmt.Sprintf("Running SteamCMD (Docker) for app %s…", appID))
-	b.logger.Info("Executing SteamCMD via Docker",
-		zap.String("server", id), zap.String("app_id", appID), zap.String("dir", installDir))
-
-	cmd := exec.CommandContext(ctx, dockerBin, dockerArgs...) //nolint:gosec
-	cmd.Dir = installDir
-
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start steamcmd container: %w", err)
+		if req.SteamCMD != nil && req.SteamCMD.Beta != "" {
+			args = append(args, "-beta", req.SteamCMD.Beta)
+			if req.SteamCMD.BetaPass != "" {
+				args = append(args, "-betapassword", req.SteamCMD.BetaPass)
+			}
+		}
+		args = append(args, "+quit")
+		return args
 	}
 
-	// Forward stderr to the console in a background goroutine so the user sees
-	// Docker pull progress and any SteamCMD warnings alongside stdout.
-	go func() {
-		sc := bufio.NewScanner(stderr)
-		for sc.Scan() {
+	// SteamCMD is notoriously flaky — "Missing configuration", "Timeout
+	// downloading", and other transient errors are common especially on first
+	// runs when the depot cache is cold.  Retry up to 3 times.
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			// Clean up any leftover container from previous attempt.
+			_ = exec.Command(dockerBin, "rm", "-f", containerName).Run() //nolint:gosec
 			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
-				jsonStr(sc.Text()), time.Now().Unix()))
+				jsonStr(fmt.Sprintf("[gdash] Retrying SteamCMD (attempt %d/%d)…", attempt, maxAttempts)),
+				time.Now().Unix()))
+			b.updateJob(job.ID, "running", 30, fmt.Sprintf("Retrying SteamCMD (attempt %d/%d)…", attempt, maxAttempts))
 		}
-	}()
 
-	// Stream stdout to the console and nudge the progress bar forward.
-	progress := 30
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`, jsonStr(line), time.Now().Unix()))
-		if progress < 90 {
-			progress++
+		dockerArgs := buildDockerArgs()
+		b.updateJob(job.ID, "running", 30, fmt.Sprintf("Running SteamCMD (Docker) for app %s…", appID))
+		b.logger.Info("Executing SteamCMD via Docker",
+			zap.String("server", id), zap.String("app_id", appID),
+			zap.String("dir", installDir), zap.Int("attempt", attempt))
+
+		cmd := exec.CommandContext(ctx, dockerBin, dockerArgs...) //nolint:gosec
+		cmd.Dir = installDir
+
+		stdout, _ := cmd.StdoutPipe()
+		stderr, _ := cmd.StderrPipe()
+		if err := cmd.Start(); err != nil {
+			lastErr = fmt.Errorf("start steamcmd container: %w", err)
+			continue
 		}
-		b.updateJob(job.ID, "running", progress, line)
+
+		// Track whether we see "Missing configuration" so we know to retry.
+		missingConfig := false
+
+		// Forward stderr to the console in a background goroutine so the user sees
+		// Docker pull progress and any SteamCMD warnings alongside stdout.
+		go func() {
+			sc := bufio.NewScanner(stderr)
+			for sc.Scan() {
+				b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+					jsonStr(sc.Text()), time.Now().Unix()))
+			}
+		}()
+
+		// Stream stdout to the console and nudge the progress bar forward.
+		progress := 30
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`, jsonStr(line), time.Now().Unix()))
+			if strings.Contains(line, "Missing configuration") {
+				missingConfig = true
+			}
+			if progress < 90 {
+				progress++
+			}
+			b.updateJob(job.ID, "running", progress, line)
+		}
+
+		if err := cmd.Wait(); err != nil {
+			detail := fmt.Sprintf("SteamCMD failed on attempt %d/%d for app %s", attempt, maxAttempts, appID)
+			if missingConfig {
+				detail += " (reason: Missing configuration — SteamCMD's internal depot cache does not have this app's info)"
+			}
+			lastErr = fmt.Errorf("%s: %w", detail, err)
+			b.logger.Warn("SteamCMD attempt failed",
+				zap.Int("attempt", attempt), zap.Int("maxAttempts", maxAttempts),
+				zap.String("app_id", appID), zap.Bool("missingConfig", missingConfig),
+				zap.String("server", id), zap.Error(err))
+			if missingConfig && attempt < maxAttempts {
+				b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+					jsonStr(fmt.Sprintf("[gdash] SteamCMD reported 'Missing configuration' (attempt %d/%d) — this is a transient SteamCMD cache issue. Retrying in 5 seconds…", attempt, maxAttempts)),
+					time.Now().Unix()))
+				time.Sleep(5 * time.Second) // brief delay to let Steam servers settle
+				continue
+			}
+			// Final failure — send verbose error to console.
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`,
+				jsonStr(fmt.Sprintf("[gdash] Deploy failed after %d attempt(s). Error: %s. Common causes: Steam servers busy, disk full, network timeout, or the app requires authenticated login.", attempt, err.Error())),
+				time.Now().Unix()))
+			return lastErr
+		}
+
+		// Success — break out of retry loop.
+		lastErr = nil
+		break
 	}
-
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("game download failed — check the console output above for details (common causes: Steam servers busy, disk full, or network timeout): %w", err)
+	if lastErr != nil {
+		return lastErr
 	}
 
 	// Ensure declared executable binaries have the execute bit set.
@@ -1700,24 +1758,48 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 // This runs automatically after a successful deploy so the server can start
 // without the user having to manually create config files first.
 func (b *Broker) stageDefaultConfigs(serverID string) {
+	staged, _ := b.StageDefaultConfigs(serverID)
+	for _, f := range staged {
+		b.sendConsoleMessage(serverID, fmt.Sprintf(
+			`{"type":"deploy","msg":%s,"ts":%d}`,
+			jsonStr("Staged default config: "+f), time.Now().Unix()))
+	}
+}
+
+// StageDefaultConfigs writes adapter template defaults for missing config files.
+// Returns the list of files that were created and any error.
+// Safe to call before or after deploy — creates the install directory if needed.
+func (b *Broker) StageDefaultConfigs(serverID string) ([]string, error) {
 	b.mu.RLock()
 	s, ok := b.servers[serverID]
 	b.mu.RUnlock()
-	if !ok || s.InstallDir == "" {
-		return
+	if !ok {
+		return nil, fmt.Errorf("server %q not found", serverID)
+	}
+
+	installDir := s.InstallDir
+	if installDir == "" {
+		return nil, fmt.Errorf("server has no install directory set")
+	}
+
+	// Ensure the install directory exists — this allows staging configs
+	// before the first deploy.
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create install dir: %w", err)
 	}
 
 	templates := b.adapters.ConfigTemplates(s.Adapter)
 	if len(templates) == 0 {
-		return
+		return nil, nil
 	}
 
+	var staged []string
 	for _, t := range templates {
 		if t.Sample == "" {
 			continue
 		}
 		rel := configTemplatePath(t.Path)
-		abs := filepath.Join(s.InstallDir, rel)
+		abs := filepath.Join(installDir, rel)
 
 		// Don't overwrite existing configs — the user may have customized them.
 		if _, err := os.Stat(abs); err == nil {
@@ -1738,11 +1820,10 @@ func (b *Broker) stageDefaultConfigs(serverID string) {
 		} else {
 			b.logger.Info("Staged default config from adapter template",
 				zap.String("server", serverID), zap.String("file", rel))
-			b.sendConsoleMessage(serverID, fmt.Sprintf(
-				`{"type":"deploy","msg":%s,"ts":%d}`,
-				jsonStr("Staged default config: "+rel), time.Now().Unix()))
+			staged = append(staged, rel)
 		}
 	}
+	return staged, nil
 }
 
 func (b *Broker) deployManual(ctx context.Context, id string, req DeployRequest, job *Job) error {

@@ -771,19 +771,24 @@ function OverviewTab({ server }: { server: any }) {
                   server.auto_update ? 'translate-x-4' : 'translate-x-0.5')} />
               </button>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm shrink-0" style={{ color: 'var(--text-secondary)' }}>Schedule (cron)</span>
-              <input
-                value={schedule}
-                onChange={e => setSchedule(e.target.value)}
-                onBlur={() => {
-                  if (server.auto_update && schedule !== server.auto_update_schedule) {
-                    autoUpdateMutation.mutate({ auto_update: true, auto_update_schedule: schedule });
-                  }
-                }}
-                className="input text-xs flex-1"
-                placeholder="0 4 * * *"
-              />
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm shrink-0" style={{ color: 'var(--text-secondary)' }}>Schedule (cron)</span>
+                <input
+                  value={schedule}
+                  onChange={e => setSchedule(e.target.value)}
+                  onBlur={() => {
+                    if (server.auto_update && schedule !== server.auto_update_schedule) {
+                      autoUpdateMutation.mutate({ auto_update: true, auto_update_schedule: schedule });
+                    }
+                  }}
+                  className="input text-xs flex-1"
+                  placeholder="0 4 * * *"
+                />
+              </div>
+              {schedule && describeCron(schedule) !== schedule && (
+                <p className="text-xs pl-1" style={{ color: 'var(--text-secondary)' }}>{describeCron(schedule)}</p>
+              )}
             </div>
             <button
               onClick={() => updateMutation.mutate()}
@@ -1521,7 +1526,17 @@ function ConfigTab({ server }: { server: any }) {
       <div className="card p-8 text-center" style={{ color: 'var(--text-muted)' }}>
         <AlertCircle className="w-8 h-8 mx-auto mb-3 opacity-40 text-yellow-500" />
         <p className="text-sm">Could not load config files.</p>
-        <p className="text-xs mt-1 opacity-70">Deploy the server first so its install directory is created, then come back to edit config files.</p>
+        <p className="text-xs mt-1 opacity-70">You can stage default configs from the adapter template — this creates the files so you can edit them before deploying.</p>
+        <button
+          className="btn-primary text-xs mt-3"
+          onClick={() => {
+            api.post(`/api/v1/servers/${server.id}/config/stage-defaults`)
+              .then(() => { toast.success('Default configs staged'); window.location.reload(); })
+              .catch(() => toast.error('Failed to stage default configs'));
+          }}
+        >
+          Apply Default Configs
+        </button>
       </div>
     );
   }
@@ -1541,6 +1556,26 @@ function ConfigTab({ server }: { server: any }) {
       {/* File list sidebar */}
       <div className="w-56 flex-shrink-0 space-y-1">
         <p className="label mb-2">Config Files</p>
+        {fileList.some(f => !f.exists) && (
+          <button
+            className="w-full text-left px-3 py-2 rounded text-xs bg-indigo-600/10 hover:bg-indigo-600/20 border border-indigo-500/20 text-indigo-300 transition-colors mb-2"
+            onClick={() => {
+              api.post(`/api/v1/servers/${server.id}/config/stage-defaults`)
+                .then(r => {
+                  const count = r.data.count ?? 0;
+                  if (count > 0) {
+                    toast.success(`Staged ${count} default config${count > 1 ? 's' : ''}`);
+                    setFileList(prev => prev.map(f => ({ ...f, exists: true })));
+                  } else {
+                    toast('All config files already exist');
+                  }
+                })
+                .catch(() => toast.error('Failed to stage configs'));
+            }}
+          >
+            Apply All Defaults
+          </button>
+        )}
         {fileList.map(file => (
           <button
             key={file.path}
