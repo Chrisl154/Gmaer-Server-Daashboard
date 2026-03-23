@@ -90,16 +90,20 @@ fi
 # ── Rebuild daemon ───────────────────────────────────────────────────────────
 echo "Building daemon..."
 echo "PROGRESS:35"
-(cd "${REPO_DIR}/daemon" && GONOSUMDB="*" GOFLAGS="-mod=mod" $GO_BIN mod download 2>&1 | grep -v "^$" || true)
-GONOSUMDB="*" $GO_BIN build -o "${BIN_DIR}/games-daemon.new" "${REPO_DIR}/daemon/cmd/daemon"
+(cd "${REPO_DIR}/daemon" \
+  && GONOSUMDB="*" GOFLAGS="-mod=mod" $GO_BIN mod download 2>&1 | grep -v "^$" || true)
+(cd "${REPO_DIR}/daemon" \
+  && GONOSUMDB="*" $GO_BIN build -o "${BIN_DIR}/games-daemon.new" ./cmd/daemon)
 mv "${BIN_DIR}/games-daemon.new" "${BIN_DIR}/games-daemon"
 echo "Daemon binary updated."
 echo "PROGRESS:60"
 
 # ── Rebuild CLI ──────────────────────────────────────────────────────────────
 echo "Building CLI..."
-(cd "${REPO_DIR}/cli" && GONOSUMDB="*" GOFLAGS="-mod=mod" $GO_BIN mod download 2>&1 | grep -v "^$" || true)
-GONOSUMDB="*" $GO_BIN build -o "${BIN_DIR}/gdash.new" "${REPO_DIR}/cli/cmd"
+(cd "${REPO_DIR}/cli" \
+  && GONOSUMDB="*" GOFLAGS="-mod=mod" $GO_BIN mod download 2>&1 | grep -v "^$" || true)
+(cd "${REPO_DIR}/cli" \
+  && GONOSUMDB="*" $GO_BIN build -o "${BIN_DIR}/gdash.new" ./cmd)
 mv "${BIN_DIR}/gdash.new" "${BIN_DIR}/gdash"
 echo "CLI binary updated."
 echo "PROGRESS:70"
