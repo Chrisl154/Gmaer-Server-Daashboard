@@ -229,24 +229,9 @@ func (s *Server) applyUpdate(c *gin.Context) {
 			zap.String("branch", req.Branch), zap.String("output", string(out)), zap.Error(err))
 	}
 
-	// Refresh the on-disk update script from the repo.
-	repoScript := filepath.Join(repoDir, "scripts", "gdash-update.sh")
-	if data, readErr := os.ReadFile(repoScript); readErr == nil { //nolint:gosec
-		if writeErr := os.WriteFile(updateScriptPath, data, 0o755); writeErr != nil {
-			s.cfg.Logger.Warn("Could not refresh update script", zap.Error(writeErr))
-		} else {
-			s.cfg.Logger.Info("Update script refreshed from repo")
-		}
-	}
-
-	if _, err := os.Stat(updateScriptPath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "update script not found at " + updateScriptPath + " — re-run the installer to restore it",
-		})
-		return
-	}
-
 	// GPG signature verification (if enabled).
+	// IMPORTANT: this must run BEFORE refreshing the on-disk update script so
+	// that a compromised commit cannot land a malicious script on disk.
 	requireSigned := s.cfg.DaemonCfg == nil || s.cfg.DaemonCfg.Updates.RequireSignedCommits
 	if requireSigned {
 		tipOut, err := exec.Command("git", "-C", repoDir, "rev-parse", "origin/"+req.Branch).Output() //nolint:gosec
@@ -275,6 +260,23 @@ func (s *Server) applyUpdate(c *gin.Context) {
 			})
 			return
 		}
+	}
+
+	// Refresh the on-disk update script from the verified repo.
+	repoScript := filepath.Join(repoDir, "scripts", "gdash-update.sh")
+	if data, readErr := os.ReadFile(repoScript); readErr == nil { //nolint:gosec
+		if writeErr := os.WriteFile(updateScriptPath, data, 0o755); writeErr != nil {
+			s.cfg.Logger.Warn("Could not refresh update script", zap.Error(writeErr))
+		} else {
+			s.cfg.Logger.Info("Update script refreshed from repo")
+		}
+	}
+
+	if _, err := os.Stat(updateScriptPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "update script not found at " + updateScriptPath + " — re-run the installer to restore it",
+		})
+		return
 	}
 
 	// Backup current daemon binary.
