@@ -1628,9 +1628,16 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 	containerName := "gdash-steamcmd-" + id
 	_ = exec.Command(dockerBin, "rm", "-f", containerName).Run() //nolint:gosec
 
+	// Always remove the named container when this function returns, whether it
+	// succeeded, failed, or used the docker-cp fallback path.
+	defer func() { _ = exec.Command(dockerBin, "rm", "-f", containerName).Run() }() //nolint:gosec
+
 	// Build docker run arguments.
 	// - installDir is mounted at /games inside the container (game files land here)
 	// - steamHome  is mounted at /tmp/steamhome for SteamCMD's own cache/config
+	// - --rm is intentionally omitted: we keep the container after exit so that
+	//   if the bind mount fails silently (rootless Docker, userns-remap, SELinux),
+	//   we can fall back to "docker cp" to extract the files.
 	// - We do NOT pass --user: cm2network/steamcmd runs its ENTRYPOINT as its own
 	//   internal steam user and breaks if the UID is overridden.
 	// - +app_info_update 1 forces SteamCMD to refresh its internal depot/app
@@ -1638,7 +1645,7 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 	//   frequently fail with "Missing configuration" because the cache is empty.
 	buildDockerArgs := func() []string {
 		args := []string{
-			"run", "--rm",
+			"run", // no --rm: container kept until we verify or extract files
 			"--name", containerName,
 			"-v", installDir + ":/games",
 			"-v", steamHome + ":/tmp/steamhome",
@@ -1758,32 +1765,37 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 		return lastErr
 	}
 
-	// Post-deploy sanity check: make sure the bind mount actually worked.
-	// If installDir is empty after a successful Docker run, the volume mount
-	// failed silently (e.g. Docker-in-Docker path mismatch, rootless Docker,
-	// SELinux denial).  Surface this as a clear error rather than a confusing
-	// "binary not found" later.
+	// Post-deploy sanity check: verify the bind mount actually wrote files.
+	// If installDir is empty, the bind mount failed silently (common with
+	// rootless Docker, userns-remap, or SELinux).  Fall back to "docker cp"
+	// which copies directly from the stopped container's overlay filesystem —
+	// this always works regardless of bind-mount configuration.
 	entries, dirErr := os.ReadDir(installDir)
-	if dirErr == nil {
-		if len(entries) == 0 {
-			msg := fmt.Sprintf(
-				"[gdash] WARNING: SteamCMD reported success but %q is empty — the Docker bind mount may have failed. "+
-					"This can happen when the daemon runs inside a container (path mismatch) or with rootless Docker. "+
-					"Check that Docker can write to %q and try deploying again.",
-				installDir, installDir)
-			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(msg), time.Now().Unix()))
-			b.logger.Warn("Install dir empty after SteamCMD deploy — possible bind mount failure",
-				zap.String("server", id), zap.String("install_dir", installDir))
-		} else {
-			// Log the top-level directory listing so bind-mount issues are easy to spot.
-			names := make([]string, 0, len(entries))
-			for _, e := range entries {
-				names = append(names, e.Name())
-			}
-			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
-				jsonStr(fmt.Sprintf("[gdash] Install dir contents: %s", strings.Join(names, "  "))),
-				time.Now().Unix()))
+	bindMountWorked := dirErr == nil && len(entries) > 0
+	if !bindMountWorked {
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+			jsonStr("[gdash] Bind mount appears empty — falling back to 'docker cp' to extract game files from container…"),
+			time.Now().Unix()))
+		b.logger.Warn("Install dir empty after SteamCMD deploy — using docker cp fallback",
+			zap.String("server", id), zap.String("install_dir", installDir))
+
+		// "docker cp <container>:/games/. <dest>" copies the CONTENTS of /games.
+		cpCmd := exec.Command(dockerBin, "cp", containerName+":/games/.", installDir) //nolint:gosec
+		if cpOut, cpErr := cpCmd.CombinedOutput(); cpErr != nil {
+			return fmt.Errorf("docker cp fallback failed: %w\n%s", cpErr, string(cpOut))
 		}
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+			jsonStr("[gdash] docker cp complete — game files extracted successfully."),
+			time.Now().Unix()))
+	} else {
+		// Log the top-level directory listing so bind-mount issues are easy to spot.
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+			jsonStr(fmt.Sprintf("[gdash] Install dir contents: %s", strings.Join(names, "  "))),
+			time.Now().Unix()))
 	}
 
 	// Ensure declared executable binaries have the execute bit set.
