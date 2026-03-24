@@ -1844,6 +1844,7 @@ function UpdatesSection() {
   const [showLog, setShowLog] = useState(false);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wasUpdatingRef = useRef(false);
 
   // Fast status — reads local state only (no network fetch).
   const { data: status, isLoading, refetch: refetchStatus } = useQuery<UpdateStatus>({
@@ -1877,13 +1878,22 @@ function UpdatesSection() {
     if (isUpdating) setShowLog(true);
   }, [isUpdating]);
 
-  // Auto-reload the page ~35s after progress hits 100 (daemon is restarting).
+  // Track whether an update was running in this session.
   useEffect(() => {
-    if (progress >= 95 && isUpdating) {
-      const t = setTimeout(() => window.location.reload(), 35_000);
+    if (isUpdating) wasUpdatingRef.current = true;
+  }, [isUpdating]);
+
+  // Auto-reload once the update script marks itself complete.
+  // The script writes 'complete' BEFORE calling systemctl restart, so we wait
+  // 10 s for the daemon to come back up before reloading the page.
+  // Using wasUpdatingRef prevents a spurious reload on initial page load when
+  // a previous update already shows as 'complete' in the state file.
+  useEffect(() => {
+    if (updateComplete && wasUpdatingRef.current) {
+      const t = setTimeout(() => window.location.reload(), 10_000);
       return () => clearTimeout(t);
     }
-  }, [progress >= 95, isUpdating]);
+  }, [updateComplete]);
 
   // Check for updates — calls POST /update/check (does git fetch).
   const checkMutation = useMutation({

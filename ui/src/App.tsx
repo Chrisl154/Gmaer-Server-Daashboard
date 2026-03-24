@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import toast, { Toaster } from 'react-hot-toast';
@@ -24,9 +24,10 @@ import { LogsPage } from './pages/LogsPage';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 2,
+      retry: 1,
       staleTime: 30_000,
       refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
     },
   },
 });
@@ -54,6 +55,18 @@ function InactivityGuard({ children }: { children: React.ReactNode }) {
 
 function ConnectionBanner() {
   const connected = useConnectionStatus();
+  const prevConnected = useRef(true);
+
+  useEffect(() => {
+    // When daemon comes back after being down, invalidate all cached queries
+    // so every component refetches fresh data immediately instead of sitting
+    // on stale or error state indefinitely.
+    if (!prevConnected.current && connected) {
+      queryClient.invalidateQueries();
+    }
+    prevConnected.current = connected;
+  }, [connected]);
+
   if (connected) return null;
   return (
     <div style={{
