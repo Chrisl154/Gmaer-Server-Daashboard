@@ -1,6 +1,78 @@
 # Contributing to Games Dashboard
 
-We welcome contributions! This guide covers setting up a dev environment, adding adapters, extending the mod manager, and running the test suite.
+We welcome contributions! This guide covers the architecture, branch workflow, build commands, and how to add adapters or extend the codebase.
+
+---
+
+## Architecture
+
+```
+daemon/      Go 1.22 REST + WebSocket API (port 8443, TLS required)
+  cmd/daemon/    Binary entry point
+  internal/
+    api/         One file per feature area (update.go, configfiles.go, firewall.go…)
+    broker/      Core server lifecycle — start/stop/deploy/health (broker.go ~3100 lines)
+    auth/        JWT, TOTP, Steam OpenID, bcrypt
+    adapters/    YAML manifest loader and registry
+    backup/      Backup scheduling and retention
+    cluster/     Multi-node management
+    secrets/     Encrypted secret storage
+cli/         Go 1.22 gdash CLI client
+ui/          React 18 + TypeScript + Vite + Tailwind SPA
+adapters/    Per-game YAML manifests (24 games)
+scripts/     gdash-update.sh — self-update script invoked by the daemon
+install.sh   Bash TUI installer
+```
+
+## Branch Workflow
+
+```
+main   ← stable/production — merge from dev only after tests pass
+dev    ← active development — all new work goes here first
+feature/<name>  ← cut from dev, merge back to dev when tested
+```
+
+```bash
+git checkout dev
+git checkout -b feature/my-thing
+# make changes, run tests
+git checkout dev && git merge feature/my-thing
+git checkout main && git merge dev
+git push origin dev main
+```
+
+## gdash CLI Reference
+
+```bash
+# Auth
+gdash auth login -u admin -p changeme
+
+# Servers
+gdash server list
+gdash server create my-valheim "My Server" --adapter valheim --deploy-method steamcmd
+gdash server start my-valheim
+gdash server logs my-valheim
+
+# Backups
+gdash backup create my-valheim --type full
+
+# SBOM / CVE
+gdash sbom show
+gdash sbom cve-report
+
+# Cluster
+gdash node list
+gdash node add worker-01 https://worker-01:8443 --token <join-token>
+gdash node token
+
+# Updates
+gdash update                      # update to latest stable (main)
+gdash update --branch dev         # switch to dev / beta
+gdash update --check              # check without applying
+gdash version                     # local + daemon version, branch, commit
+```
+
+---
 
 ---
 

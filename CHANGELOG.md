@@ -7,6 +7,35 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.3] - 2026-03-24
+
+### Added
+- **Custom branch updates** — Settings → Updates now has Production / Beta / Feature Test options. The Feature Test option exposes a free-text input to deploy any branch by name (e.g. `feature/pid-reattach`). Both the API and update script now accept any valid git branch name instead of hard-coding `main`/`dev`.
+
+### Fixed
+- **UI blank when accessed remotely** — `VITE_DAEMON_URL` was baked in as `https://localhost:8443` after every self-update, causing all API and WebSocket calls to resolve to the client's localhost instead of the server. The UI now uses same-origin relative paths; nginx proxies `/api/`, `/healthz`, and WebSocket upgrades. Works correctly regardless of whether the server is accessed by IP or DNS hostname.
+
+---
+
+## [1.0.2] - 2026-03-23
+
+### Fixed
+- **SteamCMD bind-mount failures** — Eliminated the `/games` Docker bind mount which failed silently on machines with rootless Docker, userns-remap, or SELinux. SteamCMD now installs into a temp `steamhome` staging directory inside the container, then copies to the install directory via `cp -a` after the download completes. Files reliably land in the correct location.
+- **Pre-flight write check** — Before starting a multi-GB SteamCMD download, the daemon now verifies it can write to the install directory. If the directory is root-owned or otherwise unwritable, a clear human-readable error is returned immediately rather than after a full download.
+- **Auto-reconnect after daemon restart** — Three bugs fixed: React Query queries in error state were never retried after reconnect; the SettingsPage auto-reload timer was cancelled when `isUpdating` briefly flipped false during restart; retry count reduced from 2 to 1 to recover faster.
+- **`StateUpdating` guard in `StartServer`** — Prevented a race where clicking Start during an update could launch a second process.
+
+---
+
+## [1.0.1] - 2026-03-23
+
+### Fixed
+- **SteamCMD arg order and retry** — `+app_info_update 1` moved to correct position; added retry loop for transient Steam network failures.
+- **Binary-not-found diagnostics** — Improved error message when a deployed game binary cannot be located; includes install directory listing hint.
+- **`docker cp` fallback** — Added fallback path that copies game files from container filesystem when bind mount lands files in the wrong location.
+
+---
+
 ## [1.0.0] - 2026-03-22
 
 ### Fixed
