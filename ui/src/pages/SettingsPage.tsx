@@ -1899,7 +1899,7 @@ function UpdatesSection() {
 
   // Check for updates — calls POST /update/check (does git fetch).
   const checkMutation = useMutation({
-    mutationFn: () => api.post('/api/v1/admin/update/check', { branch }).then(r => r.data),
+    mutationFn: (b: string) => api.post('/api/v1/admin/update/check', { branch: b }).then(r => r.data),
     onSuccess: (data: CheckResult) => {
       setCheckResult(data);
       if (data.error) {
@@ -1915,7 +1915,7 @@ function UpdatesSection() {
 
   // Apply update.
   const apply = useMutation({
-    mutationFn: () => api.post('/api/v1/admin/update/apply', { branch }).then(r => r.data),
+    mutationFn: (b: string) => api.post('/api/v1/admin/update/apply', { branch: b }).then(r => r.data),
     onSuccess: (data: any) => {
       setApplyMsg(data?.msg ?? 'Update started.');
       setCheckResult(null);
@@ -2020,8 +2020,8 @@ function UpdatesSection() {
         )}
 
         <button
-          onClick={() => checkMutation.mutate()}
-          disabled={checkMutation.isPending}
+          onClick={() => checkMutation.mutate(branch)}
+          disabled={checkMutation.isPending || (branchMode === 'custom' && !customBranch.trim())}
           className="btn-secondary flex items-center gap-2 text-sm"
         >
           <RefreshCw className={cn('w-3.5 h-3.5', checkMutation.isPending && 'animate-spin')} />
@@ -2089,8 +2089,8 @@ function UpdatesSection() {
         )}
 
         <button
-          onClick={() => apply.mutate()}
-          disabled={apply.isPending || isUpdating}
+          onClick={() => apply.mutate(branch)}
+          disabled={apply.isPending || isUpdating || (branchMode === 'custom' && !customBranch.trim())}
           className="btn-primary flex items-center gap-2"
         >
           {apply.isPending
@@ -2152,7 +2152,7 @@ function UpdatesSection() {
           </p>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => apply.mutate()}
+              onClick={() => apply.mutate(branch)}
               disabled={apply.isPending}
               className="btn-primary text-sm flex items-center gap-1.5"
             >
