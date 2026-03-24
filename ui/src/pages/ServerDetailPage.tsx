@@ -1410,6 +1410,398 @@ function PortsTab({ server }: { server: any }) {
 
 // ── Config tab ────────────────────────────────────────────────────────────────
 
+// ── Structured config editor helpers ─────────────────────────────────────────
+
+/** Which paths get a structured editor instead of raw textarea */
+function structuredEditorType(path: string | null): 'valheim-start' | 'steamid-list' | null {
+  if (!path) return null;
+  const name = path.split('/').pop() ?? path;
+  if (name === 'start_valheim.sh') return 'valheim-start';
+  if (['adminlist.txt', 'bannedlist.txt', 'permittedlist.txt'].includes(name)) return 'steamid-list';
+  return null;
+}
+
+// ── Validators ────────────────────────────────────────────────────────────────
+
+/** Safe server/world name: letters, digits, spaces, hyphens, underscores. 1–64 chars. */
+function validateName(v: string): string {
+  if (!v.trim()) return 'Required';
+  if (v.length > 64) return 'Max 64 characters';
+  if (!/^[\w\s\-]+$/.test(v)) return 'Only letters, numbers, spaces, hyphens, and underscores allowed';
+  return '';
+}
+
+/** Password: printable ASCII excluding shell-dangerous chars. 5–64 chars. */
+function validatePassword(v: string): string {
+  if (v.length < 5) return 'Minimum 5 characters (Valheim requirement)';
+  if (v.length > 64) return 'Max 64 characters';
+  // Block shell metacharacters that would break the script or enable injection
+  if (/["'`$\\|;&<>(){}[\]~!*?#]/.test(v)) return 'Password contains disallowed characters ( " \' ` $ \\ | ; & < > etc.)';
+  return '';
+}
+
+/** Port: integer 1024–65535 */
+function validatePort(v: string): string {
+  const n = parseInt(v, 10);
+  if (isNaN(n) || String(n) !== v.trim()) return 'Must be a whole number';
+  if (n < 1024 || n > 65535) return 'Must be between 1024 and 65535';
+  return '';
+}
+
+/** Steam ID: exactly 17 digits, starting with 7656 */
+function validateSteamID(v: string): string {
+  if (!/^\d{17}$/.test(v)) return 'Must be exactly 17 digits';
+  if (!v.startsWith('7656')) return 'Steam IDs start with 7656';
+  return '';
+}
+
+// ── Valheim start_valheim.sh parser/patcher ───────────────────────────────────
+
+interface ValheimFields { name: string; world: string; password: string; port: string; crossplay: boolean; }
+
+function parseValheimStart(content: string): ValheimFields {
+  const getArg = (flag: string) => {
+    const m = content.match(new RegExp(`-${flag}\\s+"([^"]*)"`) ) ?? content.match(new RegExp(`-${flag}\\s+(\\S+)`));
+    return m ? m[1] : '';
+  };
+  const crossplayLine = content.split('\n').find(l => l.includes('-crossplay'));
+  const crossplay = !!crossplayLine && !crossplayLine.trimStart().startsWith('#');
+  return {
+    name: getArg('name') || 'My Valheim Server',
+    world: getArg('world') || 'Dedicated',
+    password: getArg('password') || 'changeme',
+    port: getArg('port') || '2456',
+    crossplay,
+  };
+}
+
+function patchValheimField(content: string, flag: string, value: string): string {
+  const quoted = ['name', 'world', 'password', 'savedir'].includes(flag);
+  const repl = quoted ? `-${flag} "${value}"` : `-${flag} ${value}`;
+  let result = content.replace(new RegExp(`-${flag}\\s+"[^"]*"`), repl);
+  if (result === content) result = content.replace(new RegExp(`-${flag}\\s+\\S+`), repl);
+  return result;
+}
+
+function patchValheimCrossplay(content: string, enabled: boolean): string {
+  const lines = content.split('\n');
+  const hasReal = lines.some(l => /^\s+-crossplay\b/.test(l) && !l.trimStart().startsWith('#'));
+  if (enabled && !hasReal) {
+    // Insert after -public line
+    const idx = lines.findIndex(l => /-public\s/.test(l) && !l.trimStart().startsWith('#'));
+    if (idx >= 0) {
+      const indent = (lines[idx].match(/^(\s*)/) ?? ['', ''])[1];
+      // Ensure previous line has continuation backslash
+      lines[idx] = lines[idx].replace(/\s*\\?\s*$/, ' \\');
+      lines.splice(idx + 1, 0, `${indent}-crossplay`);
+    }
+    return lines.join('\n');
+  }
+  if (!enabled && hasReal) {
+    const filtered = lines.filter(l => !/^\s+-crossplay\b/.test(l) || l.trimStart().startsWith('#'));
+    // Clean up dangling backslash on preceding line if crossplay was last arg
+    return filtered.join('\n');
+  }
+  return content;
+}
+
+// ── Steam ID list parser/builder ──────────────────────────────────────────────
+
+function parseSteamIDs(content: string): string[] {
+  return content.split('\n')
+    .map(l => l.trim())
+    .filter(l => /^\d{17}$/.test(l));
+}
+
+function buildSteamIDFile(ids: string[], original: string): string {
+  // Preserve comment header lines from the original file
+  const headerLines = original.split('\n').filter(l => l.trimStart().startsWith('#') || l.trim() === '');
+  // Deduplicate header (take up to the first blank line after comments)
+  const header: string[] = [];
+  for (const l of headerLines) {
+    if (l.trim() === '' && header.length > 0) break;
+    header.push(l);
+  }
+  const body = ids.join('\n');
+  return header.length > 0 ? `${header.join('\n')}\n${body}\n` : `${body}\n`;
+}
+
+// ── Valheim structured editor ─────────────────────────────────────────────────
+
+function ValheimStartEditor({ content, onChange }: { content: string; onChange: (v: string) => void }) {
+  const [fields, setFields] = useState<ValheimFields>(() => parseValheimStart(content));
+  const [errors, setErrors] = useState<Partial<ValheimFields>>({});
+  const lastContent = useRef(content);
+
+  // Re-parse if content changes externally (e.g. "Use Template")
+  useEffect(() => {
+    if (content !== lastContent.current) {
+      lastContent.current = content;
+      setFields(parseValheimStart(content));
+      setErrors({});
+    }
+  }, [content]);
+
+  const commit = (flag: string, value: string, newFields: ValheimFields) => {
+    let updated = flag === 'crossplay'
+      ? patchValheimCrossplay(content, newFields.crossplay)
+      : patchValheimField(content, flag, value);
+    lastContent.current = updated;
+    onChange(updated);
+  };
+
+  const handleText = (flag: keyof ValheimFields, value: string, validate: (v: string) => string) => {
+    const err = validate(value);
+    setErrors(prev => ({ ...prev, [flag]: err }));
+    const next = { ...fields, [flag]: value };
+    setFields(next);
+    if (!err) commit(flag, value, next);
+  };
+
+  const inputCls = (err?: string) => cn(
+    'w-full px-3 py-2 rounded text-sm font-mono outline-none transition-colors',
+    err
+      ? 'border border-red-500/60 bg-red-900/10 focus:border-red-400'
+      : 'border border-transparent focus:border-indigo-500/60',
+  );
+
+  const lockedCls = 'w-full px-3 py-2 rounded text-sm font-mono opacity-40 cursor-not-allowed border border-dashed border-white/10';
+
+  const Row = ({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) => (
+    <div className="grid grid-cols-[180px_1fr] items-start gap-3">
+      <div className="pt-2">
+        <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+        {hint && <p className="text-xs mt-0.5 opacity-50">{hint}</p>}
+      </div>
+      <div>{children}</div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-3 p-1">
+      <Row label="Server Name" hint="Shown in server browser">
+        <input className={inputCls(errors.name)} style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+          value={fields.name} maxLength={64}
+          onChange={e => handleText('name', e.target.value, validateName)} />
+        {errors.name && <p className="text-xs text-red-400 mt-1">{errors.name}</p>}
+      </Row>
+
+      <Row label="World Name" hint="Save file name on disk">
+        <input className={inputCls(errors.world)} style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+          value={fields.world} maxLength={64}
+          onChange={e => handleText('world', e.target.value, validateName)} />
+        {errors.world && <p className="text-xs text-red-400 mt-1">{errors.world}</p>}
+      </Row>
+
+      <Row label="Password" hint="Min 5 chars (Valheim requirement)">
+        <input className={inputCls(errors.password)} style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+          type="text" value={fields.password} maxLength={64}
+          onChange={e => handleText('password', e.target.value, validatePassword)} />
+        {errors.password && <p className="text-xs text-red-400 mt-1">{errors.password}</p>}
+      </Row>
+
+      <Row label="Game Port" hint="UDP, default 2456">
+        <input className={inputCls(errors.port)} style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+          value={fields.port} maxLength={5}
+          onChange={e => handleText('port', e.target.value, validatePort)} />
+        {errors.port && <p className="text-xs text-red-400 mt-1">{errors.port}</p>}
+      </Row>
+
+      <Row label="Crossplay" hint="Allow Xbox / Game Pass players">
+        <label className="flex items-center gap-2 cursor-pointer pt-1.5">
+          <input type="checkbox" checked={fields.crossplay}
+            className="w-4 h-4 accent-indigo-500"
+            onChange={e => {
+              const next = { ...fields, crossplay: e.target.checked };
+              setFields(next);
+              commit('crossplay', '', next);
+            }} />
+          <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            {fields.crossplay ? 'Enabled' : 'Disabled'}
+          </span>
+        </label>
+      </Row>
+
+      <div className="border-t pt-3 mt-3 space-y-3" style={{ borderColor: 'var(--border)' }}>
+        <p className="text-xs opacity-40 font-medium uppercase tracking-wider">Managed by daemon (read-only)</p>
+        <Row label="Save Directory">
+          <div className={lockedCls} style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
+            /data/worlds
+          </div>
+        </Row>
+        <Row label="Public Listing">
+          <div className={lockedCls} style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
+            1 (listed)
+          </div>
+        </Row>
+      </div>
+    </div>
+  );
+}
+
+// ── Steam ID list editor ──────────────────────────────────────────────────────
+
+function SteamIDListEditor({ content, onChange, label }: { content: string; onChange: (v: string) => void; label: string }) {
+  const [ids, setIds] = useState<string[]>(() => parseSteamIDs(content));
+  const [input, setInput] = useState('');
+  const [inputErr, setInputErr] = useState('');
+  const lastContent = useRef(content);
+
+  useEffect(() => {
+    if (content !== lastContent.current) {
+      lastContent.current = content;
+      setIds(parseSteamIDs(content));
+    }
+  }, [content]);
+
+  const commit = (next: string[]) => {
+    const updated = buildSteamIDFile(next, content);
+    lastContent.current = updated;
+    onChange(updated);
+  };
+
+  const handleAdd = () => {
+    const v = input.trim();
+    const err = validateSteamID(v);
+    if (err) { setInputErr(err); return; }
+    if (ids.includes(v)) { setInputErr('Steam ID already in list'); return; }
+    const next = [...ids, v];
+    setIds(next);
+    setInput('');
+    setInputErr('');
+    commit(next);
+  };
+
+  const handleRemove = (id: string) => {
+    const next = ids.filter(x => x !== id);
+    setIds(next);
+    commit(next);
+  };
+
+  const emptyMsg: Record<string, string> = {
+    admin: 'No admins yet — add a Steam ID to grant in-game admin commands.',
+    banned: 'No banned players.',
+    permitted: 'Whitelist is empty — all players can join (subject to password).',
+  };
+
+  return (
+    <div className="space-y-4 p-1">
+      {/* List */}
+      <div className="space-y-1.5">
+        {ids.length === 0 ? (
+          <p className="text-sm opacity-50 py-2">{emptyMsg[label] ?? 'Empty list.'}</p>
+        ) : (
+          ids.map(id => (
+            <div key={id} className="flex items-center justify-between px-3 py-2 rounded"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+              <span className="text-sm font-mono" style={{ color: 'var(--text-primary)' }}>{id}</span>
+              <button onClick={() => handleRemove(id)}
+                className="text-xs text-red-400 hover:text-red-300 transition-colors ml-3 flex-shrink-0"
+                title="Remove">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Add row */}
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <input
+            className="w-full px-3 py-2 rounded text-sm font-mono outline-none transition-colors"
+            style={{
+              background: 'var(--bg-elevated)',
+              color: 'var(--text-primary)',
+              border: inputErr ? '1px solid rgba(239,68,68,0.6)' : '1px solid var(--border)',
+            }}
+            placeholder="76561198012345678"
+            value={input}
+            maxLength={17}
+            onChange={e => { setInput(e.target.value.replace(/\D/g, '')); setInputErr(''); }}
+            onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+          />
+          {inputErr && <p className="text-xs text-red-400 mt-1">{inputErr}</p>}
+        </div>
+        <button onClick={handleAdd} className="btn-primary text-xs px-4 flex-shrink-0">Add</button>
+      </div>
+      <p className="text-xs opacity-40">Find your 64-bit Steam ID at steamid.io or steamidfinder.com</p>
+    </div>
+  );
+}
+
+// ── Advanced editor gate (acceptance dialog) ──────────────────────────────────
+
+function AdvancedGate({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const [agreed, setAgreed] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+
+  const toggle = () => {
+    if (open) { setOpen(false); return; }
+    if (agreed) { setOpen(true); return; }
+    setShowModal(true);
+  };
+
+  return (
+    <div className="mt-4">
+      <button
+        onClick={toggle}
+        className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded transition-colors w-full text-left"
+        style={{
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border)',
+          color: 'var(--text-secondary)',
+        }}
+      >
+        <ChevronRight className={cn('w-3.5 h-3.5 transition-transform', open && 'rotate-90')} />
+        Advanced — Raw File Editor
+        {agreed && open && (
+          <span className="ml-auto text-yellow-400/70 text-xs">editing raw file</span>
+        )}
+      </button>
+
+      {open && agreed && (
+        <div className="mt-2">
+          {children}
+        </div>
+      )}
+
+      {/* Acceptance modal */}
+      {showModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="card p-6 max-w-md w-full mx-4 space-y-4" style={{ border: '1px solid var(--border-strong)' }}>
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-semibold text-base" style={{ color: 'var(--text-primary)' }}>Advanced Editor</h3>
+                <p className="text-sm mt-1.5" style={{ color: 'var(--text-secondary)' }}>
+                  This gives you direct access to the raw config file. Incorrect edits
+                  can prevent the server from starting or behaving unexpectedly.
+                </p>
+                <p className="text-sm mt-2 font-medium text-yellow-400">
+                  Only proceed if you know what you are editing.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button className="btn-ghost text-sm" onClick={() => setShowModal(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn-primary text-sm"
+                onClick={() => { setAgreed(true); setOpen(true); setShowModal(false); }}
+              >
+                I understand, show editor
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface ConfigFileInfo {
   path: string;
   description: string;
@@ -1668,52 +2060,72 @@ function ConfigTab({ server }: { server: any }) {
             )}
 
             {/* Editor */}
-            <div className="card overflow-hidden flex-1 flex flex-col">
-              {/* macOS-style title bar */}
-              <div className="px-4 py-2 flex items-center gap-2 flex-shrink-0"
-                style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
-                  <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/70" />
-                  <div className="w-2.5 h-2.5 rounded-full bg-green-500/70" />
-                </div>
-                <span className="text-xs font-mono ml-2" style={{ color: 'var(--text-muted)' }}>
-                  {selectedPath.split('/').pop()}
-                </span>
+            {loadingContent ? (
+              <div className="card flex items-center justify-center flex-1 p-8" style={{ color: 'var(--text-muted)' }}>
+                <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading…
               </div>
-              {loadingContent ? (
-                <div className="flex items-center justify-center flex-1 p-8" style={{ color: 'var(--text-muted)' }}>
-                  <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading…
+            ) : (() => {
+              const editorType = structuredEditorType(selectedPath);
+              const RawEditor = (
+                <div className="card overflow-hidden flex flex-col">
+                  <div className="px-4 py-2 flex items-center gap-2 flex-shrink-0"
+                    style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
+                      <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/70" />
+                      <div className="w-2.5 h-2.5 rounded-full bg-green-500/70" />
+                    </div>
+                    <span className="text-xs font-mono ml-2" style={{ color: 'var(--text-muted)' }}>
+                      {selectedPath!.split('/').pop()}
+                    </span>
+                  </div>
+                  <textarea
+                    className="p-4 text-xs font-mono resize-none outline-none w-full"
+                    style={{
+                      background: '#080810',
+                      color: 'var(--text-primary)',
+                      minHeight: '400px',
+                      lineHeight: '1.6',
+                      tabSize: 2,
+                    }}
+                    value={content}
+                    onChange={e => setContent(e.target.value)}
+                    spellCheck={false}
+                    onKeyDown={e => {
+                      if (e.key === 'Tab') {
+                        e.preventDefault();
+                        const el = e.currentTarget;
+                        const start = el.selectionStart;
+                        const end = el.selectionEnd;
+                        setContent(content.substring(0, start) + '  ' + content.substring(end));
+                        requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = start + 2; });
+                      }
+                    }}
+                  />
                 </div>
-              ) : (
-                <textarea
-                  className="flex-1 p-4 text-xs font-mono resize-none outline-none w-full"
-                  style={{
-                    background: '#080810',
-                    color: 'var(--text-primary)',
-                    minHeight: '400px',
-                    lineHeight: '1.6',
-                    tabSize: 2,
-                  }}
-                  value={content}
-                  onChange={e => setContent(e.target.value)}
-                  spellCheck={false}
-                  onKeyDown={e => {
-                    // Tab inserts two spaces instead of moving focus
-                    if (e.key === 'Tab') {
-                      e.preventDefault();
-                      const el = e.currentTarget;
-                      const start = el.selectionStart;
-                      const end = el.selectionEnd;
-                      setContent(content.substring(0, start) + '  ' + content.substring(end));
-                      requestAnimationFrame(() => {
-                        el.selectionStart = el.selectionEnd = start + 2;
-                      });
-                    }
-                  }}
-                />
-              )}
-            </div>
+              );
+
+              if (!editorType) return RawEditor;
+
+              const fileLabel = selectedPath!.replace('list.txt', '').replace('permitted', 'permitted');
+              const listLabel = selectedPath === 'adminlist.txt' ? 'admin'
+                : selectedPath === 'bannedlist.txt' ? 'banned'
+                : 'permitted';
+
+              return (
+                <div className="card p-4 flex-1">
+                  {editorType === 'valheim-start' && (
+                    <ValheimStartEditor content={content} onChange={setContent} />
+                  )}
+                  {editorType === 'steamid-list' && (
+                    <SteamIDListEditor content={content} onChange={setContent} label={listLabel} />
+                  )}
+                  <AdvancedGate>
+                    {RawEditor}
+                  </AdvancedGate>
+                </div>
+              );
+            })()}
           </>
         ) : (
           <div className="flex items-center justify-center h-full" style={{ color: 'var(--text-muted)' }}>
