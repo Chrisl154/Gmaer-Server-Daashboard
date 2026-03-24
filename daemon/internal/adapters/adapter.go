@@ -67,9 +67,9 @@ type HealthCheckSpec struct {
 
 // ConfigTemplate describes a config file that can be templated
 type ConfigTemplate struct {
-	Path        string `yaml:"path"`
-	Description string `yaml:"description"`
-	Sample      string `yaml:"sample"`
+	Path        string `yaml:"path"        json:"path"`
+	Description string `yaml:"description" json:"description"`
+	Sample      string `yaml:"sample"      json:"sample"`
 }
 
 // ResourceSpec defines recommended compute resources
