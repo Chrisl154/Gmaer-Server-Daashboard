@@ -25,7 +25,7 @@ backup_paths:
 
 config_templates:
   - path: /opt/valheim/start_valheim.sh
-    description: "Server startup script"
+    description: "Server startup script — edit name, password, world, and options here"
     sample: |
       #!/bin/bash
       export templdpath=$LD_LIBRARY_PATH
@@ -33,14 +33,46 @@ config_templates:
       export SteamAppId=892970
       ./valheim_server.x86_64 \
         -nographics -batchmode \
-        -name "${SERVER_NAME:-My Valheim Server}" \
-        -port ${SERVER_PORT:-2456} \
-        -world "${WORLD_NAME:-Dedicated}" \
-        -password "${SERVER_PASSWORD:-changeme}" \
+        -name "My Valheim Server" \
+        -port 2456 \
+        -world "Dedicated" \
+        -password "changeme" \
         -savedir "/data/worlds" \
-        -public ${PUBLIC:-1} \
-        "$@"
+        -public 1 \
+        -crossplay
+      # -public 0           # Set to 0 to make server unlisted (invite only)
+      # -crossplay          # Remove this line to disable Xbox/Game Pass crossplay
+      # -preset Normal      # Presets: Normal Casual Easy Hard Hardcore Immersive Hammer
+      # -modifier combat easy          # combat: veryeasy easy hard veryhard
+      # -modifier deathpenalty casual  # deathpenalty: casual easy normal hard hardcore
+      # -modifier resources more       # resources: muchless less more muchmore mostmore
+      # -modifier raids none           # raids: none less more muchmore
+      # -modifier portals casual       # portals: casual hard veryhard
       export LD_LIBRARY_PATH=$templdpath
+
+  - path: /opt/valheim/adminlist.txt
+    description: "Admin Steam IDs — one 64-bit SteamID per line"
+    sample: |
+      # Valheim admin list
+      # Add your 64-bit Steam ID (one per line) to grant admin commands in-game.
+      # Find your Steam ID at: https://steamid.io
+      # Example:
+      # 76561198012345678
+
+  - path: /opt/valheim/bannedlist.txt
+    description: "Banned Steam IDs — one 64-bit SteamID per line"
+    sample: |
+      # Valheim ban list
+      # Steam IDs listed here are permanently banned from this server.
+      # One 64-bit Steam ID per line.
+
+  - path: /opt/valheim/permittedlist.txt
+    description: "Whitelist — if non-empty, only listed Steam IDs can join"
+    sample: |
+      # Valheim permitted list (whitelist)
+      # If this file contains any Steam IDs, ONLY those players can connect.
+      # Leave empty to allow all players (subject to password).
+      # One 64-bit Steam ID per line.
 
 ports:
   - internal: 2456

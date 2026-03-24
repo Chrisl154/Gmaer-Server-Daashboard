@@ -1423,6 +1423,18 @@ interface ConfigTemplate {
   sample: string;
 }
 
+// Mirrors backend configTemplatePath() — strips /data/, /opt/<game>/, or leading /
+function cleanTemplatePath(p: string): string {
+  if (p.startsWith('/data/')) return p.slice('/data/'.length);
+  if (p.startsWith('/opt/')) {
+    const rest = p.slice('/opt/'.length);
+    const idx = rest.indexOf('/');
+    if (idx >= 0) return rest.slice(idx + 1);
+    return rest;
+  }
+  return p.replace(/^\//, '');
+}
+
 function ConfigTab({ server }: { server: any }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [content, setContent] = useState('');
@@ -1461,10 +1473,7 @@ function ConfigTab({ server }: { server: any }) {
     setSaveError('');
 
     if (!file.exists) {
-      const tmpl = templates?.templates?.find(t => {
-        const cleaned = t.path.replace(/^\/data\//, '').replace(/^\//, '');
-        return cleaned === file.path;
-      });
+      const tmpl = templates?.templates?.find(t => cleanTemplatePath(t.path) === file.path);
       setContent(tmpl?.sample ?? '');
       setOriginalContent('');
       return;
@@ -1505,10 +1514,7 @@ function ConfigTab({ server }: { server: any }) {
 
   const handleUseTemplate = () => {
     if (!selectedPath) return;
-    const tmpl = templates?.templates?.find(t => {
-      const cleaned = t.path.replace(/^\/data\//, '').replace(/^\//, '');
-      return cleaned === selectedPath;
-    });
+    const tmpl = templates?.templates?.find(t => cleanTemplatePath(t.path) === selectedPath);
     if (tmpl?.sample) setContent(tmpl.sample);
   };
 
@@ -1615,10 +1621,7 @@ function ConfigTab({ server }: { server: any }) {
                 )}
               </div>
               <div className="flex items-center gap-2">
-                {templates?.templates?.some(t => {
-                  const cleaned = t.path.replace(/^\/data\//, '').replace(/^\//, '');
-                  return cleaned === selectedPath;
-                }) && (
+                {templates?.templates?.some(t => cleanTemplatePath(t.path) === selectedPath) && (
                   <button
                     onClick={handleUseTemplate}
                     className="btn-ghost text-xs flex items-center gap-1"
