@@ -1465,7 +1465,17 @@ function ConfigTab({ server }: { server: any }) {
         handleSelectFile(filesData.files[0]);
       }
     }
-  }, [filesData]);
+  }, [filesData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Backfill: when templates load after filesData, fill in sample content for
+  // the auto-selected file if it doesn't exist yet (fixes parallel-load race).
+  useEffect(() => {
+    if (!selectedPath || content !== '' || !templates?.templates) return;
+    const file = fileList.find(f => f.path === selectedPath);
+    if (!file || file.exists) return;
+    const tmpl = templates.templates.find(t => cleanTemplatePath(t.path) === selectedPath);
+    if (tmpl?.sample) setContent(tmpl.sample);
+  }, [templates]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectFile = useCallback(async (file: ConfigFileInfo) => {
     setSelectedPath(file.path);
