@@ -1595,6 +1595,16 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return fmt.Errorf("could not create install directory %q: %w", installDir, err)
 	}
+	// Verify the daemon user can actually write to the install dir before
+	// starting a potentially hour-long download that would fail at the end.
+	writeTestFile := filepath.Join(installDir, ".gdash-write-test")
+	if err := os.WriteFile(writeTestFile, []byte("ok"), 0o600); err != nil {
+		return fmt.Errorf(
+			"install directory %q is not writable by the daemon user — "+
+				"run: sudo chown -R %s %q",
+			installDir, os.Getenv("USER"), installDir)
+	}
+	_ = os.Remove(writeTestFile)
 
 	// Docker is a hard requirement — SteamCMD always runs inside a container so
 	// users never need to install SteamCMD or its 32-bit library dependencies.
