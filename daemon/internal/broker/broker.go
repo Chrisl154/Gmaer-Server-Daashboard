@@ -521,6 +521,10 @@ func (b *Broker) Start(ctx context.Context) {
 	// Start/stop cron scheduler.
 	b.initScheduler(ctx)
 
+	// Re-adopt game servers that survived a daemon restart (Docker containers
+	// and systemd-managed native processes).
+	go b.reAdoptRunningServers(ctx)
+
 	// Metrics sampling goroutine — collects per-server CPU/RAM every 15 s.
 	go func() {
 		metricsTicker := time.NewTicker(15 * time.Second)
@@ -1077,6 +1081,9 @@ func (b *Broker) DeleteServer(ctx context.Context, id string) error {
 	b.unscheduleAutoUpdate(id)
 	b.unscheduleStartStop(id)
 
+	// Best-effort: remove the systemd unit for native servers.
+	b.removeSystemdUnit(id)
+
 	// Best-effort: remove the Docker container on deletion.
 	if deployMethod == "docker" && containerID != "" {
 		if dockerPath, err := exec.LookPath("docker"); err == nil {
@@ -1256,6 +1263,18 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 		}
 	}
 
+	// Try systemd-based start first.  If systemd is available and the unit is
+	// written successfully, startViaSystemd hands off process management to
+	// systemd and returns true — we're done.  Otherwise fall through to the
+	// goroutine-based in-process management below.
+	stopCmd := ""
+	if hasManifest && manifest.StopCommand != "" {
+		stopCmd = expandServerVars(manifest.StopCommand, s)
+	}
+	if b.startViaSystemd(ctx, id, s, startCmd, stopCmd, installDir) {
+		return
+	}
+
 	// Run loop: start the process, wait for exit, optionally restart on crash.
 	for {
 		b.mu.RLock()
@@ -1426,6 +1445,25 @@ func (b *Broker) doStop(ctx context.Context, id string) {
 
 	if sOk && s.DeployMethod == "docker" && containerID != "" {
 		b.stopDockerContainer(ctx, id, containerID)
+		return
+	}
+
+	// Attempt systemd-based stop before falling back to direct signal.
+	if b.stopViaSystemd(id) {
+		b.mu.Lock()
+		delete(b.processes, id)
+		if cancel, ok := b.serverCancels[id]; ok {
+			cancel()
+			delete(b.serverCancels, id)
+		}
+		if sv, ok := b.servers[id]; ok {
+			sv.State = StateStopped
+			now := time.Now()
+			sv.LastStopped = &now
+			sv.PID = 0
+		}
+		b.mu.Unlock()
+		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"system","msg":"Server %s stopped","ts":%d}`, id, time.Now().Unix()))
 		return
 	}
 
