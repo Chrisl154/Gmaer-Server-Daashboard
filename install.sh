@@ -807,11 +807,11 @@ $SUDO ln -sf "$BIN_DIR/gdash" /usr/local/bin/gdash 2>/dev/null || true
 ok "CLI → $BIN_DIR/gdash (linked to /usr/local/bin/gdash)"
 
 if [[ "$INSTALL_MODE" != "node" ]]; then
-  log "Building UI (VITE_DAEMON_URL=$UI_API_URL)..."
+  log "Building UI (same-origin mode — API calls routed through nginx)..."
   chmod +x "$REPO_DIR/ui/node_modules/.bin/"* 2>/dev/null || true
   (cd "$REPO_DIR/ui" && \
     npm install --silent 2>/dev/null && \
-    VITE_DAEMON_URL="$UI_API_URL" node_modules/.bin/vite build --outDir "$INSTALL_DIR/ui" 2>/dev/null)
+    node_modules/.bin/vite build --outDir "$INSTALL_DIR/ui" 2>/dev/null)
   ok "UI → $INSTALL_DIR/ui"
 else
   ok "UI build: skipped (worker-node mode)"

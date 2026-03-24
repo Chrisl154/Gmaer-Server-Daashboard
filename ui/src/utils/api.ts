@@ -1,10 +1,13 @@
 /// <reference types="vite/client" />
 import axios from 'axios';
 
-const DAEMON_URL = import.meta.env.VITE_DAEMON_URL ?? 'https://localhost:8443';
+// Empty string → same-origin (nginx proxies /api/, /healthz to daemon).
+// Set VITE_DAEMON_URL at build time only for Docker/Helm where the UI is
+// served from a different origin than the daemon.
+const DAEMON_URL = import.meta.env.VITE_DAEMON_URL ?? '';
 
 export const api = axios.create({
-  baseURL: DAEMON_URL,
+  baseURL: DAEMON_URL || undefined,
   timeout: 30_000,
   headers: { 'Content-Type': 'application/json' },
 });
@@ -41,7 +44,11 @@ api.interceptors.response.use(
  * appended as a ?token= query parameter which streamConsole validates.
  */
 export function getWsUrl(path: string): string {
-  const base = DAEMON_URL.replace(/^http/, 'ws').replace(/^https/, 'wss');
+  // When no explicit daemon URL, derive WebSocket host from the page origin so
+  // the connection goes through the same nginx reverse-proxy as the REST calls.
+  const base = DAEMON_URL
+    ? DAEMON_URL.replace(/^http/, 'ws').replace(/^https/, 'wss')
+    : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
   let token = '';
   try {
     const stored = localStorage.getItem('games-dashboard-auth');
