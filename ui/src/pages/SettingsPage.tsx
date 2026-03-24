@@ -1839,7 +1839,9 @@ function UpdateLogViewer({ showLog, setShowLog, logData, refetchLog }: {
 
 function UpdatesSection() {
   const qc = useQueryClient();
-  const [branch, setBranch] = useState<'main' | 'dev'>('main');
+  const [branchMode, setBranchMode] = useState<'main' | 'dev' | 'custom'>('main');
+  const [customBranch, setCustomBranch] = useState('');
+  const branch = branchMode === 'custom' ? customBranch.trim() : branchMode;
   const [applyMsg, setApplyMsg] = useState('');
   const [showLog, setShowLog] = useState(false);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
@@ -1926,7 +1928,14 @@ function UpdatesSection() {
 
   // Sync branch picker to current repo branch on first load.
   useEffect(() => {
-    if (status?.current_branch === 'dev') setBranch('dev');
+    const b = status?.current_branch;
+    if (!b) return;
+    if (b === 'main' || b === 'dev') {
+      setBranchMode(b);
+    } else {
+      setBranchMode('custom');
+      setCustomBranch(b);
+    }
   }, [status?.current_branch]);
 
   // Clean up on unmount.
@@ -2024,29 +2033,44 @@ function UpdatesSection() {
       <div className="card p-5 space-y-4">
         <h3 className="label flex items-center gap-2"><Download className="w-3.5 h-3.5" /> Apply Update</h3>
 
-        <div className="space-y-2">
+        <div className="space-y-3">
           <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>Target branch</p>
-          <div className="flex gap-3">
-            {(['main', 'dev'] as const).map(b => (
-              <label key={b} className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="branch"
-                  value={b}
-                  checked={branch === b}
-                  onChange={() => { setBranch(b); setCheckResult(null); }}
-                  className="accent-orange-500"
-                />
-                <span className="text-sm font-mono" style={{ color: 'var(--text-primary)' }}>{b}</span>
-                {b === 'main' && (
-                  <span className="text-xs px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400">stable</span>
-                )}
-                {b === 'dev' && (
-                  <span className="text-xs px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">pre-release</span>
-                )}
-              </label>
-            ))}
+          <div className="flex flex-wrap gap-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="branch" value="main"
+                checked={branchMode === 'main'}
+                onChange={() => { setBranchMode('main'); setCheckResult(null); }}
+                className="accent-orange-500" />
+              <span className="text-sm font-mono" style={{ color: 'var(--text-primary)' }}>main</span>
+              <span className="text-xs px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400">Production</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="branch" value="dev"
+                checked={branchMode === 'dev'}
+                onChange={() => { setBranchMode('dev'); setCheckResult(null); }}
+                className="accent-orange-500" />
+              <span className="text-sm font-mono" style={{ color: 'var(--text-primary)' }}>dev</span>
+              <span className="text-xs px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">Beta</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="branch" value="custom"
+                checked={branchMode === 'custom'}
+                onChange={() => { setBranchMode('custom'); setCheckResult(null); }}
+                className="accent-orange-500" />
+              <span className="text-sm font-mono" style={{ color: 'var(--text-primary)' }}>custom</span>
+              <span className="text-xs px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-400">Feature Test</span>
+            </label>
           </div>
+          {branchMode === 'custom' && (
+            <input
+              type="text"
+              value={customBranch}
+              onChange={e => { setCustomBranch(e.target.value); setCheckResult(null); }}
+              placeholder="feature/branch-name"
+              className="input w-full font-mono text-sm"
+              spellCheck={false}
+            />
+          )}
         </div>
 
         {applyMsg && !isUpdating ? (

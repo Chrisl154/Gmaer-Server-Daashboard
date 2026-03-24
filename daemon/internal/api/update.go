@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,6 +18,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+// validBranchRe allows letters, numbers, dashes, dots, slashes, and
+// underscores — the characters legal in a git branch name.
+var validBranchRe = regexp.MustCompile(`^[a-zA-Z0-9._/\-]{1,200}$`)
+
+func isValidBranchName(b string) bool { return validBranchRe.MatchString(b) }
 
 const (
 	updateScriptPath   = "/opt/gdash/bin/gdash-update.sh"
@@ -129,8 +136,8 @@ func (s *Server) checkForUpdates(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil || req.Branch == "" {
 		req.Branch = "main"
 	}
-	if req.Branch != "main" && req.Branch != "dev" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "branch must be 'main' or 'dev'"})
+	if !isValidBranchName(req.Branch) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid branch name"})
 		return
 	}
 
@@ -214,8 +221,8 @@ func (s *Server) applyUpdate(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil || req.Branch == "" {
 		req.Branch = "main"
 	}
-	if req.Branch != "main" && req.Branch != "dev" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "branch must be 'main' or 'dev'"})
+	if !isValidBranchName(req.Branch) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid branch name"})
 		return
 	}
 

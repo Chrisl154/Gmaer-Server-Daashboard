@@ -20,8 +20,9 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 BRANCH="${1:-main}"
-if [[ "$BRANCH" != "main" && "$BRANCH" != "dev" ]]; then
-  echo "ERROR: branch must be 'main' or 'dev'" >&2
+# Allow any valid git branch name (letters, numbers, dash, dot, slash, underscore).
+if [[ -z "$BRANCH" ]] || ! [[ "$BRANCH" =~ ^[a-zA-Z0-9._/\-]+$ ]]; then
+  echo "ERROR: invalid branch name: '$BRANCH'" >&2
   exit 1
 fi
 
