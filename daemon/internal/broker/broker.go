@@ -1229,7 +1229,22 @@ func (b *Broker) doStart(ctx context.Context, id string) {
 	if dotSlashBin != "" {
 		binPath := filepath.Join(installDir, dotSlashBin[2:])
 		if fi, statErr := os.Stat(binPath); os.IsNotExist(statErr) {
-			msg := fmt.Sprintf("Game binary %q was not found in %q. The server files may be incomplete — re-run Deploy to reinstall them.", dotSlashBin, installDir)
+			// Collect install dir listing to help diagnose bind-mount / subdir issues.
+			var dirHint string
+			if entries, dirErr := os.ReadDir(installDir); dirErr == nil && len(entries) > 0 {
+				names := make([]string, 0, len(entries))
+				for i, e := range entries {
+					if i >= 10 {
+						names = append(names, fmt.Sprintf("… (%d more)", len(entries)-10))
+						break
+					}
+					names = append(names, e.Name())
+				}
+				dirHint = fmt.Sprintf(" Install dir contains: [%s].", strings.Join(names, ", "))
+			} else if dirErr == nil {
+				dirHint = " Install dir is empty — the Docker bind mount may have failed during deployment."
+			}
+			msg := fmt.Sprintf("Game binary %q was not found in %q. The server files may be incomplete — re-run Deploy to reinstall them.%s", dotSlashBin, installDir, dirHint)
 			b.logger.Error("Pre-start check failed: binary missing",
 				zap.String("id", id), zap.String("binary", binPath))
 			b.setServerError(id, msg)
@@ -1741,6 +1756,34 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 	}
 	if lastErr != nil {
 		return lastErr
+	}
+
+	// Post-deploy sanity check: make sure the bind mount actually worked.
+	// If installDir is empty after a successful Docker run, the volume mount
+	// failed silently (e.g. Docker-in-Docker path mismatch, rootless Docker,
+	// SELinux denial).  Surface this as a clear error rather than a confusing
+	// "binary not found" later.
+	entries, dirErr := os.ReadDir(installDir)
+	if dirErr == nil {
+		if len(entries) == 0 {
+			msg := fmt.Sprintf(
+				"[gdash] WARNING: SteamCMD reported success but %q is empty — the Docker bind mount may have failed. "+
+					"This can happen when the daemon runs inside a container (path mismatch) or with rootless Docker. "+
+					"Check that Docker can write to %q and try deploying again.",
+				installDir, installDir)
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"error","msg":%s,"ts":%d}`, jsonStr(msg), time.Now().Unix()))
+			b.logger.Warn("Install dir empty after SteamCMD deploy — possible bind mount failure",
+				zap.String("server", id), zap.String("install_dir", installDir))
+		} else {
+			// Log the top-level directory listing so bind-mount issues are easy to spot.
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+				jsonStr(fmt.Sprintf("[gdash] Install dir contents: %s", strings.Join(names, "  "))),
+				time.Now().Unix()))
+		}
 	}
 
 	// Ensure declared executable binaries have the execute bit set.
