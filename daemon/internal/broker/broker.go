@@ -1605,54 +1605,55 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 				"Please install Docker (https://docs.docker.com/engine/install/) and ensure the daemon can reach the Docker socket.")
 	}
 
-	// Create a throw-away directory that the container uses as HOME so SteamCMD
-	// can write its internal .steam cache files without touching installDir.
-	// It is removed whether the deploy succeeds or fails.
+	// Create a staging area for the game files inside a temp directory.
+	// We mount this whole temp dir at /tmp/steamhome inside the container and
+	// tell SteamCMD to install games to /tmp/steamhome/games.  This avoids a
+	// second bind mount for the install dir entirely — on many systems (rootless
+	// Docker, userns-remap) the /tmp bind mount is the only one that reliably
+	// reaches the host filesystem.  After the container exits we move the staged
+	// files into installDir.
 	steamHome, err := os.MkdirTemp("", "gdash-steamhome-*")
 	if err != nil {
 		return fmt.Errorf("create steamcmd temp dir: %w", err)
 	}
 	defer os.RemoveAll(steamHome) //nolint:errcheck
 
+	// Both directories must be world-writable so the container's steam user
+	// (UID 1000, which may not match the host UID) can write freely.
+	_ = os.Chmod(steamHome, 0o777)
+	gamesStaging := filepath.Join(steamHome, "games")
+	if err := os.MkdirAll(gamesStaging, 0o777); err != nil {
+		return fmt.Errorf("create games staging dir: %w", err)
+	}
+
 	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
 		jsonStr("[gdash] Starting SteamCMD via Docker (cm2network/steamcmd). First run will pull the image — this may take a minute."),
 		time.Now().Unix()))
 	b.updateJob(job.ID, "running", 15, "Pulling SteamCMD Docker image (first run only)…")
 
-	// Ensure installDir is writable by the container's steam user (UID 1000).
-	if err := os.Chmod(installDir, 0o777); err != nil {
-		b.logger.Warn("Could not chmod install dir for steamcmd container", zap.Error(err))
-	}
-
 	// Remove any stale container left by a previous failed deploy so --name doesn't conflict.
 	containerName := "gdash-steamcmd-" + id
 	_ = exec.Command(dockerBin, "rm", "-f", containerName).Run() //nolint:gosec
-
-	// Always remove the named container when this function returns, whether it
-	// succeeded, failed, or used the docker-cp fallback path.
 	defer func() { _ = exec.Command(dockerBin, "rm", "-f", containerName).Run() }() //nolint:gosec
 
 	// Build docker run arguments.
-	// - installDir is mounted at /games inside the container (game files land here)
-	// - steamHome  is mounted at /tmp/steamhome for SteamCMD's own cache/config
-	// - --rm is intentionally omitted: we keep the container after exit so that
-	//   if the bind mount fails silently (rootless Docker, userns-remap, SELinux),
-	//   we can fall back to "docker cp" to extract the files.
-	// - We do NOT pass --user: cm2network/steamcmd runs its ENTRYPOINT as its own
-	//   internal steam user and breaks if the UID is overridden.
-	// - +app_info_update 1 forces SteamCMD to refresh its internal depot/app
-	//   configuration cache BEFORE the install — without this, first-time installs
-	//   frequently fail with "Missing configuration" because the cache is empty.
+	// - steamHome is mounted at /tmp/steamhome; game files go to /tmp/steamhome/games
+	//   inside the container, which maps directly to gamesStaging on the host —
+	//   no separate install-dir bind mount that could fail silently.
+	// - We do NOT pass --user: cm2network/steamcmd runs as its own steam user and
+	//   breaks if the UID is overridden.
+	// - +app_info_update 1 forces SteamCMD to refresh its depot cache before the
+	//   install; without this, first-time installs often fail with "Missing
+	//   configuration" because the cache is cold.
 	buildDockerArgs := func() []string {
 		args := []string{
-			"run", // no --rm: container kept until we verify or extract files
+			"run", "--rm",
 			"--name", containerName,
-			"-v", installDir + ":/games",
 			"-v", steamHome + ":/tmp/steamhome",
 			"-e", "HOME=/tmp/steamhome",
 			"--entrypoint", "/home/steam/steamcmd/steamcmd.sh",
 			"cm2network/steamcmd",
-			"+force_install_dir", "/games",
+			"+force_install_dir", "/tmp/steamhome/games",
 			"+login", "anonymous",
 			"+app_info_update", "1",
 		}
@@ -1765,30 +1766,31 @@ func (b *Broker) deploySteamCMD(ctx context.Context, id string, req DeployReques
 		return lastErr
 	}
 
-	// Post-deploy sanity check: verify the bind mount actually wrote files.
-	// If installDir is empty, the bind mount failed silently (common with
-	// rootless Docker, userns-remap, or SELinux).  Fall back to "docker cp"
-	// which copies directly from the stopped container's overlay filesystem —
-	// this always works regardless of bind-mount configuration.
-	entries, dirErr := os.ReadDir(installDir)
-	bindMountWorked := dirErr == nil && len(entries) > 0
-	if !bindMountWorked {
-		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
-			jsonStr("[gdash] Bind mount appears empty — falling back to 'docker cp' to extract game files from container…"),
-			time.Now().Unix()))
-		b.logger.Warn("Install dir empty after SteamCMD deploy — using docker cp fallback",
-			zap.String("server", id), zap.String("install_dir", installDir))
+	// Move staged game files from gamesStaging → installDir.
+	// Because steamHome is in /tmp and installDir may be on a different
+	// filesystem (/opt, /home, etc.) we use "cp -a" which handles cross-device
+	// moves correctly.  For updates this overwrites changed files in-place
+	// without touching files SteamCMD didn't touch.
+	stagingEntries, stagingErr := os.ReadDir(gamesStaging)
+	if stagingErr != nil || len(stagingEntries) == 0 {
+		return fmt.Errorf(
+			"SteamCMD reported success but the staging directory %q is empty — "+
+				"the game files were not written to the expected location inside the container. "+
+				"This may indicate a SteamCMD configuration issue or that the app ID %q requires "+
+				"an authenticated Steam account", gamesStaging, appID)
+	}
 
-		// "docker cp <container>:/games/. <dest>" copies the CONTENTS of /games.
-		cpCmd := exec.Command(dockerBin, "cp", containerName+":/games/.", installDir) //nolint:gosec
-		if cpOut, cpErr := cpCmd.CombinedOutput(); cpErr != nil {
-			return fmt.Errorf("docker cp fallback failed: %w\n%s", cpErr, string(cpOut))
-		}
-		b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
-			jsonStr("[gdash] docker cp complete — game files extracted successfully."),
-			time.Now().Unix()))
-	} else {
-		// Log the top-level directory listing so bind-mount issues are easy to spot.
+	b.sendConsoleMessage(id, fmt.Sprintf(`{"type":"deploy","msg":%s,"ts":%d}`,
+		jsonStr(fmt.Sprintf("[gdash] Copying %d item(s) from staging to %s…", len(stagingEntries), installDir)),
+		time.Now().Unix()))
+
+	cpCmd := exec.Command("cp", "-a", gamesStaging+"/.", installDir) //nolint:gosec
+	if cpOut, cpErr := cpCmd.CombinedOutput(); cpErr != nil {
+		return fmt.Errorf("failed to copy game files to install dir: %w\n%s", cpErr, string(cpOut))
+	}
+
+	// Log install dir contents so the user can confirm files landed correctly.
+	if entries, err := os.ReadDir(installDir); err == nil {
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
